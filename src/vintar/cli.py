@@ -1,6 +1,7 @@
-import typer
 import httpx
+import typer
 from rich.console import Console
+
 from vintar.core.http import send_request
 
 ## cli command
@@ -15,14 +16,17 @@ app.add_typer(http_app, name="http")
 
 console = Console()
 
+
 @app.callback()
 def main() -> None:
     """Precision Security Toolkit."""
+
 
 @app.command()
 def version() -> None:
     """Show the current version."""
     console.print("[bold cyan]Vintar[/bold cyan] v0.1.0")
+
 
 @http_app.command("send")
 def http_send(
@@ -56,7 +60,6 @@ def http_send(
     console.print(f"[cyan]Satus:[/cyan] {status}")
     console.print(f"[cyan]Response time:[/cyan] {elapsed:.3f}s")
     console.print(f"[cyan]Content size:[/cyan] {size} bytes")
-
 
 
 if __name__ == "__main__":
