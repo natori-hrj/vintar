@@ -123,3 +123,58 @@ def test_invalid_timeout(timeout: float):
             url="http://localhost/",
             timeout=timeout,
         )
+
+
+def test_timeout_is_applied():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.extensions["timeout"] == {
+            "connect": 15.0,
+            "read": 15.0,
+            "write": 15.0,
+            "pool": 15.0,
+        }
+        return httpx.Response(200, text="ok")
+
+    transport = httpx.MockTransport(handler)
+
+    with httpx.Client(transport=transport) as client:
+        result = send_request(
+            method="GET",
+            url="http://localhost/",
+            timeout=15.0,
+            client=client,
+        )
+
+    assert result.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("body", "limit", "expected_body", "truncated"),
+    [
+        (b"hello", 10, b"hello", False),
+        (b"hello", 5, b"hello", False),
+        (b"hello world", 5, b"hello", True),
+    ],
+)
+def test_response_size_limit(
+    body: bytes,
+    limit: int,
+    expected_body: bytes,
+    truncated: bool,
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    transport = httpx.MockTransport(handler)
+
+    with httpx.Client(transport=transport) as client:
+        result = send_request(
+            method="GET",
+            url="http://localhost/",
+            client=client,
+            max_response_size=limit,
+        )
+
+    assert result.body == expected_body
+    assert result.size == len(expected_body)
+    assert result.truncated is truncated

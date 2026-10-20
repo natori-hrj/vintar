@@ -7,6 +7,7 @@ class HttpResult:
     elapsed: float
     body: bytes
     headers: dict[str, str]
+    truncated: bool = False
 
     @property
     def size(self) -> int:
