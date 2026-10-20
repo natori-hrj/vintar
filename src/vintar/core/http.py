@@ -10,6 +10,7 @@ def send_request(
     headers: dict[str, str] | None = None,
     cookies: dict[str, str] | None = None,
     client: httpx.Client | None = None,
+    params: list[tuple[str, str]] | None = None,
 ) -> tuple[int, float, int]:
     """Send a GET request and return status, duration, and body size."""
 
@@ -26,6 +27,7 @@ def send_request(
             url=url,
             content=body,
             headers=request_headers,
+            params=params,
         )
         elapsed = time.perf_counter() - start
         return response.status_code, elapsed, len(response.content)

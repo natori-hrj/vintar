@@ -65,3 +65,26 @@ def test_custom_headers_and_cookies():
     assert status == 200
     assert elapsed >= 0
     assert size == 7
+
+
+def test_query_parameters():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.params.get("category") == "Pets"
+        assert request.url.params.get("page") == "1"
+
+        return httpx.Response(200, text="success")
+
+    transport = httpx.MockTransport(handler)
+
+    with httpx.Client(transport=transport) as client:
+        status, elapsed, size = send_request(
+            method="GET",
+            url="http://localhost/",
+            params=[("category", "Pets"), ("page", "1")],
+            client=client,
+        )
+
+        assert status == 200
+        assert elapsed >= 0
+        assert size == 7

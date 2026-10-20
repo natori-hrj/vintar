@@ -54,6 +54,14 @@ def http_send(
             help="Cookie (name=value).",
         ),
     ] = None,
+    param: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--param",
+            "-p",
+            help="Query parameter (name=value). Rpeatable.",
+        ),
+    ] = None,
 ) -> None:
     """Send a GET request and inspect the response."""
     method = method.upper()
@@ -93,6 +101,21 @@ def http_send(
 
         cookies[name] = value
 
+    params: list[tuple[str, str]] = []
+
+    for item in param or []:
+        if "=" not in item:
+            console.print(f"[red]Invalid parameter:[/red] {item}")
+            raise typer.Exit(code=1)
+
+        name, value = item.split("=", 1)
+
+        if not name:
+            console.print("[red]Parameter name cannot be empty.[/red]")
+            raise typer.Exit(code=1)
+
+        params.append((name, value))
+
     try:
         status, elapsed, size = send_request(
             method=method,
@@ -100,6 +123,7 @@ def http_send(
             body=body,
             headers=headers or None,
             cookies=cookies or None,
+            params=params or None,
         )
     except (httpx.RequestError, httpx.InvalidURL, ValueError) as exc:
         console.print(f"[red]Request failed:[/red] {exc}")
