@@ -1,3 +1,5 @@
+from typing import Annotated
+
 import httpx
 import typer
 from rich.console import Console
@@ -32,11 +34,26 @@ def version() -> None:
 def http_send(
     method: str,
     url: str,
-    body: str | None = typer.Option(
-        None,
-        "--body",
-        help="HTTP request body.",
-    ),
+    body: Annotated[
+        str | None,
+        typer.Option("--body", help="HTTP request body."),
+    ] = None,
+    header: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--header",
+            "-H",
+            help="Custom HTTP header (Name: Value).",
+        ),
+    ] = None,
+    cookie: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--cookie",
+            "-C",
+            help="Cookie (name=value).",
+        ),
+    ] = None,
 ) -> None:
     """Send a GET request and inspect the response."""
     method = method.upper()
@@ -45,13 +62,46 @@ def http_send(
         console.print("[red]Only GET and POST are supported.[/red]")
         raise typer.Exit(code=1)
 
+    headers: dict[str, str] = {}
+    cookies: dict[str, str] = {}
+
+    for item in header or []:
+        if ":" not in item:
+            console.print(f"[red]Invalid header:[/red] {item}")
+            raise typer.Exit(code=1)
+
+        name, value = item.split(":", 1)
+        name = name.strip()
+
+        if not name:
+            console.print("[red]Header name cannot be empty.[/red]")
+            raise typer.Exit(code=1)
+
+        headers[name] = value.strip()
+
+    for item in cookie or []:
+        if "=" not in item:
+            console.print(f"[red]Invalid cookies:[/red] {item}")
+            raise typer.Exit(code=1)
+
+        name, value = item.split("=", 1)
+        name = name.strip()
+
+        if not name:
+            console.print("[red]Cookie name cannot be empty.[/red]")
+            raise typer.Exit(code=1)
+
+        cookies[name] = value
+
     try:
         status, elapsed, size = send_request(
-            method,
-            url,
+            method=method,
+            url=url,
             body=body,
+            headers=headers or None,
+            cookies=cookies or None,
         )
-    except (httpx.RequestError, httpx.InvalidURL) as exc:
+    except (httpx.RequestError, httpx.InvalidURL, ValueError) as exc:
         console.print(f"[red]Request failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
