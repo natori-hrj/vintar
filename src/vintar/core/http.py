@@ -2,6 +2,8 @@ import time
 
 import httpx
 
+from vintar.core.models import HttpResult
+
 
 def send_request(
     method: str,
@@ -11,7 +13,7 @@ def send_request(
     cookies: dict[str, str] | None = None,
     client: httpx.Client | None = None,
     params: list[tuple[str, str]] | None = None,
-) -> tuple[int, float, int]:
+) -> HttpResult:
     """Send a GET request and return status, duration, and body size."""
 
     request_headers = dict(headers or {})
@@ -20,7 +22,7 @@ def send_request(
         cookie_header = "; ".join(f"{name}={value}" for name, value in cookies.items())
         request_headers["Cookie"] = cookie_header
 
-    def execute(active_client: httpx.Client) -> tuple[int, float, int]:
+    def execute(active_client: httpx.Client) -> HttpResult:
         start = time.perf_counter()
         response = active_client.request(
             method=method,
@@ -30,7 +32,12 @@ def send_request(
             params=params,
         )
         elapsed = time.perf_counter() - start
-        return response.status_code, elapsed, len(response.content)
+        return HttpResult(
+            status_code=response.status_code,
+            elapsed=elapsed,
+            body=response.content,
+            headers=dict(response.headers),
+        )
 
     if client is not None:
         return execute(client)

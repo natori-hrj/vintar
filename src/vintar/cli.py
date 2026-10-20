@@ -117,7 +117,7 @@ def http_send(
         params.append((name, value))
 
     try:
-        status, elapsed, size = send_request(
+        result = send_request(
             method=method,
             url=url,
             body=body,
@@ -131,9 +131,9 @@ def http_send(
 
     console.print(f"[cyan]Target:[/cyan] {url}")
     console.print(f"[cyan]Method:[/cyan] {method}")
-    console.print(f"[cyan]Satus:[/cyan] {status}")
-    console.print(f"[cyan]Response time:[/cyan] {elapsed:.3f}s")
-    console.print(f"[cyan]Content size:[/cyan] {size} bytes")
+    console.print(f"[cyan]Satus:[/cyan] {result.status_code}")
+    console.print(f"[cyan]Response time:[/cyan] {result.elapsed:.3f}s")
+    console.print(f"[cyan]Content size:[/cyan] {result.size} bytes")
 
 
 if __name__ == "__main__":

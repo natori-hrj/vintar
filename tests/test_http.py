@@ -1,3 +1,4 @@
+
 import httpx
 
 from vintar.core.http import send_request
@@ -12,15 +13,16 @@ def test_get_request():
     transport = httpx.MockTransport(handler)
 
     with httpx.Client(transport=transport) as client:
-        status, elapsed, size = send_request(
+        result = send_request(
             "GET",
             "http://localhost/",
             client=client,
         )
 
-    assert status == 200
-    assert elapsed >= 0
-    assert size == 5
+    assert result.status_code == 200
+    assert result.elapsed >= 0
+    assert result.size == 5
+    assert result.body == b"hello"
 
 
 def test_post_request_body():
@@ -32,16 +34,16 @@ def test_post_request_body():
     transport = httpx.MockTransport(handler)
 
     with httpx.Client(transport=transport) as client:
-        status, elapsed, size = send_request(
+        result = send_request(
             "POST",
             "http://localhost/",
             body='{"message":"hello vintar"}',
             client=client,
         )
 
-    assert status == 201
-    assert elapsed >= 0
-    assert size == 7
+    assert result.status_code == 201
+    assert result.elapsed >= 0
+    assert result.size == 7
 
 
 def test_custom_headers_and_cookies():
@@ -54,7 +56,7 @@ def test_custom_headers_and_cookies():
     transport = httpx.MockTransport(handler)
 
     with httpx.Client(transport=transport) as client:
-        status, elapsed, size = send_request(
+        result = send_request(
             method="GET",
             url="http://localhost/",
             headers={"X-Test": "vintar"},
@@ -62,9 +64,9 @@ def test_custom_headers_and_cookies():
             client=client,
         )
 
-    assert status == 200
-    assert elapsed >= 0
-    assert size == 7
+    assert result.status_code == 200
+    assert result.elapsed >= 0
+    assert result.size == 7
 
 
 def test_query_parameters():
@@ -78,13 +80,36 @@ def test_query_parameters():
     transport = httpx.MockTransport(handler)
 
     with httpx.Client(transport=transport) as client:
-        status, elapsed, size = send_request(
+        result = send_request(
             method="GET",
             url="http://localhost/",
             params=[("category", "Pets"), ("page", "1")],
             client=client,
         )
 
-        assert status == 200
-        assert elapsed >= 0
-        assert size == 7
+        assert result.status_code == 200
+        assert result.elapsed >= 0
+        assert result.size == 7
+
+
+def test_response_headers():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"X-Test-Response": "vintar"},
+            text="hello",
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    with httpx.Client(transport=transport) as client:
+        result = send_request(
+            method="GET",
+            url="http://localhost/",
+            client=client,
+        )
+
+    assert result.status_code == 200
+    assert result.headers["x-test-response"] == "vintar"
+    assert result.body == b"hello"
+    assert result.size == 5
