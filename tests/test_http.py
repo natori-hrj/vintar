@@ -1,5 +1,5 @@
-
 import httpx
+import pytest
 
 from vintar.core.http import send_request
 
@@ -113,3 +113,13 @@ def test_response_headers():
     assert result.headers["x-test-response"] == "vintar"
     assert result.body == b"hello"
     assert result.size == 5
+
+
+@pytest.mark.parametrize("timeout", [-1.0, 0.0, 61.0])
+def test_invalid_timeout(timeout: float):
+    with pytest.raises(ValueError, match="Timeout must be"):
+        send_request(
+            method="GET",
+            url="http://localhost/",
+            timeout=timeout,
+        )

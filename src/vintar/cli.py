@@ -62,6 +62,16 @@ def http_send(
             help="Query parameter (name=value). Rpeatable.",
         ),
     ] = None,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            "-t",
+            help="Request timeout in seconds (max 60).",
+            min=0.1,
+            max=60.0,
+        ),
+    ] = 10.0,
 ) -> None:
     """Send a GET request and inspect the response."""
     method = method.upper()
@@ -124,6 +134,7 @@ def http_send(
             headers=headers or None,
             cookies=cookies or None,
             params=params or None,
+            timeout=timeout,
         )
     except (httpx.RequestError, httpx.InvalidURL, ValueError) as exc:
         console.print(f"[red]Request failed:[/red] {exc}")

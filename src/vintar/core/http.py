@@ -13,8 +13,12 @@ def send_request(
     cookies: dict[str, str] | None = None,
     client: httpx.Client | None = None,
     params: list[tuple[str, str]] | None = None,
+    timeout: float = 10.0,
 ) -> HttpResult:
     """Send a GET request and return status, duration, and body size."""
+
+    if not 0 < timeout <= 60:
+        raise ValueError("Timeout must be between 0 and 60 seconds.")
 
     request_headers = dict(headers or {})
 
