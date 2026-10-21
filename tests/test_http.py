@@ -178,3 +178,21 @@ def test_response_size_limit(
     assert result.body == expected_body
     assert result.size == len(expected_body)
     assert result.truncated is truncated
+
+
+def test_binary_request_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.content == b"\x00\x01\xff"
+        return httpx.Response(200, text="ok")
+
+    transport = httpx.MockTransport(handler)
+
+    with httpx.Client(transport=transport) as client:
+        result = send_request(
+            method="POST",
+            url="http://localhost/",
+            body=b"\x00\x01\xff",
+            client=client,
+        )
+
+    assert result.status_code == 200

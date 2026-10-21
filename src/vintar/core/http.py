@@ -8,7 +8,7 @@ from vintar.core.models import HttpResult
 def send_request(
     method: str,
     url: str,
-    body: str | None = None,
+    body: str | bytes | None = None,
     headers: dict[str, str] | None = None,
     cookies: dict[str, str] | None = None,
     client: httpx.Client | None = None,
