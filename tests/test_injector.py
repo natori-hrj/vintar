@@ -1,4 +1,3 @@
-
 import pytest
 
 from vintar.core.injector import inject
@@ -88,7 +87,7 @@ def test_second_occurrence_not_found():
         )
 
 
-def test_injection_preserves_other_request_fileds():
+def test_injection_preserves_other_request_fields():
     template = RequestTemplate(
         method="POST",
         url="http://localhost/filter",
@@ -117,3 +116,4 @@ def test_injection_preserves_other_request_fileds():
     assert result.url == template.url
     assert result.headers == template.headers
     assert result.cookies == template.cookies
+    assert result.body == template.body

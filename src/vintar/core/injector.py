@@ -13,9 +13,9 @@ def inject(
     point: InjectionPoint,
     payload: str,
 ) -> RequestTemplate:
-    """Inject a raw, unencoded payload into a of the request template.
+    """Inject a raw, unencoded payload into the request template.
 
-    The HTTP transport layer is resoinsible for URL encoding.
+    The HTTP transport layer is responsible for URL encoding.
     The original template is never modified.
     """
 
