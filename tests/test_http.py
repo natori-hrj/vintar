@@ -196,3 +196,32 @@ def test_binary_request_body():
         )
 
     assert result.status_code == 200
+
+
+@pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
+def test_redirect_is_not_followed(status_code: int):
+    requested_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+
+        return httpx.Response(
+            302,
+            headers={"Location": "https://example.com"},
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    with httpx.Client(
+        transport=transport,
+        follow_redirects=True,
+    ) as client:
+        result = send_request(
+            method="GET",
+            url="http://localhost/",
+            client=client,
+        )
+
+    assert result.status_code == 302
+    assert result.headers["location"] == "https://example.com"
+    assert requested_urls == ["http://localhost/"]

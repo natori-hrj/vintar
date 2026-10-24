@@ -40,6 +40,7 @@ def send_request(
             headers=request_headers,
             params=params,
             timeout=timeout,
+            follow_redirects=False,
         ) as response:
             chunks = bytearray()
             truncated = False
