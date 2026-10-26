@@ -5,6 +5,37 @@ from vintar.core.models import HttpResult
 from vintar.core.request import RequestTemplate
 
 
+def validate_template(template: RequestTemplate) -> None:
+    """Validate request fields before reserving a request budget."""
+
+    url = httpx.URL(template.url)
+    if url.query:
+        raise ValueError(
+            "URL query parameters must be provided through template.params."
+        )
+
+    header_names: set[str] = set()
+
+    for name, _ in template.headers:
+        normalized = name.lower()
+
+        if normalized in header_names:
+            raise ValueError(f"Duplicate HTTP header: {name}")
+
+        header_names.add(normalized)
+
+    if template.cookies and "cookie" in header_names:
+        raise ValueError("Cannot combine a Cookie header with template.cookies.")
+
+    cookie_names: set[str] = set()
+
+    for name, _ in template.cookies:
+        if name in cookie_names:
+            raise ValueError(f"Duplicate cookie: {name}")
+
+        cookie_names.add(name)
+
+
 def send_template(
     template: RequestTemplate,
     client: httpx.Client | None = None,
@@ -13,31 +44,10 @@ def send_template(
 ) -> HttpResult:
     """Send a request template through the shared HTTP client."""
 
-    url = httpx.URL(template.url)
+    validate_template(template)
 
-    if url.query:
-        raise ValueError(
-            "URL query parameters must be provided through template.params."
-        )
-
-    headers: dict[str, str] = {}
-
-    for name, value in template.headers:
-        if name.lower() in (key.lower() for key in headers):
-            raise ValueError(f"Duplicate HTTP header: {name}")
-
-        headers[name] = value
-
-    if template.cookies and any(name.lower() == "cookie" for name in headers):
-        raise ValueError("cannot combine a Cookie header with template.cookies.")
-
-    cookies: dict[str, str] = {}
-
-    for name, value in template.cookies:
-        if name in cookies:
-            raise ValueError(f"Duplicate cookie: {name}")
-
-        cookies[name] = value
+    headers = dict(template.headers)
+    cookies = dict(template.cookies)
 
     return send_request(
         method=template.method,
