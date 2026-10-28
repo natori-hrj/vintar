@@ -8,9 +8,23 @@ from vintar.core.budget import (
     RequestBudgetExceededError,
 )
 from vintar.core.executor import ExecutionContext
+from vintar.core.rate_limit import RateLimiter
 from vintar.core.request import RequestTemplate
 from vintar.core.scope import AllowedOrigin, ScopePolicy
 from vintar.core.transport import ScopedTransport
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+        self.delays: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.delays.append(seconds)
+        self.now += seconds
 
 
 def make_context(max_requests: int = 2) -> ExecutionContext:
@@ -94,27 +108,60 @@ def test_budget_exceeded_request_is_not_sent():
 
 
 def test_failed_request_still_consumes_budget():
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("Connection failed", request=request)
+    clock = FakeClock()
+    request_times: list[float] = []
 
-    context = make_context(max_requests=1)
+    limiter = RateLimiter(
+        requests_per_second=2,
+        _clock=clock.monotonic,
+        _sleep=clock.sleep,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_times.append(clock.now)
+
+        if len(request_times) == 1:
+            raise httpx.ConnectError("Connection failed", request=request)
+
+        return httpx.Response(200)
+
+    context = ExecutionContext(
+        scope=make_context().scope,
+        budget=RequestBudget(max_requests=2),
+        rate_limiter=limiter,
+    )
     template = RequestTemplate(
         method="GET",
         url="http://localhost:8000/",
     )
+    transport = httpx.MockTransport(handler)
 
     with pytest.raises(httpx.ConnectError):
         context.execute(
             template,
-            transport=httpx.MockTransport(handler),
+            transport=transport,
         )
 
-    assert context.budget.used_requests == 1
+    context.execute(template, transport=transport)
+
+    assert request_times == [0.0, 0.5]
+    assert clock.delays == [0.5]
+    assert context.budget.used_requests == 2
 
 
 def test_request_hook_cannot_bypass_scope():
     requests = []
-    context = make_context()
+    clock = FakeClock()
+    limiter = RateLimiter(
+        requests_per_second=2,
+        _clock=clock.monotonic,
+        _sleep=clock.sleep,
+    )
+    context = ExecutionContext(
+        scope=make_context().scope,
+        budget=RequestBudget(max_requests=2),
+        rate_limiter=limiter,
+    )
 
     def rewrite(request: httpx.Request) -> None:
         request.url = httpx.URL("http://example.com:8000/rewritten")
@@ -127,6 +174,7 @@ def test_request_hook_cannot_bypass_scope():
         transport=httpx.MockTransport(handler),
         scope=context.scope,
         budget=context.budget,
+        rate_limiter=context.rate_limiter,
     )
 
     with (
@@ -139,8 +187,15 @@ def test_request_hook_cannot_bypass_scope():
     ):
         client.get("http://localhost:8000/")
 
-    assert requests == []
-    assert context.budget.used_requests == 0
+    valid = RequestTemplate(
+        method="GET",
+        url="http://localhost:8000/",
+    )
+    context.execute(valid, transport=httpx.MockTransport(handler))
+
+    assert requests == ["http://localhost:8000/"]
+    assert clock.delays == []
+    assert context.budget.used_requests == 1
 
 
 def test_context_configuration_is_immutable():
@@ -157,6 +212,9 @@ def test_context_configuration_is_immutable():
 
     with pytest.raises(FrozenInstanceError):
         context.max_response_size = 999_999_999
+
+    with pytest.raises(FrozenInstanceError):
+        context.rate_limiter = RateLimiter(100)
 
 
 @pytest.mark.parametrize(
@@ -344,6 +402,7 @@ def test_owned_transport_is_closed():
         scope=context.scope,
         budget=context.budget,
         close_underlying=True,
+        rate_limiter=context.rate_limiter,
     )
 
     with httpx.Client(transport=guarded, trust_env=False) as client:
@@ -353,3 +412,179 @@ def test_owned_transport_is_closed():
 
     assert transport.close_calls == 1
     assert context.budget.used_requests == 1
+
+
+def test_execution_context_enforces_rate_limit():
+    clock = FakeClock()
+    request_times: list[float] = []
+
+    limiter = RateLimiter(
+        requests_per_second=2,
+        _clock=clock.monotonic,
+        _sleep=clock.sleep,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_times.append(clock.now)
+        return httpx.Response(200, text="ok")
+
+    context = ExecutionContext(
+        scope=make_context().scope,
+        budget=RequestBudget(max_requests=3),
+        rate_limiter=limiter,
+    )
+
+    template = RequestTemplate(
+        method="GET",
+        url="http://localhost:8000/",
+    )
+
+    transport = httpx.MockTransport(handler)
+
+    for _ in range(3):
+        context.execute(template, transport=transport)
+
+    assert request_times == [0.0, 0.5, 1.0]
+    assert clock.delays == [0.5, 0.5]
+    assert context.budget.used_requests == 3
+
+
+def test_budget_exceeded_does_not_wait():
+    clock = FakeClock()
+    requests: list[str] = []
+
+    limiter = RateLimiter(
+        requests_per_second=2,
+        _clock=clock.monotonic,
+        _sleep=clock.sleep,
+    )
+
+    context = ExecutionContext(
+        scope=make_context().scope,
+        budget=RequestBudget(max_requests=1),
+        rate_limiter=limiter,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200)
+
+    template = RequestTemplate(
+        method="GET",
+        url="http://localhost:8000/",
+    )
+
+    transport = httpx.MockTransport(handler)
+
+    context.execute(template, transport=transport)
+
+    with pytest.raises(RequestBudgetExceededError):
+        context.execute(template, transport=transport)
+
+    assert len(requests) == 1
+    assert clock.delays == []
+    assert context.budget.used_requests == 1
+
+
+def test_out_of_scope_does_not_acquire_rate_limit():
+    clock = FakeClock()
+    request_times: list[float] = []
+
+    limiter = RateLimiter(
+        requests_per_second=2,
+        _clock=clock.monotonic,
+        _sleep=clock.sleep,
+    )
+
+    context = ExecutionContext(
+        scope=make_context().scope,
+        budget=RequestBudget(max_requests=2),
+        rate_limiter=limiter,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_times.append(clock.now)
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+
+    invalid = RequestTemplate(
+        method="GET",
+        url="http://example.com:8000/",
+    )
+
+    valid = RequestTemplate(
+        method="GET",
+        url="http://localhost:8000/",
+    )
+
+    with pytest.raises(ValueError, match="outside the allowed scope"):
+        context.execute(invalid, transport=transport)
+
+    context.execute(valid, transport=transport)
+
+    assert request_times == [0.0]
+    assert clock.delays == []
+    assert context.budget.used_requests == 1
+
+
+def test_failed_rate_limit_wait_preserves_budget():
+    clock = FakeClock()
+    requests: list[str] = []
+
+    def interrupted_sleep(seconds: float) -> None:
+        raise RuntimeError("Sleep interrupted.")
+
+    limiter = RateLimiter(
+        requests_per_second=2,
+        _clock=clock.monotonic,
+        _sleep=interrupted_sleep,
+    )
+
+    context = ExecutionContext(
+        scope=make_context().scope,
+        budget=RequestBudget(max_requests=2),
+        rate_limiter=limiter,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200)
+
+    template = RequestTemplate(
+        method="GET",
+        url="http://localhost:8000/",
+    )
+
+    transport = httpx.MockTransport(handler)
+
+    context.execute(template, transport=transport)
+
+    with pytest.raises(RuntimeError, match="Sleep interrupted"):
+        context.execute(template, transport=transport)
+
+    assert len(requests) == 1
+    assert context.budget.used_requests == 2
+    assert context.budget.remaining == 0
+
+
+@pytest.mark.parametrize("invalid_limiter", [None, "disabled", 123])
+def test_context_rejects_invalid_rate_limiter(invalid_limiter):
+    with pytest.raises(TypeError, match="rate_limiter must be a RateLimiter"):
+        ExecutionContext(
+            scope=make_context().scope,
+            budget=RequestBudget(2),
+            rate_limiter=invalid_limiter,
+        )
+
+
+def test_scoped_transport_rejects_missing_rate_limiter():
+    context = make_context()
+
+    with pytest.raises(TypeError, match="rate_limiter must be a RateLimiter"):
+        ScopedTransport(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200)),
+            scope=context.scope,
+            budget=context.budget,
+            rate_limiter=None,
+        )

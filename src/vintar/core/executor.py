@@ -1,9 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
 from vintar.core.budget import RequestBudget
 from vintar.core.models import HttpResult
+from vintar.core.rate_limit import RateLimiter
 from vintar.core.request import RequestTemplate
 from vintar.core.scope import ScopePolicy, validate_scope
 from vintar.core.template import send_template, validate_template
@@ -27,6 +28,9 @@ class ExecutionContext:
     budget: RequestBudget
     timeout: float = 10.0
     max_response_size: int = 1_048_576
+    rate_limiter: RateLimiter = field(
+        default_factory=lambda: RateLimiter(requests_per_second=2.0)
+    )
 
     def __post_init__(self) -> None:
         if (
@@ -38,6 +42,9 @@ class ExecutionContext:
 
         if type(self.max_response_size) is not int or self.max_response_size <= 0:
             raise ValueError("Maximum response size must be positive.")
+
+        if not isinstance(self.rate_limiter, RateLimiter):
+            raise TypeError("rate_limiter must be a RateLimiter.")
 
     def execute(
         self,
@@ -67,6 +74,7 @@ class ExecutionContext:
             scope=self.scope,
             budget=self.budget,
             close_underlying=owns_transport,
+            rate_limiter=self.rate_limiter,
         )
 
         with httpx.Client(
