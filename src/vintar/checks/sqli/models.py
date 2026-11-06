@@ -1,5 +1,6 @@
 import math
 import re
+import sys
 from dataclasses import dataclass
 from enum import Enum
 
@@ -62,7 +63,11 @@ class Observation:
 
         if isinstance(self.elapsed, bool) or not isinstance(self.elapsed, (int, float)):
             raise TypeError("elapsed must be numeric.")
-        if not math.isfinite(self.elapsed) or self.elapsed < 0:
+        if (
+            self.elapsed < 0
+            or self.elapsed > sys.float_info.max
+            or not math.isfinite(self.elapsed)
+        ):
             raise ValueError("elapsed must be finite and non-negative.")
 
         if type(self.body_digest) is not str:
@@ -93,7 +98,11 @@ class ProbeFailure:
                 self.elapsed, (int, float)
             ):
                 raise TypeError("elapsed must be numeric or None.")
-            if not math.isfinite(self.elapsed) or self.elapsed < 0:
+            if (
+                self.elapsed < 0
+                or self.elapsed > sys.float_info.max
+                or not math.isfinite(self.elapsed)
+            ):
                 raise ValueError("elapsed must be finite and non-negative.")
 
 
@@ -114,7 +123,7 @@ class BooleanEvidence:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise TypeError(f"{name} must be numeric.")
-            if not math.isfinite(value) or not 0 <= value <= 1:
+            if not 0 <= value <= 1 or not math.isfinite(value):
                 raise ValueError(f"{name} must be between 0 and 1.")
 
 
@@ -175,7 +184,7 @@ class VerificationResult:
                 self.confidence, (int, float)
             ):
                 raise TypeError("confidence must be numeric or None.")
-            if not math.isfinite(self.confidence) or not 0 <= self.confidence <= 1:
+            if not 0 <= self.confidence <= 1 or not math.isfinite(self.confidence):
                 raise ValueError("confidence must be between 0 and 1.")
 
         if self.evidence is not None and not isinstance(self.evidence, BooleanEvidence):

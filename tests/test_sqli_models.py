@@ -137,7 +137,7 @@ def test_invalid_elapsed_type(invalid):
 
 @pytest.mark.parametrize(
     "invalid",
-    [-0.1, float("nan"), float("inf"), float("-inf")],
+    [-0.1, float("nan"), float("inf"), float("-inf"), 10**1000],
 )
 def test_invalid_elapsed_value(invalid):
     with pytest.raises(ValueError):
@@ -186,7 +186,7 @@ def test_invalid_similarity_type(invalid):
 
 @pytest.mark.parametrize(
     "invalid",
-    [-0.1, 1.1, float("nan"), float("inf"), float("-inf")],
+    [-0.1, 1.1, float("nan"), float("inf"), float("-inf"), 10**1000],
 )
 def test_invalid_similarity_value(invalid):
     with pytest.raises(ValueError):
@@ -211,7 +211,7 @@ def test_invalid_confidence_type(invalid):
 
 @pytest.mark.parametrize(
     "invalid",
-    [-0.1, 1.1, float("nan"), float("inf"), float("-inf")],
+    [-0.1, 1.1, float("nan"), float("inf"), float("-inf"), 10**1000],
 )
 def test_invalid_confidence_value(invalid):
     with pytest.raises(ValueError):
@@ -255,6 +255,15 @@ def test_probe_failure_accounts_for_request():
 
     assert result.verdict is Verdict.INCONCLUSIVE
     assert result.failures == (failure,)
+
+
+def test_probe_failure_rejects_huge_elapsed():
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        ProbeFailure(
+            kind=ProbeKind.TRUE,
+            error=ProbeError.CONNECTION,
+            elapsed=10**1000,
+        )
 
 
 @pytest.mark.parametrize("invalid", [None, "invalid", []])
