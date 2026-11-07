@@ -31,6 +31,7 @@ class ProbeError(str, Enum):
     TIMEOUT = "timeout"
     CONNECTION = "connection"
     RESPONSE_READ = "response_read"
+    BUDGET_EXCEEDED = "budget_exceeded"
     RATE_LIMIT = "rate_limit"
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
@@ -129,7 +130,11 @@ class BooleanEvidence:
 
 @dataclass(frozen=True, slots=True)
 class VerificationResult:
-    """Structured outcome of a SQLi verification attempt."""
+    """Structured outcome of a SQLi verification attempt.
+
+    request_count counts recorded probe attempts, including ProbeFailure objects.
+    It is not a copy of RequestBudget.used_requests.
+    """
 
     check_id: str
     verdict: Verdict

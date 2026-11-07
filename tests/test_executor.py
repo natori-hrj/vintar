@@ -8,7 +8,7 @@ from vintar.core.budget import (
     RequestBudgetExceededError,
 )
 from vintar.core.executor import ExecutionContext
-from vintar.core.rate_limit import RateLimiter
+from vintar.core.rate_limit import RateLimiter, RateLimitInterruptedError
 from vintar.core.request import RequestTemplate
 from vintar.core.scope import AllowedOrigin, ScopePolicy
 from vintar.core.transport import ScopedTransport
@@ -560,8 +560,11 @@ def test_failed_rate_limit_wait_preserves_budget():
 
     context.execute(template, transport=transport)
 
-    with pytest.raises(RuntimeError, match="Sleep interrupted"):
+    with pytest.raises(RateLimitInterruptedError) as exc_info:
         context.execute(template, transport=transport)
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert str(exc_info.value.__cause__) == "Sleep interrupted."
 
     assert len(requests) == 1
     assert context.budget.used_requests == 2

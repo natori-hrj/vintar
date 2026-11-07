@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from vintar.core.rate_limit import RateLimiter
+from vintar.core.rate_limit import RateLimiter, RateLimitInterruptedError
 
 
 class FakeClock:
@@ -146,8 +146,11 @@ def test_failed_sleep_preserves_deadline():
     limiter.acquire()
     clock.now = 0.25
 
-    with pytest.raises(RuntimeError, match="Sleep interrupted"):
+    with pytest.raises(RateLimitInterruptedError) as exc_info:
         limiter.acquire()
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert str(exc_info.value.__cause__) == "Sleep interrupted."
 
     limiter.acquire()
 

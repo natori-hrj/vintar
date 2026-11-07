@@ -4,11 +4,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 
+class RateLimitInterruptedError(RuntimeError):
+    """Raised when waiting for the next request is interrupted."""
+
+
 @dataclass(eq=False, slots=True, frozen=True)
 class RateLimiter:
     """Limit request start rate for single-threaded execution.
 
-    This class is not thread-safe
+    This class is not thread-safe.
 
     Custom clock and sleep functions are trusted test dependencies only.
     They must not be exposed through untrusted configuration.
@@ -48,7 +52,7 @@ class RateLimiter:
         return 1.0 / self.requests_per_second
 
     def acquire(self) -> None:
-        """wait until a request may begin."""
+        """Wait until a request may begin."""
 
         now = self._clock()
 
@@ -56,7 +60,12 @@ class RateLimiter:
             delay = self._next_allowed - now
 
             if delay > 0:
-                self._sleep(delay)
+                try:
+                    self._sleep(delay)
+                except Exception as exc:
+                    raise RateLimitInterruptedError(
+                        "Rate limit wait was interrupted."
+                    ) from exc
 
         now = self._clock()
         object.__setattr__(

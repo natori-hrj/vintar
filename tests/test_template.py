@@ -8,7 +8,7 @@ from vintar.core.request import (
     InjectionPoint,
     RequestTemplate,
 )
-from vintar.core.template import send_template
+from vintar.core.template import send_template, validate_template
 
 
 def test_send_template_preserves_duplicate_params():
@@ -115,3 +115,34 @@ def test_reject_ambiguous_headers_and_cookies(headers, cookies):
 
     with pytest.raises(ValueError):
         send_template(template)
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        RequestTemplate(method="BAD METHOD", url="http://localhost/"),
+        RequestTemplate(
+            method="GET",
+            url="http://localhost/",
+            headers=(("Bad Header", "value"),),
+        ),
+        RequestTemplate(
+            method="GET",
+            url="http://localhost/",
+            headers=(("X-Test", "unsafe\r\nvalue"),),
+        ),
+        RequestTemplate(
+            method="GET",
+            url="http://localhost/",
+            headers=(("Host", "example.com"),),
+        ),
+        RequestTemplate(
+            method="GET",
+            url="http://localhost/",
+            cookies=(("session", "unsafe\nvalue"),),
+        ),
+    ],
+)
+def test_reject_invalid_http_tokens_before_send(template):
+    with pytest.raises(ValueError):
+        validate_template(template)
