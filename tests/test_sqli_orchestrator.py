@@ -372,6 +372,7 @@ def test_rate_limit_interruption_stops_remaining_probes():
 
     assert received == ["1"]
     assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "probe_failed"
     assert result.request_count == 2
     assert len(result.observations) == 1
     assert result.failures[0].kind is ProbeKind.TRUE
@@ -496,3 +497,149 @@ def test_second_round_reverses_true_false_order():
     assert result.request_count == 6
     assert result.verdict is Verdict.NOT_DETECTED
     assert context.budget.used_requests == 6
+
+
+@pytest.mark.parametrize(
+    ("position", "expected_kind"),
+    [
+        (1, ProbeKind.BASELINE),
+        (2, ProbeKind.TRUE),
+        (3, ProbeKind.FALSE),
+        (4, ProbeKind.BASELINE),
+        (5, ProbeKind.FALSE),
+        (6, ProbeKind.TRUE),
+    ],
+)
+def test_http_429_stops_remaining_probes(
+    position: int,
+    expected_kind: ProbeKind,
+):
+    received: list[str] = []
+    context = make_context()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.append(request.url.params["id"])
+
+        if len(received) == position:
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "120"},
+                content=b"Too Many Requests",
+            )
+
+        return httpx.Response(200, content=b"ok")
+
+    result = verify(context, httpx.MockTransport(handler))
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "rate_limited"
+    assert result.request_count == position
+    assert len(result.observations) == position
+    assert result.failures == ()
+    assert result.evidence is None
+    assert result.confidence is None
+
+    assert result.observations[-1].kind is expected_kind
+    assert result.observations[-1].status_code == 429
+    assert result.observations[-1].truncated is True
+
+    assert len(received) == position
+    assert context.budget.used_requests == position
+    assert context.budget.remaining == 6 - position
+
+
+@pytest.mark.parametrize(
+    "retry_after",
+    [
+        pytest.param("120", id="seconds"),
+        pytest.param("0", id="zero"),
+        pytest.param("-1", id="negative"),
+        pytest.param("invalid", id="invalid"),
+        pytest.param("9" * 10_000, id="extreme"),
+        pytest.param("Wed, 21 Oct 2099 07:28:00 GMT", id="http-date"),
+    ],
+)
+def test_retry_after_does_not_trigger_retry(retry_after: str):
+    calls = 0
+    context = make_context()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+
+        return httpx.Response(
+            429,
+            headers={"Retry-After": retry_after},
+        )
+
+    result = verify(context, httpx.MockTransport(handler))
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "rate_limited"
+    assert result.request_count == 1
+    assert context.budget.used_requests == 1
+    assert calls == 1
+
+
+def test_http_503_does_not_use_rate_limited_reason():
+    context = make_context()
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, content=b"unavailable")
+
+    result = verify(context, httpx.MockTransport(handler))
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "non_success_status"
+    assert result.request_count == 6
+    assert calls == 6
+
+
+def test_429_response_is_not_a_probe_failure():
+    context = make_context()
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            429,
+            content=b"rate limited",
+        )
+    )
+
+    result = verify(context, transport)
+
+    assert result.request_count == 1
+    assert len(result.observations) == 1
+    assert result.observations[0].status_code == 429
+    assert result.observations[0].body_size == 0
+    assert result.observations[0].truncated is True
+    assert not hasattr(result.observations[0], "body")
+    assert not hasattr(result.observations[0], "headers")
+    assert "rate limited" not in repr(result)
+    assert result.failures == ()
+
+
+def test_context_can_be_reused_after_rate_limited_result():
+    context = make_context(max_requests=8)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return httpx.Response(429, content=b"slow down")
+        return httpx.Response(200, content=b"same")
+
+    transport = httpx.MockTransport(handler)
+
+    first = verify(context, transport)
+    second = verify(context, transport)
+
+    assert first.reason_code == "rate_limited"
+    assert first.request_count == 2
+    assert second.verdict is Verdict.NOT_DETECTED
+    assert second.request_count == 6
+    assert calls == 8
+    assert context.budget.used_requests == 8
+    assert context.budget.remaining == 0

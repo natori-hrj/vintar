@@ -16,7 +16,11 @@ def send_request(
     timeout: float = 10.0,
     max_response_size: int = 1_048_576,
 ) -> HttpResult:
-    """Send a GET request and return status, duration, and body size."""
+    """Send an HTTP request and return bounded response metadata and content.
+
+    HTTP 429 bodies are not consumed so callers can terminate rate-limited
+    workflows promptly. Such results are marked as truncated.
+    """
 
     if not 0 < timeout <= 60:
         raise ValueError("Timeout must be between 0 and 60 seconds.")
@@ -42,6 +46,16 @@ def send_request(
             timeout=timeout,
             follow_redirects=False,
         ) as response:
+            if response.status_code == 429:
+                elapsed = time.perf_counter() - start
+                return HttpResult(
+                    status_code=response.status_code,
+                    elapsed=elapsed,
+                    body=b"",
+                    headers=dict(response.headers),
+                    truncated=True,
+                )
+
             chunks = bytearray()
             truncated = False
 

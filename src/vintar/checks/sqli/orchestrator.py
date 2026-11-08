@@ -162,6 +162,19 @@ def verify_boolean_sqli(
         observations.append(_observation(kind, response))
         responses[kind].append(response)
 
+        if response.status_code == 429:
+            return VerificationResult(
+                check_id=check_id,
+                verdict=Verdict.INCONCLUSIVE,
+                observations=tuple(observations),
+                failures=tuple(failures),
+                request_count=len(observations) + len(failures),
+                reason_code="rate_limited",
+                reason=(
+                    "The target returned HTTP 429. Remaining probes were not sent."
+                ),
+            )
+
     if failures:
         return VerificationResult(
             check_id=check_id,

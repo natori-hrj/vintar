@@ -198,6 +198,32 @@ def test_binary_request_body():
     assert result.status_code == 200
 
 
+def test_rate_limited_response_body_is_not_read():
+    class UnreadableStream(httpx.SyncByteStream):
+        def __iter__(self):
+            raise AssertionError("HTTP 429 body must not be read.")
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            429,
+            headers={"Retry-After": "120", "X-Secret": "sensitive"},
+            stream=UnreadableStream(),
+        )
+    )
+
+    with httpx.Client(transport=transport) as client:
+        result = send_request(
+            method="GET",
+            url="http://localhost/",
+            client=client,
+        )
+
+    assert result.status_code == 429
+    assert result.body == b""
+    assert result.size == 0
+    assert result.truncated is True
+
+
 @pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
 def test_redirect_is_not_followed(status_code: int):
     requested_urls: list[str] = []
