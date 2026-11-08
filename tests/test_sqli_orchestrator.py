@@ -73,8 +73,8 @@ def test_sends_six_probes_in_order():
         "true-probe",
         "false-probe",
         "1",
-        "true-probe",
         "false-probe",
+        "true-probe",
     ]
     assert result.verdict is Verdict.INCONCLUSIVE
     assert result.reason_code == "boolean_candidate"
@@ -167,6 +167,40 @@ def test_timeout_stops_remaining_probes():
     assert result.failures[0].kind is ProbeKind.TRUE
     assert result.failures[0].error is ProbeError.TIMEOUT
     assert context.budget.used_requests == 2
+
+
+@pytest.mark.parametrize(
+    ("failure_position", "expected_kind"),
+    [
+        (1, ProbeKind.BASELINE),
+        (2, ProbeKind.TRUE),
+        (3, ProbeKind.FALSE),
+        (4, ProbeKind.BASELINE),
+        (5, ProbeKind.FALSE),
+        (6, ProbeKind.TRUE),
+    ],
+)
+def test_failure_kind_matches_reordered_probe_plan(
+    failure_position,
+    expected_kind,
+):
+    context = make_context()
+    received: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.append(request.url.params["id"])
+        if len(received) == failure_position:
+            raise httpx.ReadError("Probe failed.", request=request)
+        return httpx.Response(200, content=b"ok")
+
+    result = verify(context, httpx.MockTransport(handler))
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.request_count == failure_position
+    assert len(result.observations) == failure_position - 1
+    assert result.failures[0].kind is expected_kind
+    assert result.failures[0].error is ProbeError.RESPONSE_READ
+    assert context.budget.used_requests == failure_position
 
 
 @pytest.mark.parametrize(
@@ -414,7 +448,8 @@ def test_redirect_response_is_not_followed():
 
     result = verify(context, httpx.MockTransport(handler))
 
-    assert result.verdict is Verdict.NOT_DETECTED
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "non_success_status"
     assert len(received) == 6
     assert all(url.startswith("http://localhost:8000/") for url in received)
     assert context.budget.used_requests == 6
@@ -432,4 +467,32 @@ def test_truncated_responses_are_inconclusive():
     assert result.reason_code == "truncated_response"
     assert result.request_count == 6
     assert all(observation.truncated for observation in result.observations)
+    assert context.budget.used_requests == 6
+
+
+def test_second_round_reverses_true_false_order():
+    received: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params["id"]
+        received.append(value)
+        return httpx.Response(200, content=b"same")
+
+    context = make_context()
+    result = verify(context, httpx.MockTransport(handler))
+
+    assert received[:3] == [
+        "1",
+        "true-probe",
+        "false-probe",
+    ]
+
+    assert received[3:] == [
+        "1",
+        "false-probe",
+        "true-probe",
+    ]
+
+    assert result.request_count == 6
+    assert result.verdict is Verdict.NOT_DETECTED
     assert context.budget.used_requests == 6

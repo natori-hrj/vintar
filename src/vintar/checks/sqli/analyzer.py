@@ -100,6 +100,13 @@ def analyze_boolean_responses(
             "At least one response was truncated.",
         )
 
+    if any(not 200 <= item.status_code < 300 for item in observations):
+        return result(
+            Verdict.INCONCLUSIVE,
+            "non_success_status",
+            "At least one probe returned a non-2xx HTTP status.",
+        )
+
     if not all(_stable(responses) for _, responses in groups):
         return result(
             Verdict.INCONCLUSIVE,
@@ -125,7 +132,8 @@ def analyze_boolean_responses(
         return result(
             Verdict.NOT_DETECTED,
             "no_boolean_difference",
-            "No response difference was detected in these probes.",
+            "No Boolean response difference was detected in these six probes; "
+            "this does not prove the target is not vulnerable.",
             evidence,
         )
 
@@ -133,7 +141,7 @@ def analyze_boolean_responses(
         return result(
             Verdict.INCONCLUSIVE,
             "boolean_candidate",
-            "Reproducible Boolean differential detected;"
+            "Reproducible Boolean differential detected; "
             "additional verification is required.",
             evidence,
         )

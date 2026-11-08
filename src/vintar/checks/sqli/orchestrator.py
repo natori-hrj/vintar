@@ -20,8 +20,6 @@ from vintar.core.request import InjectionPoint, RequestTemplate
 from vintar.core.scope import validate_scope
 from vintar.core.template import validate_template
 
-PROBE_COUNT = 6
-
 
 def _observation(
     kind: ProbeKind,
@@ -106,7 +104,16 @@ def verify_boolean_sqli(
         validate_template(item)
         validate_scope(item.url, context.scope)
 
-    if context.budget.remaining < PROBE_COUNT:
+    plan = (
+        (ProbeKind.BASELINE, template),
+        (ProbeKind.TRUE, true_template),
+        (ProbeKind.FALSE, false_template),
+        (ProbeKind.BASELINE, template),
+        (ProbeKind.FALSE, false_template),
+        (ProbeKind.TRUE, true_template),
+    )
+
+    if context.budget.remaining < len(plan):
         return VerificationResult(
             check_id=check_id,
             verdict=Verdict.INCONCLUSIVE,
@@ -117,18 +124,11 @@ def verify_boolean_sqli(
             reason="Insufficient request budget for six probes.",
         )
 
-    plan = planned_templates * 2
-    kinds = (
-        ProbeKind.BASELINE,
-        ProbeKind.TRUE,
-        ProbeKind.FALSE,
-    ) * 2
-
     observations: list[Observation] = []
     failures: list[ProbeFailure] = []
     responses: dict[ProbeKind, list[HttpResult]] = {kind: [] for kind in ProbeKind}
 
-    for kind, request_template in zip(kinds, plan, strict=True):
+    for kind, request_template in plan:
         try:
             response = context.execute(
                 request_template,

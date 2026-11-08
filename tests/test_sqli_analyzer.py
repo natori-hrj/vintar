@@ -58,6 +58,7 @@ def test_identical_responses_are_not_detected():
 
     assert result.verdict is Verdict.NOT_DETECTED
     assert result.reason_code == "no_boolean_difference"
+    assert "does not prove" in result.reason
 
 
 def test_unstable_baseline_is_inconclusive():
@@ -114,7 +115,7 @@ def test_unexpected_difference_is_inconclusive():
     assert result.reason_code == "unexpected_difference"
 
 
-def test_status_code_difference_is_detected():
+def test_non_success_status_is_inconclusive():
     result = analyze(
         false_responses=(
             response(b"A", status_code=403),
@@ -123,7 +124,9 @@ def test_status_code_difference_is_detected():
     )
 
     assert result.verdict is Verdict.INCONCLUSIVE
-    assert result.reason_code == "boolean_candidate"
+    assert result.reason_code == "non_success_status"
+    assert result.evidence is None
+    assert result.request_count == 6
 
 
 def test_result_contains_six_observations():
@@ -248,3 +251,96 @@ def test_invalid_http_result_metadata_is_rejected(field, invalid, error):
         analyze(
             false_responses=(invalid_response, invalid_response),
         )
+
+
+@pytest.mark.parametrize(
+    "status_code",
+    [100, 199, 300, 301, 302, 401, 403, 404, 429, 500, 503, 599],
+)
+def test_non_success_responses_are_inconclusive(status_code):
+    result = analyze(
+        false_responses=(
+            response(b"blocked", status_code=status_code),
+            response(b"blocked", status_code=status_code),
+        )
+    )
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "non_success_status"
+    assert result.evidence is None
+
+
+def test_all_blocked_responses_are_not_marked_not_detected():
+    blocked = (
+        response(b"Access denied", status_code=403),
+        response(b"Access denied", status_code=403),
+    )
+
+    result = analyze(
+        baseline=blocked,
+        true_responses=blocked,
+        false_responses=blocked,
+    )
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "non_success_status"
+
+
+def test_non_success_takes_priority_over_instability():
+    result = analyze(
+        false_responses=(
+            response(b"blocked", status_code=403),
+            response(b"changed", status_code=403),
+        )
+    )
+
+    assert result.reason_code == "non_success_status"
+    assert result.verdict is Verdict.INCONCLUSIVE
+
+
+def test_truncation_takes_priority_over_non_success():
+    result = analyze(
+        false_responses=(
+            response(b"blocked", status_code=403),
+            response(b"blocked", status_code=403, truncated=True),
+        )
+    )
+
+    assert result.reason_code == "truncated_response"
+
+
+def test_successful_statuses_remain_comparable():
+    result = analyze(
+        baseline=(
+            response(b"A", status_code=200),
+            response(b"A", status_code=200),
+        ),
+        true_responses=(
+            response(b"A", status_code=200),
+            response(b"A", status_code=200),
+        ),
+        false_responses=(
+            response(b"B", status_code=201),
+            response(b"B", status_code=201),
+        ),
+    )
+
+    assert result.reason_code == "boolean_candidate"
+    assert result.verdict is Verdict.INCONCLUSIVE
+
+
+@pytest.mark.parametrize("status_code", [200, 201, 204, 299])
+def test_all_2xx_status_boundaries_remain_comparable(status_code):
+    responses = (
+        response(b"same", status_code=status_code),
+        response(b"same", status_code=status_code),
+    )
+
+    result = analyze(
+        baseline=responses,
+        true_responses=responses,
+        false_responses=responses,
+    )
+
+    assert result.verdict is Verdict.NOT_DETECTED
+    assert result.reason_code == "no_boolean_difference"
