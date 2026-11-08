@@ -344,3 +344,68 @@ def test_all_2xx_status_boundaries_remain_comparable(status_code):
 
     assert result.verdict is Verdict.NOT_DETECTED
     assert result.reason_code == "no_boolean_difference"
+
+
+def test_possible_dynamic_response_is_inconclusive():
+    first = b"Welcome! request_id=abc12345; status=OK"
+    second = b"Welcome! request_id=xyz98765; status=OK"
+
+    result = analyze(
+        baseline=(
+            response(first),
+            response(second),
+        ),
+    )
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "possible_dynamic_response"
+    assert result.evidence is None
+    assert result.request_count == 6
+
+
+def test_mixed_instability_remains_inconclusive():
+    result = analyze(
+        baseline=(
+            response(b"Welcome! request_id=abc12345; status=OK"),
+            response(b"Welcome! request_id=xyz98765; status=OK"),
+        ),
+        true_responses=(
+            response(b"completely different response A"),
+            response(b"another response B"),
+        ),
+    )
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "unstable_response"
+
+
+def test_truncation_still_takes_priority_over_dynamic_content():
+    result = analyze(
+        baseline=(
+            response(b"Welcome! request_id=abc12345; status=OK"),
+            response(b"Welcome! request_id=xyz98765; status=OK"),
+        ),
+        false_responses=(
+            response(b"B"),
+            response(b"B", truncated=True),
+        ),
+    )
+
+    assert result.reason_code == "truncated_response"
+    assert result.verdict is Verdict.INCONCLUSIVE
+
+
+def test_non_success_still_takes_priority_over_dynamic_content():
+    result = analyze(
+        baseline=(
+            response(b"Welcome! request_id=abc12345; status=OK"),
+            response(b"Welcome! request_id=xyz98765; status=OK"),
+        ),
+        false_responses=(
+            response(b"blocked", status_code=403),
+            response(b"blocked", status_code=403),
+        ),
+    )
+
+    assert result.reason_code == "non_success_status"
+    assert result.verdict is Verdict.INCONCLUSIVE

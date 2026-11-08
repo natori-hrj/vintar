@@ -1,5 +1,6 @@
 import hashlib
 
+from vintar.checks.sqli.dynamic import detect_dynamic_region
 from vintar.checks.sqli.models import (
     BooleanEvidence,
     Observation,
@@ -107,7 +108,22 @@ def analyze_boolean_responses(
             "At least one probe returned a non-2xx HTTP status.",
         )
 
-    if not all(_stable(responses) for _, responses in groups):
+    unstable_pairs = [responses for _, responses in groups if not _stable(responses)]
+
+    if unstable_pairs:
+        possible_dynamic = all(
+            detect_dynamic_region(responses[0], responses[1]) is not None
+            for responses in unstable_pairs
+        )
+
+        if possible_dynamic:
+            return result(
+                Verdict.INCONCLUSIVE,
+                "possible_dynamic_response",
+                "Repeated probes contain small localized "
+                "differences; no Boolean conclusion was made.",
+            )
+
         return result(
             Verdict.INCONCLUSIVE,
             "unstable_response",
