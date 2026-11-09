@@ -50,3 +50,12 @@ def test_empty_allowed_origins():
 def test_invalid_port():
     with pytest.raises(ValueError):
         AllowedOrigin("http", "localhost", 70000)
+
+
+def test_explicit_zero_port_is_not_treated_as_default_port():
+    default_port_policy = ScopePolicy(
+        allowed_origins=frozenset({AllowedOrigin("http", "localhost", 80)})
+    )
+
+    with pytest.raises(ValueError):
+        validate_scope("http://localhost:0", default_port_policy)

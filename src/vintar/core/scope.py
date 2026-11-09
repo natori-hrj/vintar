@@ -59,7 +59,11 @@ def validate_scope(url: str, policy: ScopePolicy) -> None:
     if parsed.username or parsed.password:
         raise ValueError("URL credentials are not allowed.")
 
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = (
+        parsed.port
+        if parsed.port is not None
+        else (443 if parsed.scheme == "https" else 80)
+    )
 
     origin = AllowedOrigin(
         scheme=parsed.scheme,

@@ -5,6 +5,7 @@ import typer
 from rich.console import Console
 
 from vintar.core.http import send_request
+from vintar.sqli_cli import sqli_app
 
 ## cli command
 app = typer.Typer(
@@ -15,6 +16,7 @@ app = typer.Typer(
 
 http_app = typer.Typer(help="HTTP inspection commands.")
 app.add_typer(http_app, name="http")
+app.add_typer(sqli_app, name="sqli")
 
 console = Console()
 
