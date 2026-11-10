@@ -10,14 +10,37 @@ class AllowedOrigin:
     port: int
 
     def __post_init__(self) -> None:
+        if type(self.scheme) is not str:
+            raise ValueError("Invalid origin scheme.")
+        if type(self.host) is not str:
+            raise ValueError("Invalid origin host.")
+
         scheme = self.scheme.lower()
-        host = self.host.lower()
+        host = self.host
 
         if scheme not in ("http", "https"):
             raise ValueError("Unsupported origin scheme.")
 
         if not host:
             raise ValueError("Origin host cannot be empty.")
+
+        if any(delimiter in host for delimiter in "/?#@"):
+            raise ValueError("Invalid origin host.")
+
+        authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        try:
+            parsed_host = httpx.URL(f"http://{authority}")
+            if (
+                not parsed_host.host
+                or parsed_host.username
+                or parsed_host.password
+                or parsed_host.port is not None
+                or parsed_host.path != "/"
+            ):
+                raise ValueError("Invalid origin host.")
+            host = parsed_host.raw_host.decode("ascii").lower()
+        except (UnicodeError, ValueError):
+            raise ValueError("Invalid origin host.") from None
 
         if type(self.port) is not int or not 1 <= self.port <= 65535:
             raise ValueError("Invalid origin port.")
