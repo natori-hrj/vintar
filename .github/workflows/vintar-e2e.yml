@@ -1,0 +1,84 @@
+
+name: Vintar CI E2E Verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vintar-ci-e2e
+  cancel-in-progress: false
+
+jobs:
+  validate-ref:
+    name: Require main branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+
+    steps:
+      - name: Reject non-main dispatch
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        shell: bash
+        run: |
+          if [[ "$DISPATCH_REF" != "refs/heads/main" ]]; then
+            echo "Vintar: main branch required." >&2
+            exit 2
+          fi
+
+  e2e:
+    name: Verify Vintar CI exit contracts
+    needs: validate-ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out trusted source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          python-version: "3.13"
+          enable-cache: false
+          github-token: ""
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Run loopback E2E
+        run: |
+          uv run --locked python -m scripts.run_ci_e2e
+
+      - name: Verify expected artifacts exist
+        run: |
+          set -euo pipefail
+
+          dir="$RUNNER_TEMP/vintar-e2e-reports"
+          shopt -s nullglob
+          reports=("$dir"/*.json)
+
+          test "${#reports[@]}" -eq 3
+          test -f "$dir/pass.json"
+          test -f "$dir/fail.json"
+          test -f "$dir/inconclusive.json"
+          test ! -e "$dir/error.json"
+
+          echo "All four Vintar CI paths verified."
+
+      - name: Upload validated E2E reports
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vintar-e2e-reports
+          path: ${{ runner.temp }}/vintar-e2e-reports/*.json
+          if-no-files-found: error
+          retention-days: 1
