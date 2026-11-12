@@ -1,3 +1,5 @@
+"""Vintar command-line interface."""
+
 from typing import Annotated
 
 import httpx
@@ -5,9 +7,9 @@ import typer
 from rich.console import Console
 
 from vintar.core.http import send_request
+from vintar.regression_cli import verify_command
 from vintar.sqli_cli import sqli_app
 
-## cli command
 app = typer.Typer(
     name="vintar",
     help="Vintar - Precision Security Toolkit",
@@ -17,6 +19,7 @@ app = typer.Typer(
 http_app = typer.Typer(help="HTTP inspection commands.")
 app.add_typer(http_app, name="http")
 app.add_typer(sqli_app, name="sqli")
+app.command("verify")(verify_command)
 
 console = Console()
 
@@ -38,7 +41,7 @@ def http_send(
     url: str,
     body: Annotated[
         str | None,
-        typer.Option("--body", help="HTTP request body."),
+        typer.Option("--body", help="Request body."),
     ] = None,
     header: Annotated[
         list[str] | None,
@@ -61,7 +64,7 @@ def http_send(
         typer.Option(
             "--param",
             "-p",
-            help="Query parameter (name=value). Rpeatable.",
+            help="Query parameter (name=value); repeatable.",
         ),
     ] = None,
     timeout: Annotated[
@@ -75,7 +78,7 @@ def http_send(
         ),
     ] = 10.0,
 ) -> None:
-    """Send a GET request and inspect the response."""
+    """Send a GET or POST request and inspect the response."""
     method = method.upper()
 
     if method not in {"GET", "POST"}:
@@ -144,7 +147,7 @@ def http_send(
 
     console.print(f"[cyan]Target:[/cyan] {url}")
     console.print(f"[cyan]Method:[/cyan] {method}")
-    console.print(f"[cyan]Satus:[/cyan] {result.status_code}")
+    console.print(f"[cyan]Status:[/cyan] {result.status_code}")
     console.print(f"[cyan]Response time:[/cyan] {result.elapsed:.3f}s")
     console.print(f"[cyan]Content size:[/cyan] {result.size} bytes")
 
