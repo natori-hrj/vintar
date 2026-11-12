@@ -11,8 +11,10 @@ from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
+from vintar.core.injector import inject
 from vintar.core.rate_limit import RateLimiter
 from vintar.core.scope import ScopePolicy, validate_scope
+from vintar.core.template import validate_template
 from vintar.regression.cases import RegressionCase
 
 _CASE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
@@ -20,14 +22,14 @@ _CASE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
 @dataclass(frozen=True, slots=True, repr=False)
 class TrustedExecutionPolicy:
-    """Trusted upper limits supplied by the runner's operator.
+    """Trusted limits supplied independently of regression cases.
 
-    Never construct this policy from an untrusted regression case.
-    Scope enforcement compares URL origins and does not verify DNS-resolved
-    destination IP addresses. Network egress controls remain necessary.
+    Never derive this policy from an untrusted case or pull request.
+    Scope is origin-based, not DNS-resolved-IP-based. Use network-level
+    egress controls for untrusted targets.
 
-    Limits apply to one ``run_regression_case`` call. Aggregate limits for
-    multi-case execution are not implemented by this runner.
+    max_requests applies to one run_regression_case call, or to an
+    entire run_regression_batch call when used as a batch policy.
     """
 
     scope: ScopePolicy
@@ -55,25 +57,24 @@ class TrustedExecutionPolicy:
             if type(value) not in (int, float):
                 raise ValueError("Invalid trusted execution limit.")
 
-            lower_bound_valid = (
-                value >= minimum if minimum_inclusive else value > minimum
-            )
-            if not lower_bound_valid or value > maximum:
+            valid_lower = value >= minimum if minimum_inclusive else value > minimum
+            if not valid_lower or value > maximum:
                 raise ValueError("Invalid trusted execution limit.")
 
             normalized = float(value)
             if not math.isfinite(normalized):
                 raise ValueError("Invalid trusted execution limit.")
+
             object.__setattr__(self, name, normalized)
 
 
 class RegressionStatus(str, Enum):
-    """Security-gate outcome, separate from a diagnostic verdict.
+    """Security-gate result, independent of expected-verdict matching.
 
-    PASS only means that this check returned the expected NOT_DETECTED result;
-    it is not proof that the target has no vulnerability. Vulnerable fixtures
-    use ``expectation_match`` for detector evaluation while their gate status
-    remains FAIL.
+    PASS means only that the expected NOT_DETECTED verdict was observed for
+    this check. It is not proof that the target is free of vulnerabilities.
+    Vulnerable fixtures use expectation_match for detector evaluation while
+    their security-gate status remains FAIL.
     """
 
     PASS = "pass"
@@ -83,7 +84,7 @@ class RegressionStatus(str, Enum):
 
 @dataclass(frozen=True, slots=True, repr=False)
 class RegressionOutcome:
-    """Observed verification result and independent expectation match."""
+    """Observed verdict, expectation match, and security-gate result."""
 
     case_id: str
     expected_verdict: Verdict
@@ -97,6 +98,7 @@ class RegressionOutcome:
             or _CASE_ID_PATTERN.fullmatch(self.case_id) is None
         ):
             raise ValueError("Invalid case identifier.")
+
         if not isinstance(self.expected_verdict, Verdict):
             raise TypeError("Invalid expected verdict.")
         if not isinstance(self.verification, VerificationResult):
@@ -109,15 +111,12 @@ class RegressionOutcome:
         if self.verification.check_id != self.case_id:
             raise ValueError("Verification case identifier mismatch.")
 
-        expected_match = self.verification.verdict is self.expected_verdict
-        if self.expectation_match != expected_match:
+        match = self.verification.verdict is self.expected_verdict
+
+        if self.expectation_match != match:
             raise ValueError("Inconsistent expectation match.")
 
-        expected_status = _classify(
-            self.verification.verdict,
-            expected_match,
-        )
-        if self.status is not expected_status:
+        if self.status is not _classify(self.verification.verdict, match):
             raise ValueError("Inconsistent regression status.")
 
 
@@ -125,7 +124,7 @@ def _classify(
     actual: Verdict,
     expectation_match: bool,
 ) -> RegressionStatus:
-    """An inconclusive or vulnerable result must never pass."""
+    """An inconclusive or vulnerable verdict never passes the gate."""
     if actual is Verdict.INCONCLUSIVE:
         return RegressionStatus.INCONCLUSIVE
 
@@ -138,49 +137,58 @@ def _classify(
     return RegressionStatus.FAIL
 
 
-def run_regression_case(
+def _effective_scope(
     case: RegressionCase,
-    *,
     policy: TrustedExecutionPolicy,
-    transport: httpx.BaseTransport | None = None,
-) -> RegressionOutcome:
-    """Execute a case within independently trusted limits.
-
-    The caller must obtain policy from a trusted source, never
-    from the case or an untrusted pull request.
-
-    The optional transport is for trusted tests only.
-    Never expose it through user configuration or LLM tools.
-
-    Each call owns an independent budget and rate limiter. A future batch
-    runner must add aggregate request, rate, and concurrency limits rather
-    than assuming this single-case policy provides them.
-    """
+) -> ScopePolicy:
+    """Preflight the complete probe plan without sending HTTP."""
     if not isinstance(case, RegressionCase):
         raise TypeError("case must be a RegressionCase.")
     if not isinstance(policy, TrustedExecutionPolicy):
         raise TypeError("policy must be a TrustedExecutionPolicy.")
-    if transport is not None and not isinstance(transport, httpx.BaseTransport):
-        raise TypeError("Invalid test transport.")
 
-    # The case may only restrict the trusted scope, never expand it.
     allowed = case.scope.allowed_origins & policy.scope.allowed_origins
 
     if not allowed:
         raise ValueError("Case is outside the trusted execution scope.")
 
-    effective_scope = ScopePolicy(allowed_origins=frozenset(allowed))
+    scope = ScopePolicy(allowed_origins=frozenset(allowed))
 
-    # Reject disallowed targets before any HTTP operation.
-    validate_scope(case.template.url, effective_scope)
+    templates = (
+        case.template,
+        inject(case.template, case.point, case.true_payload),
+        inject(case.template, case.point, case.false_payload),
+    )
 
-    # A six-probe verification requires six reserved requests.
-    if policy.max_requests < case.max_requests:
-        raise ValueError("Trusted request budget is insufficient.")
+    if (
+        templates[0] == templates[1]
+        or templates[0] == templates[2]
+        or templates[1] == templates[2]
+    ):
+        raise ValueError("Invalid regression probe plan.")
+
+    for template in templates:
+        validate_template(template)
+        validate_scope(template.url, scope)
+
+    return scope
+
+
+def _run_with_resources(
+    case: RegressionCase,
+    *,
+    policy: TrustedExecutionPolicy,
+    budget: RequestBudget,
+    rate_limiter: RateLimiter,
+    transport: httpx.BaseTransport | None = None,
+    scope: ScopePolicy | None = None,
+) -> RegressionOutcome:
+    """Internal execution path for single-case and batch runners."""
+    effective_scope = scope if scope is not None else _effective_scope(case, policy)
 
     context = ExecutionContext(
         scope=effective_scope,
-        budget=RequestBudget(case.max_requests),
+        budget=budget,
         timeout=min(
             case.timeout_seconds,
             policy.max_timeout_seconds,
@@ -189,12 +197,7 @@ def run_regression_case(
             case.max_response_size,
             policy.max_response_size,
         ),
-        rate_limiter=RateLimiter(
-            requests_per_second=min(
-                case.requests_per_second,
-                policy.max_requests_per_second,
-            )
-        ),
+        rate_limiter=rate_limiter,
     )
 
     verification = verify_boolean_sqli(
@@ -218,4 +221,42 @@ def run_regression_case(
             verification.verdict,
             expectation_match,
         ),
+    )
+
+
+def run_regression_case(
+    case: RegressionCase,
+    *,
+    policy: TrustedExecutionPolicy,
+    transport: httpx.BaseTransport | None = None,
+) -> RegressionOutcome:
+    """Execute one case within independent trusted limits.
+
+    The policy must come from a trusted caller, not an untrusted case.
+    Custom transports are trusted test dependencies only and must not be
+    exposed through configuration, Discovery, CI input, or LLM tools.
+
+    For aggregate limits across multiple cases, use
+    run_regression_batch instead.
+    """
+    if transport is not None and not isinstance(transport, httpx.BaseTransport):
+        raise TypeError("Invalid test transport.")
+
+    scope = _effective_scope(case, policy)
+
+    if policy.max_requests < case.max_requests:
+        raise ValueError("Trusted request budget is insufficient.")
+
+    return _run_with_resources(
+        case,
+        policy=policy,
+        scope=scope,
+        budget=RequestBudget(case.max_requests),
+        rate_limiter=RateLimiter(
+            requests_per_second=min(
+                case.requests_per_second,
+                policy.max_requests_per_second,
+            )
+        ),
+        transport=transport,
     )
