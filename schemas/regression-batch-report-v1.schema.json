@@ -1,0 +1,374 @@
+
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/natori-hrj/vintar/blob/main/schemas/regression-batch-report-v1.schema.json",
+  "title": "Vintar Regression Batch Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "status",
+    "complete",
+    "exit_code",
+    "planned_case_ids",
+    "executed_case_ids",
+    "not_run_case_ids",
+    "planned_count",
+    "executed_count",
+    "requests_used",
+    "counts",
+    "outcomes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "report_type": {
+      "const": "regression_batch"
+    },
+    "status": {
+      "$ref": "#/$defs/status"
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "exit_code": {
+      "enum": [0, 1, 3]
+    },
+    "planned_case_ids": {
+      "allOf": [
+        { "$ref": "#/$defs/identifiers" },
+        { "minItems": 1 }
+      ]
+    },
+    "executed_case_ids": {
+      "allOf": [
+        { "$ref": "#/$defs/identifiers" },
+        { "minItems": 1 }
+      ]
+    },
+    "not_run_case_ids": {
+      "$ref": "#/$defs/identifiers"
+    },
+    "planned_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 128
+    },
+    "executed_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 128
+    },
+    "requests_used": {
+      "$ref": "#/$defs/count"
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pass",
+        "fail",
+        "inconclusive",
+        "not_run"
+      ],
+      "properties": {
+        "pass": {
+          "$ref": "#/$defs/count"
+        },
+        "fail": {
+          "$ref": "#/$defs/count"
+        },
+        "inconclusive": {
+          "$ref": "#/$defs/count"
+        },
+        "not_run": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "outcomes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "$ref": "#/$defs/outcome"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "pass" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "complete": { "const": true },
+          "exit_code": { "const": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "fail" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": { "exit_code": { "const": 1 } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "inconclusive" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": { "exit_code": { "const": 3 } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "complete": { "const": true } },
+        "required": ["complete"]
+      },
+      "then": {
+        "properties": { "not_run_case_ids": { "maxItems": 0 } }
+      },
+      "else": {
+        "properties": {
+          "status": { "enum": ["fail", "inconclusive"] },
+          "not_run_case_ids": { "minItems": 1 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+      "maxLength": 64
+    },
+    "identifiers": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "status": {
+      "enum": ["pass", "fail", "inconclusive"]
+    },
+    "verdict": {
+      "enum": [
+        "vulnerable",
+        "not_detected",
+        "inconclusive"
+      ]
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "expected_verdict",
+        "actual_verdict",
+        "expectation_match",
+        "status",
+        "verification"
+      ],
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "expected_verdict": {
+          "$ref": "#/$defs/verdict"
+        },
+        "actual_verdict": {
+          "$ref": "#/$defs/verdict"
+        },
+        "expectation_match": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "check_type",
+        "verdict",
+        "reason_code",
+        "request_count",
+        "observations",
+        "failures",
+        "evidence",
+        "confidence"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "check_type": {
+          "const": "sqli_boolean"
+        },
+        "verdict": {
+          "$ref": "#/$defs/verdict"
+        },
+        "reason_code": {
+          "enum": [
+            "boolean_candidate",
+            "boolean_differential",
+            "budget_unavailable",
+            "connection_error",
+            "insufficient_evidence",
+            "no_boolean_difference",
+            "non_success_status",
+            "possible_dynamic_response",
+            "probe_failed",
+            "rate_limited",
+            "truncated_response",
+            "unexpected_difference",
+            "unstable_response"
+          ]
+        },
+        "request_count": {
+          "$ref": "#/$defs/count"
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/observation"
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/failure"
+          }
+        },
+        "evidence": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/evidence"
+            }
+          ]
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "status_code",
+        "body_size",
+        "elapsed",
+        "body_digest",
+        "truncated"
+      ],
+      "properties": {
+        "kind": {
+          "enum": ["baseline", "true", "false"]
+        },
+        "status_code": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "body_size": {
+          "$ref": "#/$defs/count"
+        },
+        "elapsed": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1.7976931348623157e+308
+        },
+        "body_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "error",
+        "elapsed"
+      ],
+      "properties": {
+        "kind": {
+          "enum": ["baseline", "true", "false"]
+        },
+        "error": {
+          "enum": [
+            "timeout",
+            "connection",
+            "response_read",
+            "budget_exceeded",
+            "rate_limit",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "elapsed": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1.7976931348623157e+308
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_true_similarity",
+        "baseline_false_similarity",
+        "true_false_similarity"
+      ],
+      "properties": {
+        "baseline_true_similarity": {
+          "$ref": "#/$defs/similarity"
+        },
+        "baseline_false_similarity": {
+          "$ref": "#/$defs/similarity"
+        },
+        "true_false_similarity": {
+          "$ref": "#/$defs/similarity"
+        }
+      }
+    },
+    "similarity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}
