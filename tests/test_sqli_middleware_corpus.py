@@ -23,7 +23,11 @@ from vintar.checks.sqli.confirmation_runner import (
     ConfirmationStatus,
     verify_boolean_sqli_with_confirmation,
 )
-from vintar.checks.sqli.models import Verdict
+from vintar.checks.sqli.cross_phase import (
+    CrossPhaseStatus,
+    assess_cross_phase_consistency,
+)
+from vintar.checks.sqli.models import ProbeKind, Verdict
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -573,6 +577,59 @@ def test_cache_rollover_can_look_like_a_stable_candidate(
     # The current evidence only compares responses within
     # the confirmation stage, not against the first six.
     # A coherent cache-generation switch can go unnoticed.
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_status", "mismatched_kinds"),
+    [
+        (
+            "waf200_mimic",
+            CrossPhaseStatus.MATCH,
+            (),
+        ),
+        (
+            "cache_rollover",
+            CrossPhaseStatus.MISMATCH,
+            (
+                ProbeKind.BASELINE,
+                ProbeKind.TRUE,
+                ProbeKind.FALSE,
+            ),
+        ),
+        (
+            "auth200_login",
+            CrossPhaseStatus.MISMATCH,
+            (
+                ProbeKind.BASELINE,
+                ProbeKind.TRUE,
+                ProbeKind.FALSE,
+            ),
+        ),
+    ],
+)
+def test_cross_phase_guard_uses_existing_http_evidence_only(
+    middleware_server,
+    scenario,
+    expected_status,
+    mismatched_kinds,
+):
+    state, origin = middleware_server
+    outcome, context = run_confirmation(origin, scenario)
+
+    assert outcome.evidence is not None
+    requests_before = state.middleware_call_count()
+    budget_before = context.budget.used_requests
+
+    assessment = assess_cross_phase_consistency(
+        initial=outcome.initial,
+        confirmation=outcome.evidence,
+    )
+
+    assert assessment.status is expected_status
+    assert assessment.mismatched_kinds == mismatched_kinds
+    assert state.middleware_call_count() == requests_before
+    assert context.budget.used_requests == budget_before
+    assert requests_before == 18
 
 
 def test_random_control_is_reused_only_within_run(
