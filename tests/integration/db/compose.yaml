@@ -1,0 +1,58 @@
+
+name: vintar-db-corpus
+
+services:
+  postgres:
+    image: postgres:17@sha256:846a7ddaa67a4b354ae1d21087b683901aa6113a4ed626d3787cfbf6c85e3e07
+    environment:
+      POSTGRES_USER: vintar_corpus
+      POSTGRES_PASSWORD: ${VINTAR_TEST_DB_PASSWORD:?Set test database password}
+      POSTGRES_DB: vintar_corpus
+    ports:
+      - "127.0.0.1:${VINTAR_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      - postgres-corpus
+    security_opt:
+      - no-new-privileges:true
+
+  mysql:
+    image: mysql:8.4@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
+    environment:
+      MYSQL_ROOT_PASSWORD: ${VINTAR_TEST_DB_PASSWORD:?Set test database password}
+      MYSQL_USER: vintar_corpus
+      MYSQL_PASSWORD: ${VINTAR_TEST_DB_PASSWORD:?Set test database password}
+      MYSQL_DATABASE: vintar_corpus
+    ports:
+      - "127.0.0.1:${VINTAR_MYSQL_PORT:-13306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - MYSQL_PWD="$$MYSQL_PASSWORD" mysqladmin ping -h 127.0.0.1 -u "$$MYSQL_USER" --silent
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    networks:
+      - mysql-corpus
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  postgres-corpus:
+    driver: bridge
+  mysql-corpus:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  mysql-data:
