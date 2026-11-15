@@ -56,6 +56,7 @@ _INCONCLUSIVE_REASONS = frozenset(
         "confirmation_truncated",
         "confirmation_non_success_status",
         "confirmation_unstable",
+        "confirmation_cross_phase_mismatch",
     }
 )
 
@@ -142,7 +143,9 @@ class ConfirmationEvidence:
         ):
             raise ValueError("Invalid confirmation evidence probes.")
 
-        def signature(item: ConfirmationObservation) -> tuple[int, int, str]:
+        def signature(
+            item: ConfirmationObservation,
+        ) -> tuple[int, int, str]:
             return item.status_code, item.body_size, item.body_digest
 
         if any(signature(items[0]) != signature(items[1]) for items in pairs.values()):
@@ -154,6 +157,7 @@ class ConfirmationEvidence:
         true_2 = signature(pairs[ConfirmationKind.TRUE_2][0])
         false_2 = signature(pairs[ConfirmationKind.FALSE_2][0])
         control = signature(pairs[ConfirmationKind.CONTROL][0])
+
         expected = (
             baseline == true_1 == true_2,
             false_1 == false_2 == control,
@@ -193,9 +197,14 @@ class ConfirmationOutcome:
             raise TypeError("Invalid confirmation status.")
         if type(self.reason_code) is not str:
             raise TypeError("Invalid confirmation reason code.")
-        for value in (self.confirmation_requests, self.total_requests):
+
+        for value in (
+            self.confirmation_requests,
+            self.total_requests,
+        ):
             if type(value) is not int:
                 raise TypeError("Invalid confirmation request count.")
+
         if not 0 <= self.confirmation_requests <= CONFIRMATION_REQUESTS:
             raise ValueError("Invalid confirmation request count.")
         if not 0 <= self.total_requests <= TOTAL_REQUESTS:
@@ -204,6 +213,7 @@ class ConfirmationOutcome:
             self.initial.request_count + self.confirmation_requests
         ):
             raise ValueError("Inconsistent confirmation request count.")
+
         if self.evidence is not None and not isinstance(
             self.evidence, ConfirmationEvidence
         ):
@@ -228,11 +238,19 @@ class ConfirmationOutcome:
                 or self.evidence is not None
             ):
                 raise ValueError("Inconsistent inconclusive outcome.")
-            if (
-                self.reason_code == "confirmation_unstable"
-                and self.confirmation_requests != CONFIRMATION_REQUESTS
+
+            if self.reason_code == "confirmation_unstable" and (
+                self.confirmation_requests != CONFIRMATION_REQUESTS
+                or self.total_requests != TOTAL_REQUESTS
             ):
                 raise ValueError("Incomplete unstable confirmation outcome.")
+
+            if self.reason_code == "confirmation_cross_phase_mismatch" and (
+                self.confirmation_requests != CONFIRMATION_REQUESTS
+                or self.total_requests != TOTAL_REQUESTS
+            ):
+                raise ValueError("Incomplete cross-phase mismatch outcome.")
+
             if (
                 self.reason_code
                 in {
@@ -242,6 +260,7 @@ class ConfirmationOutcome:
                 and self.confirmation_requests != 0
             ):
                 raise ValueError("Inconsistent pre-execution outcome.")
+
             if (
                 self.reason_code
                 not in {
@@ -249,6 +268,7 @@ class ConfirmationOutcome:
                     "confirmation_preflight_failed",
                     "confirmation_budget_exceeded",
                     "confirmation_unstable",
+                    "confirmation_cross_phase_mismatch",
                 }
                 and self.confirmation_requests == 0
             ):
@@ -267,12 +287,14 @@ class ConfirmationOutcome:
             and self.evidence.false_matches_control
             and self.evidence.baseline_differs_from_false
         )
+
         if self.status is ConfirmationStatus.CANDIDATE:
             if (
                 self.reason_code != "confirmation_pattern_matched"
                 or not relation_matches
             ):
                 raise ValueError("Inconsistent candidate outcome.")
+
         elif self.status is ConfirmationStatus.NOT_CONFIRMED and (
             self.reason_code != "confirmation_pattern_not_matched" or relation_matches
         ):
@@ -310,7 +332,10 @@ def _build_preflight_plan(
 
     return ConfirmationPlan(
         steps=tuple(
-            ConfirmationStep(kind=kind, template=requests[kind])
+            ConfirmationStep(
+                kind=kind,
+                template=requests[kind],
+            )
             for kind in CONFIRMATION_ORDER
         ),
         point=point,
@@ -352,7 +377,9 @@ def _analyze(
 
         pairs[observation.kind].append(observation)
 
-    def signature(item: ConfirmationObservation):
+    def signature(
+        item: ConfirmationObservation,
+    ) -> tuple[int, int, str]:
         return (
             item.status_code,
             item.body_size,
@@ -427,7 +454,6 @@ def verify_boolean_sqli_with_confirmation(
     if transport is not None and not isinstance(transport, httpx.BaseTransport):
         raise TypeError("Invalid confirmation transport.")
 
-    # A fresh context is required for each complete verification.
     if (
         context.budget.max_requests != TOTAL_REQUESTS
         or context.budget.used_requests != 0
@@ -451,10 +477,8 @@ def verify_boolean_sqli_with_confirmation(
             context=context,
         )
     except (TypeError, ValueError):
-        # Never include raw request templates or payloads in errors.
         raise ValueError("Invalid or unauthorized confirmation inputs.") from None
 
-    # The initial stage owns its result. Callers cannot substitute one.
     initial = verify_boolean_sqli(
         check_id=check_id,
         template=template,
@@ -471,6 +495,7 @@ def verify_boolean_sqli_with_confirmation(
         evidence: ConfirmationEvidence | None = None,
     ) -> ConfirmationOutcome:
         used = context.budget.used_requests
+
         return ConfirmationOutcome(
             initial=initial,
             status=status,
@@ -486,8 +511,6 @@ def verify_boolean_sqli_with_confirmation(
             "initial_not_eligible",
         )
 
-    # Same context, target and point used in the initial stage.
-    # Recheck the remaining budget immediately before confirmation.
     if (
         context.budget.used_requests != INITIAL_REQUESTS
         or context.budget.remaining != CONFIRMATION_REQUESTS
@@ -579,6 +602,34 @@ def verify_boolean_sqli_with_confirmation(
             status,
             "confirmation_unstable",
         )
+
+    if status is ConfirmationStatus.CANDIDATE:
+        try:
+            # Local import prevents the circular dependency.
+            from vintar.checks.sqli.cross_phase import (
+                CrossPhaseAssessment,
+                CrossPhaseStatus,
+                assess_cross_phase_consistency,
+            )
+
+            if type(evidence) is not ConfirmationEvidence:
+                raise TypeError
+
+            assessment = assess_cross_phase_consistency(
+                initial=initial,
+                confirmation=evidence,
+            )
+
+            if type(assessment) is not CrossPhaseAssessment:
+                raise TypeError
+        except Exception:  # noqa: BLE001 - fail closed at the guard boundary
+            raise RuntimeError("Cross-phase consistency assessment failed.") from None
+
+        if assessment.status is not CrossPhaseStatus.MATCH:
+            return finish(
+                ConfirmationStatus.INCONCLUSIVE,
+                "confirmation_cross_phase_mismatch",
+            )
 
     return finish(
         status,

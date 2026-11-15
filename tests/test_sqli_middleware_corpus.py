@@ -1,9 +1,9 @@
-"""real HTTP middleware interference corpus.
+"""Real HTTP middleware interference corpus.
 
 All scenarios are non-SQL implementations.
 A CANDIDATE result is therefore a false candidate.
 
-Only loopback HTTP is used. Production detection code is unchanged.
+Only loopback HTTP is used.
 """
 
 import socket
@@ -67,7 +67,7 @@ EXPECTED = {
     "auth200_login": (ConfirmationStatus.NOT_CONFIRMED, 18),
     "cache_ignore_query": (ConfirmationStatus.SKIPPED, 6),
     "cache_dynamic": (ConfirmationStatus.INCONCLUSIVE, 18),
-    "cache_rollover": (ConfirmationStatus.CANDIDATE, 18),
+    "cache_rollover": (ConfirmationStatus.INCONCLUSIVE, 18),
 }
 
 
@@ -179,14 +179,12 @@ def middleware_response(
     sequence: int,
 ) -> Response | None:
     """Return an intercepted response or None to reach the route."""
-
     injected = category != "Pets"
     false_1 = is_false_1(category)
     false_2 = is_false_2(category)
     control = is_control(category)
 
     if scenario == "waf200_mimic":
-        # Benign input filtering reproduces the full SQLi pattern.
         if false_2 or control:
             return text_response(b"B")
 
@@ -228,7 +226,6 @@ def middleware_response(
             return text_response(b"login-page")
 
     elif scenario == "cache_ignore_query":
-        # The cache key omits the category query parameter.
         return text_response(b"cached-products")
 
     elif scenario == "cache_dynamic":
@@ -237,7 +234,6 @@ def middleware_response(
 
     elif scenario == "cache_rollover":
         if sequence >= 7:
-            # Coherent but different cached generation.
             blocked = false_1 or false_2 or control
             return text_response(b"B-generation2" if blocked else b"A-generation2")
 
@@ -260,11 +256,17 @@ def create_app(state: FixtureState) -> FastAPI:
         path = request.url.path
 
         if not path.startswith("/products/"):
-            return text_response(b"not-found", status_code=404)
+            return text_response(
+                b"not-found",
+                status_code=404,
+            )
 
         scenario = path.removeprefix("/products/")
         if scenario not in SCENARIOS:
-            return text_response(b"not-found", status_code=404)
+            return text_response(
+                b"not-found",
+                status_code=404,
+            )
 
         categories = request.query_params.getlist("category")
         if not categories:
@@ -305,10 +307,8 @@ def create_app(state: FixtureState) -> FastAPI:
         request: Request,
     ) -> Response:
         state.record_route(scenario)
-
         category = request.query_params["category"]
 
-        # Deliberately non-SQL branching. No DB is present.
         return text_response(b"B" if is_false_1(category) else b"A")
 
     return app
@@ -442,10 +442,7 @@ def run_confirmation(
     return outcome, context
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    SCENARIOS,
-)
+@pytest.mark.parametrize("scenario", SCENARIOS)
 def test_middleware_corpus(
     middleware_server,
     scenario,
@@ -469,39 +466,43 @@ def test_middleware_corpus(
     assert outcome.initial.verdict is not Verdict.VULNERABLE
 
     assert [item.sequence for item in received] == list(range(1, expected_count + 1))
+
     for item in received:
         assert parse_qs(
             item.raw_query,
             keep_blank_values=True,
         ) == {"category": [item.category]}
+
         assert " " not in item.raw_query
         assert "'" not in item.raw_query
+
         if "'" in item.category:
             assert "%27" in item.raw_query
 
     if expected_status is ConfirmationStatus.CANDIDATE:
         assert outcome.evidence is not None
-        assert outcome.reason_code == "confirmation_pattern_matched"
+        assert outcome.reason_code == ("confirmation_pattern_matched")
         assert outcome.confirmation_requests == 12
 
     elif expected_status is ConfirmationStatus.NOT_CONFIRMED:
         assert outcome.evidence is not None
-        assert outcome.reason_code == "confirmation_pattern_not_matched"
+        assert outcome.reason_code == ("confirmation_pattern_not_matched")
 
     else:
         assert outcome.evidence is None
 
-    if scenario == "auth401":
-        assert outcome.reason_code == ("confirmation_non_success_status")
-
-    if scenario == "auth302":
+    if scenario in ("auth401", "auth302"):
         assert outcome.reason_code == ("confirmation_non_success_status")
 
     if scenario == "cache_dynamic":
-        assert outcome.reason_code == "confirmation_unstable"
+        assert outcome.reason_code == ("confirmation_unstable")
+
+    if scenario == "cache_rollover":
+        assert outcome.reason_code == ("confirmation_cross_phase_mismatch")
+        assert outcome.confirmation_requests == 12
 
     if scenario == "waf403":
-        assert outcome.initial.reason_code == "non_success_status"
+        assert outcome.initial.reason_code == ("non_success_status")
 
     if scenario == "waf429":
         assert outcome.initial.reason_code == "rate_limited"
@@ -513,7 +514,6 @@ def test_middleware_corpus_has_no_sql_execution():
 
     assert {route.path for route in app.routes} == {"/products/{scenario}"}
 
-    # This fixture contains no database connection or ORM.
     assert not hasattr(state, "sql_started")
     assert not hasattr(state, "sql_completed")
 
@@ -531,10 +531,14 @@ def test_middleware_rejects_missing_and_duplicate_query_values(
         missing = client.get(f"{origin}/products/waf200_mimic")
         duplicate = client.get(
             f"{origin}/products/waf200_mimic",
-            params=(("category", "Pets"), ("category", "Office")),
+            params=(
+                ("category", "Pets"),
+                ("category", "Office"),
+            ),
         )
 
     received, route_calls, intercepted = state.snapshot()
+
     assert missing.status_code == 422
     assert duplicate.status_code == 400
     assert state.middleware_call_count() == 2
@@ -558,11 +562,11 @@ def test_login_redirect_is_not_followed(
     assert all(item.scenario == "auth302" for item in received)
 
 
-def test_cache_rollover_can_look_like_a_stable_candidate(
+def test_cache_rollover_is_rejected_by_cross_phase_guard(
     middleware_server,
 ):
     state, origin = middleware_server
-    outcome, _ = run_confirmation(
+    outcome, context = run_confirmation(
         origin,
         "cache_rollover",
     )
@@ -570,13 +574,15 @@ def test_cache_rollover_can_look_like_a_stable_candidate(
     received, _, _ = state.snapshot()
 
     assert len(received) == 18
-    assert outcome.status is ConfirmationStatus.CANDIDATE
-    assert outcome.initial.verdict is Verdict.INCONCLUSIVE
-    assert outcome.evidence is not None
+    assert state.middleware_call_count() == 18
+    assert context.budget.used_requests == 18
 
-    # The current evidence only compares responses within
-    # the confirmation stage, not against the first six.
-    # A coherent cache-generation switch can go unnoticed.
+    assert outcome.initial.verdict is Verdict.INCONCLUSIVE
+    assert outcome.initial.reason_code == "boolean_candidate"
+    assert outcome.status is ConfirmationStatus.INCONCLUSIVE
+    assert outcome.reason_code == ("confirmation_cross_phase_mismatch")
+    assert outcome.evidence is None
+    assert outcome.confirmation_requests == 12
 
 
 @pytest.mark.parametrize(
@@ -586,15 +592,6 @@ def test_cache_rollover_can_look_like_a_stable_candidate(
             "waf200_mimic",
             CrossPhaseStatus.MATCH,
             (),
-        ),
-        (
-            "cache_rollover",
-            CrossPhaseStatus.MISMATCH,
-            (
-                ProbeKind.BASELINE,
-                ProbeKind.TRUE,
-                ProbeKind.FALSE,
-            ),
         ),
         (
             "auth200_login",
@@ -617,6 +614,7 @@ def test_cross_phase_guard_uses_existing_http_evidence_only(
     outcome, context = run_confirmation(origin, scenario)
 
     assert outcome.evidence is not None
+
     requests_before = state.middleware_call_count()
     budget_before = context.budget.used_requests
 
@@ -636,7 +634,6 @@ def test_random_control_is_reused_only_within_run(
     middleware_server,
 ):
     state, origin = middleware_server
-
     controls = []
 
     for _ in range(2):
@@ -654,6 +651,7 @@ def test_random_control_is_reused_only_within_run(
             for item in received
             if item.category.startswith("Pets__vintar_control_")
         ]
+
         assert len(values) == 2
         assert values[0] == values[1]
         controls.append(values[0])
@@ -669,14 +667,19 @@ def test_middleware_classification_is_repeatable(
 
     for _ in range(2):
         result = {}
+
         for scenario in SCENARIOS:
             state.reset()
-            outcome, _ = run_confirmation(origin, scenario)
+            outcome, _ = run_confirmation(
+                origin,
+                scenario,
+            )
             result[scenario] = (
                 outcome.status,
                 outcome.reason_code,
                 outcome.request_count,
             )
+
         runs.append(result)
 
     assert runs[0] == runs[1]
@@ -709,14 +712,14 @@ def test_middleware_corpus_metrics(
     assert sum(max(0, count - 6) for count in counts.values()) == 50
 
     distribution = Counter(results.values())
+
     assert distribution == {
-        ConfirmationStatus.CANDIDATE: 2,
+        ConfirmationStatus.CANDIDATE: 1,
         ConfirmationStatus.NOT_CONFIRMED: 1,
-        ConfirmationStatus.INCONCLUSIVE: 3,
+        ConfirmationStatus.INCONCLUSIVE: 4,
         ConfirmationStatus.SKIPPED: 4,
     }
 
-    # All ten fixtures are non-SQL ground truth.
     false_candidates = distribution[ConfirmationStatus.CANDIDATE]
     decisive = (
         distribution[ConfirmationStatus.CANDIDATE]
@@ -727,27 +730,31 @@ def test_middleware_corpus_metrics(
         + distribution[ConfirmationStatus.SKIPPED]
     )
 
-    assert false_candidates / len(SCENARIOS) == 2 / 10
-    assert false_candidates / decisive == 2 / 3
-    assert decisive / len(SCENARIOS) == 3 / 10
+    assert false_candidates / len(SCENARIOS) == 1 / 10
+    assert false_candidates / decisive == 1 / 2
+    assert decisive / len(SCENARIOS) == 2 / 10
+
     assert distribution[ConfirmationStatus.SKIPPED] / len(SCENARIOS) == 4 / 10
-    assert distribution[ConfirmationStatus.INCONCLUSIVE] / len(SCENARIOS) == 3 / 10
-    assert non_decisions / len(SCENARIOS) == 7 / 10
+    assert distribution[ConfirmationStatus.INCONCLUSIVE] / len(SCENARIOS) == 4 / 10
+    assert non_decisions / len(SCENARIOS) == 8 / 10
 
     groups = {
         "waf": tuple(item for item in SCENARIOS if item.startswith("waf")),
         "auth": tuple(item for item in SCENARIOS if item.startswith("auth")),
         "cache": tuple(item for item in SCENARIOS if item.startswith("cache")),
     }
+
     expected_group_rates = {
         "waf": (1 / 4, 1.0),
         "auth": (0.0, 0.0),
-        "cache": (1 / 3, 1.0),
+        "cache": (0.0, 0.0),
     }
+
     for name, scenarios in groups.items():
         candidates = sum(
             results[item] is ConfirmationStatus.CANDIDATE for item in scenarios
         )
+
         group_decisive = sum(
             results[item]
             in {
@@ -756,8 +763,10 @@ def test_middleware_corpus_metrics(
             }
             for item in scenarios
         )
+
         false_candidate_rate = candidates / len(scenarios)
         conditional_rate = candidates / group_decisive if group_decisive else 0.0
+
         assert (
             false_candidate_rate,
             conditional_rate,
@@ -771,12 +780,14 @@ def test_middleware_output_does_not_expose_probe_values(
     _, origin = middleware_server
 
     secret = "middleware-secret-value"
+
     outcome, _ = run_confirmation(
         origin,
         "waf200_mimic",
         headers=(("Authorization", f"Bearer {secret}"),),
         cookies=(("session", secret),),
     )
+
     output = repr(outcome)
     captured = capsys.readouterr()
 
