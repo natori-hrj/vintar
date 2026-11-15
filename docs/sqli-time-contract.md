@@ -5,16 +5,21 @@
 This document defines the experimental design and safety
 requirements for Vintar's time-based SQL injection verification.
 
-The current implementation only prepares and validates a
-bounded request plan.
+The implementation includes:
 
-It does not execute time-based probes or classify targets.
+- A bounded, immutable request plan
+- A pure timing analyzer
+- An experimental HTTP runner
+
+The component does not establish SQL execution or prove SQL injection.
+
+It is not approved for production vulnerability findings or CI gates.
 
 ## Separation From Boolean Verification
 
-Time-based verification is a separate detection technique.
+Time-based verification is independent of Boolean-based verification.
 
-It may reuse:
+It reuses the shared HTTP execution foundation:
 
 - RequestTemplate
 - InjectionPoint
@@ -26,15 +31,10 @@ It may reuse:
 - Response size limits
 - Request validation and preflight
 
-It must not reuse Boolean response equality as its timing
-decision rule.
-
-Boolean evidence and time-based evidence are different types
-of observations.
+Boolean response equality, Boolean Evidence, and Boolean confirmation
+reason codes are not timing detection rules.
 
 ## Probe Categories
-
-Three probe categories are defined.
 
 ### BASELINE
 
@@ -42,23 +42,22 @@ An unchanged request used to measure ordinary response latency.
 
 ### CONTROL
 
-A request containing a condition designed not to trigger
-an artificial delay.
+A request containing a condition intended not to trigger an
+artificial delay.
 
 ### DELAY
 
-A request containing a condition designed to trigger a
-bounded artificial delay.
+A request containing a condition intended to trigger a bounded delay.
 
-The meaning of CONTROL and DELAY must be established by
-the trusted payload provider.
+Payloads are trusted caller-supplied inputs.
 
-The plan validator cannot prove that a payload executes SQL,
-that a condition is true, or that a database will sleep.
+The request plan validates payload structure, not SQL semantics.
+
+It cannot prove that a payload executes SQL or causes a database sleep.
 
 ## Probe Order
 
-The initial design uses nine requests.
+The experimental sequence contains nine probes:
 
 ```text
 BASELINE
@@ -72,256 +71,338 @@ BASELINE
 CONTROL
 ```
 
-Each category appears three times.
+Each category appears exactly three times.
 
-The order is distributed to reduce simple position and
-time-trend bias.
+The order reduces simple timing-position bias but does not eliminate
+network jitter, application load changes, caching, or conditional
+non-SQL delays.
 
-This ordering does not eliminate network jitter, server
-load variation, caching, or other timing confounders.
+Three samples per category are not sufficient to establish
+general-world detection accuracy.
 
-Three samples per category are an experimental starting
-point, not a demonstrated minimum for reliable detection.
+## Request Plan
 
-## Current Plan Constraints
+The plan requires:
 
-The initial plan imposes:
-
-- Exactly nine planned requests
-- Exactly nine available budget slots
-- An unused RequestBudget
-- Expected delay from 0.25 to 2.0 seconds
-- Request timeout not exceeding 8.0 seconds
+- Nine planned requests
+- An unused RequestBudget with a maximum of nine
+- Expected delay between 0.25 and 2.0 seconds
+- Context request timeout no greater than 8.0 seconds
 - Timeout at least 0.5 seconds longer than expected delay
 - Three distinct logical request templates
-- Full template and scope validation
-- No HTTP I/O during plan preparation
+- Full preflight template validation
+- Full preflight origin-scope validation
+- No HTTP I/O during preparation
 
-The current injection boundary accepts only an exact
-`InjectionPoint` using `InjectionLocation.QUERY`, a non-empty string
-name, a non-negative integer occurrence, and an `InjectionMode` enum.
-String lookalikes and Boolean or floating-point occurrences are rejected.
-Both APPEND and REPLACE retain the selected occurrence when duplicate
-query-parameter names are present.
+The plan accepts only an exact InjectionPoint whose fields have
+the expected types.
 
-Payload text is caller-supplied trusted input. The plan enforces bounded,
-distinct strings and rejects Unicode control, formatting, surrogate, and
-other Unicode `C` category code points. It does not validate SQL dialect
-or delay semantics and does not generate payloads.
+The current injection location is QUERY.
 
-These constraints apply to the plan, not to a completed
-verification execution.
+APPEND and REPLACE preserve the selected occurrence when duplicate
+query parameter names exist.
 
-The timeout margin does not guarantee that an intentionally
-delayed response will complete successfully.
+Payloads must be bounded, distinct strings without Unicode
+category C characters.
+
+A plan is a structural description of requests, not an authorization
+token or a proof of execution provenance.
+
+## Timing Observation
+
+Each TimeObservation records:
+
+- Probe category
+- Sequence number
+- Probe outcome
+- Completed response latency, if available
+- HTTP status, if available
+- Response truncation
+- RateLimiter acquisition duration
+
+Completed latency and rate-limit waiting must remain separate.
+
+Transport elapsed time is calculated by the shared HTTP layer and
+includes response processing.
+
+The runner subtracts measured RateLimiter acquisition duration
+before producing a completed timing observation.
+
+The result is an approximation of response execution time rather
+than a hardware-calibrated network measurement.
+
+No observation contains raw HTTP response bodies, injected payloads,
+cookies, or authorization headers.
+
+A failed or interrupted attempt does not contribute a completed
+latency sample.
+
+## Timing Analysis
+
+The pure analyzer validates:
+
+1. Observation order and sequence numbers
+2. Terminal failure conditions
+3. HTTP 429
+4. Truncated responses
+5. Other non-2xx statuses
+6. Completeness of nine observations
+7. Timing evidence
+8. Stability
+9. Candidate delay conditions
+10. Absence of the expected delay
+
+The analysis uses:
+
+- Baseline median
+- Control median
+- Delay median
+- Median delay excess
+- Baseline and Control median difference
+- Within-category spans
+- Baseline and Control endpoint drift
+- Minimum Delay versus maximum Control margin
+
+The experimental stability threshold is:
+
+```text
+max(0.12, expected_delay_seconds * 0.25)
+```
+
+The CANDIDATE rule requires both:
+
+```text
+median_excess >= expected_delay_seconds * 0.75
+minimum_delay_margin >= expected_delay_seconds * 0.50
+```
+
+The NOT_CONFIRMED rule requires:
+
+```text
+median_excess <= expected_delay_seconds * 0.25
+```
+
+Stability failures take precedence over candidate classification.
+
+Intermediate or otherwise ambiguous measurements are INCONCLUSIVE.
+
+These thresholds are laboratory heuristics, not validated
+statistical confidence bounds or production thresholds.
+
+A non-SQL delay mimic may still become CANDIDATE.
+
+## Analysis Result Semantics
+
+### CANDIDATE
+
+A reproducible experimental timing pattern was observed.
+
+This is not a VULNERABLE verdict.
+
+### NOT_CONFIRMED
+
+The specified experimental delay pattern was not reproduced.
+
+This is not proof that the target is secure.
+
+### INCONCLUSIVE
+
+The measurement was incomplete, unstable, ambiguous, or interrupted
+by a terminal HTTP or transport condition.
+
+Timeouts are never treated as standalone evidence of SQL injection.
+
+### Execution error
+
+An internal contract violation or unexpected execution failure is
+an execution error rather than a normal target classification.
+
+Unexpected analyzer failures must not be transformed into a candidate.
+
+## HTTP Runner
+
+The runner constructs the plan and observations inside one trusted
+function invocation.
+
+It performs up to nine scoped HTTP requests using a single
+ExecutionContext.
+
+The runner stops after:
+
+- HTTP 429
+- Any other non-2xx status
+- Response truncation
+- Transport timeout
+- Transport request failure
+- RateLimiter interruption
+- Execution deadline expiry
+
+For a completed nine-probe sequence, it invokes the pure timing
+analyzer.
+
+The runner is not connected to Schema v1, the public CLI, or the
+production CI security gate.
+
+## Request Accounting
+
+Three counts must remain distinguishable:
+
+- RequestBudget consumption
+- Actual underlying transport dispatches
+- Recorded observations
+
+The request budget is consumed before RateLimiter acquisition.
+
+Therefore, a canceled or interrupted rate-limit wait can consume
+budget without dispatching an HTTP request.
+
+The report exposes budget consumption and dispatch count.
+
+An observation records a logical attempt, not necessarily a
+completed HTTP response.
 
 ## Total Execution Deadline
 
-A request budget does not enforce a wall-clock deadline.
+The experimental runner accepts a total time limit in seconds.
 
-A future runner must provide an independent monotonic
-deadline that accounts for:
+The default is 45 seconds, with a maximum of 120 seconds.
 
-- HTTP request execution
-- Rate-limit waits
-- Transport failures
-- Application delays
-- Response processing
-- Cancellation
+The runner uses a monotonic clock.
 
-Per-request timeouts must not be presented as a strict
-end-to-end elapsed-time bound.
+Before each request, the runner checks the remaining time and
+reduces the per-request HTTP timeout accordingly.
 
-Before each wait or request, that runner must calculate the remaining
-deadline. Rate-limiter sleep, transport setup and I/O, response reading,
-and local processing must all fit within it. A per-request timeout must
-be capped to the remaining deadline, and exhausted time must stop the
-run without another send.
+The transport checks the deadline before and after RateLimiter
+acquisition.
 
-The initial plan does not implement such a deadline.
+Immediately before dispatch, it caps HTTPX connect, read, write,
+and pool timeouts to the remaining cooperative deadline.
 
-A runner must not be approved for execution until the
-deadline and interruption behavior have been validated.
+These are per-operation timeouts and do not convert synchronous
+HTTPX execution into a hard total-time boundary.
 
-## Timing Measurement
+A request must not be deliberately dispatched after a deadline
+check has established that the deadline has expired.
 
-The future runner must use a monotonic clock.
+If a completed response arrives after the deadline, it is not
+included as a usable completed timing measurement.
 
-Timing observations should distinguish:
+### Important limitation
 
-- Transport-observed response elapsed time
-- Time spent waiting for the rate limiter
-- Overall execution elapsed time
+The current deadline is cooperative.
 
-Evidence should also identify the probe category and sequence position,
-whether a send was attempted and completed, timeout or failure category,
-HTTP status and truncation/comparability state.
+RateLimiter sleep and synchronous HTTP I/O are not guaranteed
+to be forcibly interrupted at the deadline.
 
-Timing values must be finite and non-negative.
+An HTTP timeout may bound individual socket operations rather
+than guarantee a strict end-to-end wall-clock limit.
 
-A future evidence model must not retain raw response bodies,
-authorization headers, cookies, or injected payloads.
+Consequently, total observed execution time can exceed the
+configured limit.
 
-Elapsed time alone does not prove SQL execution.
+A strict execution deadline remains an open requirement.
 
-## Planned Timing Analysis
+The current runner must not be advertised as providing a hard
+wall-clock execution ceiling.
 
-Timing analysis must evaluate both:
+## Scope and Network Safety
 
-- Delayed-versus-control differences
-- Baseline-versus-control stability
+Every request is subject to scope validation at the actual
+HTTP transport boundary.
 
-Future research should include:
+The standard HTTP path disables environment proxy inheritance
+and does not follow redirects.
 
-- Median differences
-- Variability and jitter estimates
-- Drift between early and late samples
-- Repeated trials
-- Non-SQL delay mimics
-- Slow but non-vulnerable applications
-- Cache and authentication interference
+ScopePolicy validates permitted URL origins, not destination IP
+addresses obtained after DNS resolution.
 
-No fixed threshold is currently approved as evidence
-of a vulnerability.
+Untrusted environments require network-level egress controls.
 
-Statistical methods must be selected and validated against
-independent evaluation data before detector use.
+Custom transports and instrumentation callbacks are trusted
+internal or test dependencies.
 
-## Timeout Handling
+Time-based probes can increase application and database resource
+usage. Targets must be explicitly authorized and suitable for
+controlled testing.
 
-An HTTP timeout is not evidence that a time-based SQL
-injection occurred.
+## Evidence and Data Retention
 
-Timeouts may result from:
+The runner's analysis evidence does not retain:
 
-- Network congestion
-- Server load
-- Connection failures
-- Deliberate application delays
-- Rate-limit interactions
-- A genuine SQL-induced delay
+- Raw HTTP response bodies
+- Request templates
+- Injection payloads
+- Authorization headers
+- Cookies
 
-The future runner must keep timeout observations separate
-from completed response-time measurements.
+Timing observations may nevertheless reveal information about
+application behavior and should be handled appropriately.
 
-It must not automatically turn a timeout into CANDIDATE
-or VULNERABLE.
+The runner creates plan and observation data inside one invocation.
 
-## Planned Result Semantics
+Direct construction of arbitrary observations is not proof that
+those observations originated from the represented target.
 
-The future time-based component should distinguish:
+## Evaluation Requirements
 
-- CANDIDATE
-- NOT_CONFIRMED
-- INCONCLUSIVE
-- SKIPPED
-- Internal execution errors
+The component must be evaluated against independently established
+ground truth.
 
-The status meanings must be documented before implementation.
+The evaluation corpus must include:
 
-A timing-based CANDIDATE must not be promoted to
-Verdict.VULNERABLE without stronger independent evidence.
-
-The component must remain disconnected from production
-CI security gates until its detection contract is reviewed.
-
-## Safety Requirements
-
-Time-based testing can increase server resource usage.
-
-A future execution layer must enforce:
-
-- Explicit target authorization
-- Scope validation for every request
-- Strict request budget
-- Strict execution deadline
-- Bounded expected delays
-- Rate limiting
-- Cancellation or interruption handling
-- Early termination for HTTP 429
-- Early termination for unsafe response conditions
-- Explicit handling of timeouts
-- Non-destructive test targets
-- Secret redaction
-
-Origin-based scope checks do not prove that the
-DNS-resolved destination IP remains inside the intended
-network boundary.
-
-Network isolation remains necessary for untrusted targets.
-
-The initial implementation supports QUERY injection points.
-Other injection locations require separate implementation
-and testing.
-
-Scope validation is origin-based and is performed for the baseline,
-control, and delay templates during preparation. It does not consume the
-request budget. A future runner must repeat validation at the actual send
-boundary; a prepared plan alone grants no authority to communicate.
-
-## Required Evaluation Corpus
-
-Before timing detection is enabled, the evaluation suite
-must include:
-
-- Vulnerable SQL-backed application with controlled delay
-- Safe parameterized SQL implementation
-- Non-SQL application performing a similar delay
-- Stable high-latency server
-- Variable-latency server
-- Background server-load interference
-- HTTP timeout
+- Vulnerable SQL application with controlled delay
+- Safe parameterized SQL application
+- Non-SQL conditional delay mimic
+- Stable high-latency application
+- Variable-latency application
+- Background load
+- Request timeout
 - HTTP 429
-- Authentication state changes
+- Authentication changes
 - Cache interference
 
-Ground truth must be established independently of the
-detector's timing classification.
-
-Evaluation should report:
+Measurements must distinguish:
 
 - Candidate sensitivity
 - False-candidate rate
 - Classification coverage
 - Abstention rate
-- Execution error rate
-- Requests per run
-- Total elapsed time
+- Execution errors
+- Budget usage
+- Actual dispatches
+- Total execution time
 
-The baseline corpus should be separated from independent
-validation targets.
+Synthetic test results must not be presented as real-world
+false-positive rates.
 
-## Integration Boundary
+## Outstanding Requirements
 
-The current time-based plan is not connected to:
+Before production use:
 
-- A live time-based HTTP runner
-- A timing analyzer
-- A time-based evidence model
-- Schema v1
-- The public CLI
-- CI security gates
-- A VULNERABLE verdict
+- Enforce a hard end-to-end execution deadline
+- Validate total execution time under blocking transports
+- Add controlled SQL-backed HTTP fixtures
+- Evaluate safe and non-SQL delay-mimic fixtures
+- Measure timing stability under network and application jitter
+- Establish acceptable detection and coverage thresholds
+- Validate cancellation and rate-limit interruption
+- Document supported DBMS and SQL contexts
+- Review response evidence disclosure
+- Define machine-readable reporting and CLI integration
+- Define CI gate behavior
+- Perform independent evaluation
 
-The plan is not an authorization token.
+## Current Completion Assessment
 
-It is a validated structural description of requests.
+The request plan and pure analyzer are implemented.
 
-A future runner must construct and execute the plan within
-one trusted invocation using a single scoped ExecutionContext.
+An experimental HTTP runner is implemented, subject to successful
+review and regression tests.
 
-## Completion Criteria
+The runner provides bounded request counts and cooperative deadline
+checks, not a strict total-time guarantee.
 
-The design phase is complete when:
+The component is suitable for controlled research after validation.
 
-- The probe ordering is explicit
-- Request budget constraints are tested
-- Delay and timeout constraints are validated
-- Injection templates are independently validated
-- Scope failures do not consume request budget
-- Plan construction performs no HTTP I/O
-- Raw payloads and credentials are excluded from repr
-- Known limitations are documented
-
-Completing these criteria does not establish that a
-time-based SQL injection detector has been implemented.
+It is not yet a production SQL injection detector and must not
+emit a production VULNERABLE finding.
