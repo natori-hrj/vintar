@@ -596,34 +596,31 @@ def test_verification_model_rejects_exact_digest_mismatch():
         replace(valid, chain_head_digest="f" * 64)
 
 
-def test_snapshot_checkpoint_during_concurrent_appends():
+def test_snapshot_checkpoint_during_concurrent_appends(worker_pool):
     journal = create_audit_journal()
     barrier = threading.Barrier(2)
-    failures: list[BaseException] = []
 
     def writer():
-        try:
-            for _ in range(30):
-                barrier.wait(timeout=5.0)
-                journal.append(event=event())
-                barrier.wait(timeout=5.0)
-        except BaseException as exc:  # noqa: BLE001 - surface thread failures
-            failures.append(exc)
+        for _ in range(30):
+            barrier.wait(timeout=5.0)
+            journal.append(event=event())
+            barrier.wait(timeout=5.0)
 
-    thread = threading.Thread(target=writer)
-    thread.start()
+    future = worker_pool.submit(writer)
     checkpoints = []
+    completed = False
 
     try:
         for _ in range(30):
             barrier.wait(timeout=5.0)
             checkpoints.append(checkpoint_for(journal))
             barrier.wait(timeout=5.0)
+        completed = True
     finally:
-        thread.join(timeout=5.0)
+        if not completed:
+            barrier.abort()
+        future.result(timeout=5.0)
 
-    assert not thread.is_alive()
-    assert not failures
     assert len(checkpoints) == 30
 
     records = journal.snapshot()

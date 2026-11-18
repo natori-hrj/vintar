@@ -266,17 +266,10 @@ def fastapi_server():
         )
 
         server = uvicorn.Server(config)
-        errors: list[BaseException] = []
-
-        def serve() -> None:
-            try:
-                server.run(sockets=[listener])
-            # Test harness: preserve every server-thread failure for teardown.
-            except BaseException as exc:  # noqa: BLE001
-                errors.append(exc)
 
         thread = threading.Thread(
-            target=serve,
+            target=server.run,
+            kwargs={"sockets": [listener]},
             daemon=True,
         )
         thread.start()
@@ -291,7 +284,6 @@ def fastapi_server():
 
             assert server.started
             assert thread.is_alive()
-            assert not errors
             assert listener.getsockname()[0] == "127.0.0.1"
 
             yield (
@@ -305,7 +297,6 @@ def fastapi_server():
                 server.force_exit = True
                 thread.join(timeout=5)
             assert not thread.is_alive()
-            assert not errors
     finally:
         listener.close()
 

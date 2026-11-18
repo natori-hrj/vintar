@@ -524,38 +524,20 @@ def test_acceptance_construction_failure_does_not_update_state(
     assert tracker.snapshot() is None
 
 
-def test_concurrent_identical_checkpoint_acceptance(private_key):
+def test_concurrent_identical_checkpoint_acceptance(private_key, worker_pool):
     tracker = make_tracker(private_key)
     journal = make_journal(3)
     envelope = make_envelope(journal, private_key)
     records = journal.snapshot()
 
     barrier = threading.Barrier(8)
-    results = []
-    errors = []
-    lock = threading.Lock()
 
     def worker():
-        try:
-            barrier.wait(timeout=5.0)
-            result = tracker.accept(
-                records=records,
-                envelope=envelope,
-            )
-            with lock:
-                results.append(result)
-        except BaseException as exc:  # noqa: BLE001 - surface thread failures
-            with lock:
-                errors.append(exc)
+        barrier.wait(timeout=5.0)
+        return tracker.accept(records=records, envelope=envelope)
 
-    threads = [threading.Thread(target=worker) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5.0)
-
-    assert all(not thread.is_alive() for thread in threads)
-    assert not errors
+    futures = [worker_pool.submit(worker) for _ in range(8)]
+    results = [future.result(timeout=5.0) for future in futures]
     assert len(results) == 8
     assert sum(result.advanced for result in results) == 1
     assert tracker.snapshot().record_count == 3

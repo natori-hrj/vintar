@@ -325,7 +325,6 @@ def middleware_server():
     )
     worker = None
     server = None
-    errors: list[BaseException] = []
 
     try:
         try:
@@ -349,14 +348,9 @@ def middleware_server():
 
         server = uvicorn.Server(config)
 
-        def serve() -> None:
-            try:
-                server.run(sockets=[listener])
-            except BaseException as exc:  # noqa: BLE001
-                errors.append(exc)
-
         worker = threading.Thread(
-            target=serve,
+            target=server.run,
+            kwargs={"sockets": [listener]},
             daemon=True,
         )
         worker.start()
@@ -368,7 +362,6 @@ def middleware_server():
 
         assert server.started
         assert worker.is_alive()
-        assert not errors
 
         yield state, f"http://127.0.0.1:{port}"
 
@@ -383,7 +376,6 @@ def middleware_server():
                 worker.join(timeout=5)
 
             assert not worker.is_alive()
-            assert not errors
 
         listener.close()
 

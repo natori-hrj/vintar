@@ -368,6 +368,7 @@ def test_explicit_invalidation_revokes_handle():
 
 
 def test_worker_slot_limit_does_not_hold_global_lock(
+    worker_pool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -379,7 +380,6 @@ def test_worker_slot_limit_does_not_hold_global_lock(
 
     entered = threading.Event()
     release = threading.Event()
-    failures: list[BaseException] = []
 
     original_acquire = AcquisitionSupervisor.acquire
 
@@ -395,14 +395,7 @@ def test_worker_slot_limit_does_not_hold_global_lock(
         blocking_acquire,
     )
 
-    def first_task():
-        try:
-            acquire(governor, first_handle, tmp_path)
-        except Exception as exc:  # noqa: BLE001 - surface thread failures to pytest
-            failures.append(exc)
-
-    thread = threading.Thread(target=first_task)
-    thread.start()
+    future = worker_pool.submit(acquire, governor, first_handle, tmp_path)
 
     try:
         assert entered.wait(timeout=5.0)
@@ -414,14 +407,12 @@ def test_worker_slot_limit_does_not_hold_global_lock(
             acquire(governor, second_handle, tmp_path)
     finally:
         release.set()
-        thread.join(timeout=15.0)
-
-    assert not thread.is_alive()
-    assert not failures
+        future.result(timeout=15.0)
     assert governor.usage().slots_in_use == 0
 
 
 def test_parallel_reservations_cannot_overcommit_bytes(
+    worker_pool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -436,7 +427,6 @@ def test_parallel_reservations_cannot_overcommit_bytes(
 
     entered = threading.Event()
     release = threading.Event()
-    failures: list[Exception] = []
 
     original_acquire = AcquisitionSupervisor.acquire
 
@@ -448,14 +438,7 @@ def test_parallel_reservations_cannot_overcommit_bytes(
 
     monkeypatch.setattr(AcquisitionSupervisor, "acquire", blocking_acquire)
 
-    def first_task() -> None:
-        try:
-            acquire(governor, first_handle, tmp_path)
-        except Exception as exc:  # noqa: BLE001 - surface thread failures to pytest
-            failures.append(exc)
-
-    thread = threading.Thread(target=first_task)
-    thread.start()
+    future = worker_pool.submit(acquire, governor, first_handle, tmp_path)
 
     try:
         assert entered.wait(timeout=5.0)
@@ -466,13 +449,11 @@ def test_parallel_reservations_cannot_overcommit_bytes(
         assert governor.usage().bytes_used == _FILE_LIMIT
     finally:
         release.set()
-        thread.join(timeout=15.0)
-
-    assert not thread.is_alive()
-    assert not failures
+        future.result(timeout=15.0)
 
 
 def test_same_supervisor_cannot_start_two_operations(
+    worker_pool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -481,7 +462,6 @@ def test_same_supervisor_cannot_start_two_operations(
 
     entered = threading.Event()
     release = threading.Event()
-    failures: list[Exception] = []
     original_acquire = AcquisitionSupervisor.acquire
 
     def blocking_acquire(self, **kwargs):
@@ -492,14 +472,7 @@ def test_same_supervisor_cannot_start_two_operations(
 
     monkeypatch.setattr(AcquisitionSupervisor, "acquire", blocking_acquire)
 
-    def first_task() -> None:
-        try:
-            acquire(governor, handle, tmp_path)
-        except Exception as exc:  # noqa: BLE001 - surface thread failures to pytest
-            failures.append(exc)
-
-    thread = threading.Thread(target=first_task)
-    thread.start()
+    future = worker_pool.submit(acquire, governor, handle, tmp_path)
 
     try:
         assert entered.wait(timeout=5.0)
@@ -509,10 +482,7 @@ def test_same_supervisor_cannot_start_two_operations(
             governor.terminate(handle=handle)
     finally:
         release.set()
-        thread.join(timeout=15.0)
-
-    assert not thread.is_alive()
-    assert not failures
+        future.result(timeout=15.0)
 
 
 @pytest.mark.parametrize(

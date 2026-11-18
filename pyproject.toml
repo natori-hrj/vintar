@@ -24,6 +24,9 @@ build-backend = "uv_build"
 [tool.ruff.lint]
 extend-select = ["I", "UP", "B", "RUF", "TID", "RUF100"]
 
+[tool.pytest.ini_options]
+filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]
+
 [tool.importlinter]
 root_package = "vintar"
 
