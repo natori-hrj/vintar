@@ -224,7 +224,7 @@ class _RestrictedYAMLLoader(yaml.SafeLoader):
                     "Non-string YAML mapping key. Quote numbers, true, false, and null to use them as keys.",
                 )
             child = source.child(key)
-            if key == "<<":
+            if key == "<<" and key_node.style is None:
                 raise DiscoveryError(
                     child,
                     "YAML merge keys are unsupported. Write the entries explicitly.",
@@ -293,10 +293,12 @@ class _RestrictedYAMLLoader(yaml.SafeLoader):
 def _read_yaml(data: bytes, source: Source) -> JSON:
     try:
         return _RestrictedYAMLLoader.load_document(data.decode("utf-8"), source)
-    except (yaml.YAMLError, UnicodeError) as exc:
+    except DiscoveryError:
+        raise
+    except (yaml.YAMLError, ValueError) as exc:
         raise DiscoveryError(
             source,
-            "Invalid YAML. Supply one UTF-8 document with JSON-compatible scalars. "
+            "Invalid YAML. Use valid Unicode and supply one UTF-8 document with JSON-compatible scalars. "
             "Use true/false for booleans and null for nulls. Dates and yes/no are strings.",
         ) from exc
 

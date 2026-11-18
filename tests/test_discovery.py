@@ -482,20 +482,21 @@ def test_reused_path_item_unsupported_fields_consume_work_budget(tmp_path, monke
     )
 
 
+def without_filename(value, path):
+    if isinstance(value, Path):
+        assert value == path
+        return "<spec>"
+    if isinstance(value, dict):
+        return {key: without_filename(item, path) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(without_filename(item, path) for item in value)
+    return value
+
+
 @pytest.mark.parametrize(
     "stem, extension", [("openapi30", ".yaml"), ("openapi31", ".yml")]
 )
 def test_yaml_fixtures_match_json_inventory_and_evidence(stem, extension):
-    def without_filename(value, path):
-        if isinstance(value, Path):
-            assert value == path
-            return "<spec>"
-        if isinstance(value, dict):
-            return {key: without_filename(item, path) for key, item in value.items()}
-        if isinstance(value, tuple):
-            return tuple(without_filename(item, path) for item in value)
-        return value
-
     json_path = FIXTURES / f"{stem}.json"
     yaml_path = FIXTURES / f"{stem}{extension}"
     assert without_filename(
@@ -538,6 +539,7 @@ quoted_key:
         ("paths: &shared {}", "/paths", "YAML anchors are unsupported"),
         ("paths: *shared", "/paths", "YAML aliases are unsupported"),
         ("paths: {<<: *shared}", "/paths/<<", "Write the entries explicitly"),
+        ("paths: {<<: {}}", "/paths/<<", "Write the entries explicitly"),
         ("paths: !custom {}", "/paths", "Use plain JSON-compatible YAML values"),
         ("paths: !!map {}", "/paths", "Use plain JSON-compatible YAML values"),
         ("paths: {2: {}}", "/paths", "Quote numbers"),
@@ -592,3 +594,55 @@ def test_unsupported_spec_extension_has_remediation(tmp_path):
     with pytest.raises(DiscoveryError, match=r"Use \.json, \.yaml, or \.yml") as caught:
         load_inventory(path)
     assert caught.value.source == Source(path)
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_quoted_merge_spelling_is_an_ordinary_body_property(tmp_path, quote):
+    yaml_path = tmp_path / "openapi.yaml"
+    yaml_path.write_text(
+        f"""openapi: 3.1.2
+paths:
+  /example:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                {quote}<<{quote}: {{type: string}}
+""",
+        encoding="utf-8",
+    )
+    json_path = write_spec(
+        tmp_path,
+        paths={
+            "/example": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {"properties": {"<<": {"type": "string"}}}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    )
+    yaml_inventory = load_inventory(yaml_path)
+    assert yaml_inventory.operations[0].inputs[1].name == "application/json#/<<"
+    assert without_filename(asdict(yaml_inventory), yaml_path) == without_filename(
+        asdict(load_inventory(json_path)), json_path
+    )
+
+
+def test_yaml_out_of_range_unicode_escape_names_source(tmp_path):
+    path = tmp_path / "bad-unicode.yaml"
+    path.write_text(
+        'openapi: 3.1.2\npaths: {}\nx-label: "' + r"\U00110000" + '"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(DiscoveryError, match="Use valid Unicode") as caught:
+        load_inventory(path)
+    assert caught.value.source == Source(path)
+    assert str(path) in str(caught.value)
