@@ -308,6 +308,39 @@ class SimulatedAuditAbort(BaseException):
     """Non-Exception audit failure used to verify fail-closed handling."""
 
 
+@pytest.mark.parametrize("operation", ["register", "reserve"])
+def test_halt_recording_failure_preserves_primary_audit_abort(
+    tmp_path, monkeypatch, operation
+):
+    governor = make_governor()
+    handle = register(governor) if operation == "reserve" else None
+    assert governor._journal is not None
+    primary = SimulatedAuditAbort("primary audit abort")
+
+    def reject(*, event):
+        if event.event_type is AuditEventType.HALTED:
+            assert governor.usage().halted
+            raise RuntimeError("secondary halt write failure")
+        raise primary
+
+    monkeypatch.setattr(governor._journal, "append", reject)
+
+    with pytest.raises(AcquisitionAuditError) as caught:
+        if handle is None:
+            register(governor)
+        else:
+            acquire(governor, handle, tmp_path)
+
+    assert caught.value.__cause__ is primary
+    assert primary.__notes__ == [
+        "Halt event recording failed: RuntimeError: secondary halt write failure"
+    ]
+    assert governor.usage().halted
+    assert governor.usage().slots_in_use == 0
+    with pytest.raises(AcquisitionGovernanceError, match="halted"):
+        register(governor)
+
+
 def test_register_base_exception_from_audit_halts(monkeypatch):
     governor = make_governor()
     assert governor._journal is not None

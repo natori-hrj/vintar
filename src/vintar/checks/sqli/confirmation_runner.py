@@ -16,6 +16,7 @@ from enum import StrEnum
 
 import httpx
 
+from vintar.checks.sqli._errors import redact_runtime_errors
 from vintar.checks.sqli.confirmation import (
     CONFIRMATION_ORDER,
     CONFIRMATION_REQUESTS,
@@ -604,7 +605,7 @@ def verify_boolean_sqli_with_confirmation(
         )
 
     if status is ConfirmationStatus.CANDIDATE:
-        try:
+        with redact_runtime_errors("Cross-phase consistency assessment failed."):
             # Local import prevents the circular dependency.
             from vintar.checks.sqli.cross_phase import (
                 CrossPhaseAssessment,
@@ -622,9 +623,6 @@ def verify_boolean_sqli_with_confirmation(
 
             if type(assessment) is not CrossPhaseAssessment:
                 raise TypeError
-        except Exception:  # noqa: BLE001 - fail closed at the guard boundary
-            raise RuntimeError("Cross-phase consistency assessment failed.") from None
-
         if assessment.status is not CrossPhaseStatus.MATCH:
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,

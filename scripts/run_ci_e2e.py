@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT_LIMIT = 2_097_152
+ERROR_MESSAGE = "Vintar CI E2E verification failed."
 _VALIDATOR_NAMESPACE = runpy.run_path(str(ROOT / "scripts" / "validate_ci_report.py"))
 _validate = cast(
     Callable[[Path, int], None],
@@ -334,11 +335,15 @@ def main() -> int:
         run_e2e(base / "vintar-e2e-reports")
         return 0
 
-    except Exception:  # noqa: BLE001
-        # Do not leak runtime paths, target origins, or exceptions.
-        print("Vintar CI E2E verification failed.", file=sys.stderr)
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+        print(ERROR_MESSAGE, file=sys.stderr)
         return 2
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        code = main()
+    except Exception as exc:
+        print(ERROR_MESSAGE, file=sys.stderr)
+        raise SystemExit(2) from exc
+    raise SystemExit(code)

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError, ValidationError
 
 _SCHEMA = (
     Path(__file__).resolve().parents[1]
@@ -19,6 +20,7 @@ _ALLOWED_EXIT_CODES = {
     3: "inconclusive",
 }
 _MAX_REPORT_BYTES = 2_097_152
+_ERROR_MESSAGE = "Vintar: CI report validation failed."
 
 
 def _read_report(path: Path) -> bytes:
@@ -217,11 +219,15 @@ def main() -> int:
         _validate(Path(sys.argv[1]), code)
         return 0
 
-    except Exception:  # noqa: BLE001
-        # Never expose report contents, paths, or parser exceptions.
-        print("Vintar: CI report validation failed.", file=sys.stderr)
+    except (OSError, ValueError, ValidationError, SchemaError):
+        print(_ERROR_MESSAGE, file=sys.stderr)
         return 2
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        exit_code = main()
+    except Exception as exc:
+        print(_ERROR_MESSAGE, file=sys.stderr)
+        raise SystemExit(2) from exc
+    raise SystemExit(exit_code)

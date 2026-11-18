@@ -200,9 +200,11 @@ def verify_command(
 
     except KeyboardInterrupt:
         _abort(_CANCEL_ERROR, code=130)
-    except Exception:  # noqa: BLE001
-        # Never print exception details, target URLs, or payloads.
+    except (OSError, ValueError):
         _abort(_GENERIC_ERROR, code=int(CIExitCode.ERROR))
+    except Exception as exc:
+        typer.echo(_GENERIC_ERROR, err=True)
+        raise typer.Exit(code=int(CIExitCode.ERROR)) from exc
 
     try:
         _emit_json(payload)

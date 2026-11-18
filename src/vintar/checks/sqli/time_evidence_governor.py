@@ -9,6 +9,7 @@ import math
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from traceback import format_exception_only
 from typing import TYPE_CHECKING
 
 from vintar.checks.sqli._time_evidence_posix import (
@@ -51,6 +52,10 @@ class ResourceBudgetError(AcquisitionGovernanceError):
 
 class AcquisitionAuditError(AcquisitionGovernanceError):
     """Required audit recording failed and admissions were halted."""
+
+
+class _HaltEventRecordingError(Exception):
+    """Recording the halt event failed after a primary failure."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,34 +292,37 @@ class AcquisitionResourceGovernor:
             )
         )
 
+    def _record_halt_event(self, *, run_id: str | None) -> None:
+        try:
+            self._emit("halted", usage=self._usage_unlocked(), run_id=run_id)
+        except BaseException as exc:
+            raise _HaltEventRecordingError("Halt event recording failed.") from exc
+
     def _best_effort_halt_event(
         self,
         *,
         run_id: str | None,
-        process_status: ProcessAcquisitionStatus | None = None,
+        cause: BaseException,
     ) -> None:
         """A failed journal must never prevent the governor from halting."""
         try:
-            self._emit(
-                "halted",
-                usage=self._usage_unlocked(),
-                run_id=run_id,
-                process_status=process_status,
-            )
-        except BaseException:  # noqa: BLE001 - halt recording is best-effort
-            return
+            self._record_halt_event(run_id=run_id)
+        except _HaltEventRecordingError as exc:
+            secondary = exc.__cause__
+            detail = format_exception_only(secondary)[0].strip()
+            BaseException.add_note(cause, f"Halt event recording failed: {detail}")
 
     def _audit_failure(
         self,
         *,
         run_id: str | None,
         cause: BaseException,
-    ) -> None:
+    ) -> AcquisitionAuditError:
         self._halted = True
-        self._best_effort_halt_event(run_id=run_id)
-        raise AcquisitionAuditError(
+        self._best_effort_halt_event(run_id=run_id, cause=cause)
+        return AcquisitionAuditError(
             "Acquisition audit recording failed; admissions halted."
-        ) from cause
+        )
 
     def _require_running(self) -> None:
         if self._halted:
@@ -368,8 +376,8 @@ class AcquisitionResourceGovernor:
                     usage=self._usage_unlocked(),
                     run_id=run_id,
                 )
-            except BaseException as exc:  # noqa: BLE001 - fail closed on aborts
-                self._audit_failure(run_id=run_id, cause=exc)
+            except BaseException as exc:
+                raise self._audit_failure(run_id=run_id, cause=exc) from exc
 
             self._entries[run_id] = _Entry(
                 supervisor=supervisor,
@@ -466,6 +474,7 @@ class AcquisitionResourceGovernor:
         entry: _Entry,
         run_id: str,
         was_busy: bool,
+        cause: BaseException,
     ) -> None:
         """Halt and retain uncertain reservations without double counting."""
         with self._lock:
@@ -478,7 +487,7 @@ class AcquisitionResourceGovernor:
 
             entry.lifecycle_handle = None
             entry.handle = None
-            self._best_effort_halt_event(run_id=run_id)
+            self._best_effort_halt_event(run_id=run_id, cause=cause)
 
     def acquire(
         self,
@@ -535,8 +544,8 @@ class AcquisitionResourceGovernor:
                     run_id=handle.run_id,
                     evidence_id=evidence_id,
                 )
-            except BaseException as exc:  # noqa: BLE001 - fail closed on aborts
-                self._audit_failure(run_id=handle.run_id, cause=exc)
+            except BaseException as exc:
+                raise self._audit_failure(run_id=handle.run_id, cause=exc) from exc
 
             self._files_used += 1
             self._bytes_used += reservation
@@ -652,11 +661,12 @@ class AcquisitionResourceGovernor:
 
                 return result
 
-        except BaseException:
+        except BaseException as exc:
             self._freeze_after_exception(
                 entry=entry,
                 run_id=handle.run_id,
                 was_busy=True,
+                cause=exc,
             )
             raise
 
@@ -676,11 +686,11 @@ class AcquisitionResourceGovernor:
                     usage=self._usage_unlocked(),
                     run_id=handle.run_id,
                 )
-            except BaseException:
+            except BaseException as exc:
                 self._halted = True
                 entry.lifecycle_handle = None
                 entry.handle = None
-                self._best_effort_halt_event(run_id=handle.run_id)
+                self._best_effort_halt_event(run_id=handle.run_id, cause=exc)
                 raise
 
     def invalidate(self, *, handle: GovernorHandle) -> None:
@@ -699,11 +709,11 @@ class AcquisitionResourceGovernor:
                     usage=self._usage_unlocked(),
                     run_id=handle.run_id,
                 )
-            except BaseException:
+            except BaseException as exc:
                 self._halted = True
                 entry.lifecycle_handle = None
                 entry.handle = None
-                self._best_effort_halt_event(run_id=handle.run_id)
+                self._best_effort_halt_event(run_id=handle.run_id, cause=exc)
                 raise
 
 

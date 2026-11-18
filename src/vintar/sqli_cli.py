@@ -160,9 +160,11 @@ def sqli_verify(
     except KeyboardInterrupt:
         typer.echo("Error: SQLi verification was cancelled.", err=True)
         raise typer.Exit(code=130) from None
-    except Exception:  # noqa: BLE001 - sanitize all CLI boundary failures.
-        # Do not expose URLs, payloads, cookies, or exception details.
+    except (ValueError, httpx.InvalidURL):
         typer.echo(_GENERIC_ERROR, err=True)
         raise typer.Exit(code=2) from None
+    except Exception as exc:
+        typer.echo(_GENERIC_ERROR, err=True)
+        raise typer.Exit(code=2) from exc
 
     typer.echo(report)

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from vintar.checks.sqli._errors import redact_runtime_errors
 from vintar.checks.sqli.time_analyzer import (
     TimeAnalysis,
     TimeAnalysisStatus,
@@ -166,7 +167,7 @@ def verify_time_based_sqli(
     deadline_exceeded = False
 
     def finish() -> TimeRunReport:
-        try:
+        with redact_runtime_errors("Time verification analysis failed."):
             finished = _read_clock(clock)
             if finished < started:
                 raise RuntimeError("Time verification clock failed.")
@@ -183,8 +184,6 @@ def verify_time_based_sqli(
                 total_elapsed_seconds=max(0.0, finished - started),
                 deadline_exceeded=deadline_exceeded,
             )
-        except Exception:  # noqa: BLE001 - sanitize internal analysis failures
-            raise RuntimeError("Time verification analysis failed.") from None
 
         return report
 
@@ -213,18 +212,27 @@ def verify_time_based_sqli(
         budget_before = context.budget.used_requests
 
         try:
-            response = context.execute(
-                step.template,
-                transport=transport,
-                request_timeout=min(
-                    float(context.timeout),
-                    remaining,
+            with redact_runtime_errors(
+                "Time verification execution failed.",
+                passthrough=(
+                    ExecutionDeadlineExceededError,
+                    RateLimitInterruptedError,
+                    httpx.RequestError,
+                    RequestBudgetExceededError,
                 ),
-                deadline=deadline,
-                on_rate_wait=observe_rate_wait,
-                on_dispatch=observe_dispatch,
-                clock=clock,
-            )
+            ):
+                response = context.execute(
+                    step.template,
+                    transport=transport,
+                    request_timeout=min(
+                        float(context.timeout),
+                        remaining,
+                    ),
+                    deadline=deadline,
+                    on_rate_wait=observe_rate_wait,
+                    on_dispatch=observe_dispatch,
+                    clock=clock,
+                )
 
         except ExecutionDeadlineExceededError:
             deadline_exceeded = True
@@ -243,9 +251,6 @@ def verify_time_based_sqli(
 
         except RequestBudgetExceededError:
             raise RuntimeError("Time verification request budget exhausted.") from None
-
-        except Exception:  # noqa: BLE001 - sanitize transport and callback failures
-            raise RuntimeError("Time verification execution failed.") from None
 
         if response is not None:
             if type(response) is not HttpResult:
