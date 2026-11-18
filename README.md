@@ -153,6 +153,8 @@ uv run python scripts/check_architecture.py
 
 The CLI golden tests use deterministic fixtures. After an intentional output change, run `uv run python scripts/update_cli_goldens.py --write` and review the resulting diff. The README examples are checked against the same goldens by pytest.
 
+On Linux x86-64, run `uv run python scripts/scan_git_history.py` from a full Git checkout to scan committed secrets. The first run downloads the pinned Gitleaks archive from GitHub. Later scans and pytest reuse the cached archive and verify its SHA-256 before each use. CI warms the same cache in the scan step before pytest. A download or verification failure fails the scan and its tests.
+
 ## License
 
 The license has not yet been decided.
