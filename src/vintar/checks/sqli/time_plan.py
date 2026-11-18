@@ -10,7 +10,7 @@ be accepted directly from untrusted configuration.
 import math
 import unicodedata
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from vintar.core.executor import ExecutionContext
 from vintar.core.injector import inject
@@ -31,7 +31,7 @@ MAX_REQUEST_TIMEOUT_SECONDS = 8.0
 MAX_PAYLOAD_LENGTH = 512
 
 
-class TimeProbeKind(str, Enum):
+class TimeProbeKind(StrEnum):
     BASELINE = "baseline"
     CONTROL = "control"
     DELAY = "delay"

@@ -6,7 +6,7 @@ independence. It performs no network or filesystem I/O.
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from vintar.checks.sqli.time_cluster_quality import ClusterBenchmark
 from vintar.checks.sqli.time_quality import GroundTruth
@@ -41,19 +41,19 @@ def _identifiers(values: object, *, allow_empty: bool = False) -> None:
         raise ValueError("Invalid provenance identifier ordering.")
 
 
-class RegistrationStatus(str, Enum):
+class RegistrationStatus(StrEnum):
     PRE_REGISTERED = "pre_registered"
     RETROSPECTIVE = "retrospective"
 
 
-class ClusterBasis(str, Enum):
+class ClusterBasis(StrEnum):
     SHARED_SOURCE = "shared_source"
     SHARED_RUNTIME = "shared_runtime"
     SHARED_HARNESS = "shared_harness"
     MULTIPLE_DEPENDENCIES = "multiple_dependencies"
 
 
-class GroundTruthMethod(str, Enum):
+class GroundTruthMethod(StrEnum):
     SQL_EXECUTION_TRACE = "sql_execution_trace"
     SOURCE_REVIEW = "source_review"
     NON_SQL_IMPLEMENTATION = "non_sql_implementation"

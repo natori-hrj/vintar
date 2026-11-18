@@ -201,6 +201,18 @@ def test_canonical_digest_uses_versioned_json():
     assert record.digest == expected
 
 
+def test_audit_enum_json_output_is_contract():
+    payload = time_evidence_audit._canonical_payload(
+        sequence=3,
+        previous_digest=GENESIS_DIGEST,
+        event=settled(),
+    )
+
+    event = json.loads(payload)["event"]
+    assert event["event_type"] == "settled"
+    assert event["process_status"] == "completed"
+
+
 def test_snapshot_is_immutable_and_not_updated_retroactively():
     journal = create_audit_journal()
     first_snapshot = journal.snapshot()

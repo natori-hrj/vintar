@@ -2,14 +2,14 @@ import math
 import re
 import sys
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 JSON_SAFE_INTEGER_MAX = (1 << 53) - 1
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 
 
-class Verdict(str, Enum):
+class Verdict(StrEnum):
     """Final result of a security verification."""
 
     VULNERABLE = "vulnerable"
@@ -17,7 +17,7 @@ class Verdict(str, Enum):
     INCONCLUSIVE = "inconclusive"
 
 
-class ProbeKind(str, Enum):
+class ProbeKind(StrEnum):
     """Type of request used for Boolean-based verification."""
 
     BASELINE = "baseline"
@@ -25,7 +25,7 @@ class ProbeKind(str, Enum):
     FALSE = "false"
 
 
-class ProbeError(str, Enum):
+class ProbeError(StrEnum):
     """Machine-readable reason why a probe produced no HTTP response."""
 
     TIMEOUT = "timeout"

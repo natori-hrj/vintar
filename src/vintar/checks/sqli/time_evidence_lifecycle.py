@@ -8,7 +8,7 @@ not an authentication or operating-system security boundary.
 import threading
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from vintar.checks.sqli.time_evidence_process import (
@@ -24,7 +24,7 @@ from vintar.checks.sqli.time_evidence_stream import (
 )
 
 
-class AcquisitionLifecycleStatus(str, Enum):
+class AcquisitionLifecycleStatus(StrEnum):
     ACTIVE = "active"
     TERMINATED = "terminated"
     INVALIDATED = "invalidated"

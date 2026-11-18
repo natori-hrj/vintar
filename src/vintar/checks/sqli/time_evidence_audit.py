@@ -9,7 +9,7 @@ import hmac
 import json
 import threading
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from vintar.checks.sqli.time_evidence import (
     MAX_EVIDENCE_BYTES,
@@ -30,7 +30,7 @@ _MAX_AUDIT_BYTES = MAX_EVIDENCE_BYTES * MAX_EVIDENCE_RECORDS**2
 _MAX_AUDIT_WORKERS = 64
 
 
-class AuditEventType(str, Enum):
+class AuditEventType(StrEnum):
     REGISTERED = "registered"
     RESERVED = "reserved"
     SETTLED = "settled"

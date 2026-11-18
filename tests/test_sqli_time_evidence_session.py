@@ -451,7 +451,7 @@ def test_observation_cannot_be_attached_to_other_record():
     altered = replace(session.observations[-1], binding=modified_binding)
 
     with pytest.raises(ValueError, match="bound evidence"):
-        replace(session, observations=session.observations[:-1] + (altered,))
+        replace(session, observations=(*session.observations[:-1], altered))
 
 
 def test_observation_cannot_be_attached_to_other_binding():

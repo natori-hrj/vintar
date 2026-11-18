@@ -12,7 +12,7 @@ A confirmed response pattern must not be interpreted as proof of SQLi.
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from vintar.checks.sqli.models import (
     ProbeKind,
@@ -35,7 +35,7 @@ CONTROL_PREFIX = "__vintar_control_"
 MIN_CONTROL_SUFFIX_LENGTH = 8
 
 
-class ConfirmationKind(str, Enum):
+class ConfirmationKind(StrEnum):
     BASELINE = "baseline"
     TRUE_1 = "true_1"
     FALSE_1 = "false_1"

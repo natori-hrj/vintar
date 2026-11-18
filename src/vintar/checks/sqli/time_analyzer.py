@@ -7,7 +7,7 @@ Timing thresholds are experimental and are not production-validated.
 import math
 import statistics
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from vintar.checks.sqli.time_plan import (
     MAX_DELAY_SECONDS,
@@ -19,14 +19,14 @@ from vintar.checks.sqli.time_plan import (
 )
 
 
-class TimeProbeOutcome(str, Enum):
+class TimeProbeOutcome(StrEnum):
     COMPLETED = "completed"
     TIMEOUT = "timeout"
     REQUEST_FAILED = "request_failed"
     INTERRUPTED = "interrupted"
 
 
-class TimeAnalysisStatus(str, Enum):
+class TimeAnalysisStatus(StrEnum):
     CANDIDATE = "candidate"
     NOT_CONFIRMED = "not_confirmed"
     INCONCLUSIVE = "inconclusive"

@@ -12,7 +12,7 @@ import re
 import secrets
 from collections import Counter
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 import httpx
 
@@ -61,7 +61,7 @@ _INCONCLUSIVE_REASONS = frozenset(
 )
 
 
-class ConfirmationStatus(str, Enum):
+class ConfirmationStatus(StrEnum):
     SKIPPED = "skipped"
     CANDIDATE = "candidate"
     NOT_CONFIRMED = "not_confirmed"

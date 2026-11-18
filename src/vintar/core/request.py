@@ -1,12 +1,12 @@
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class InjectionLocation(str, Enum):
+class InjectionLocation(StrEnum):
     QUERY = "query"
 
 
-class InjectionMode(str, Enum):
+class InjectionMode(StrEnum):
     REPLACE = "replace"
     APPEND = "append"
 

@@ -7,7 +7,7 @@ does not establish evidence authenticity or factual correctness.
 import hashlib
 import hmac
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from vintar.checks.sqli.time_provenance import ProvenanceManifest
 
@@ -27,7 +27,7 @@ def _validate_id(value: object) -> None:
         raise ValueError("Invalid evidence identifier.")
 
 
-class EvidenceKind(str, Enum):
+class EvidenceKind(StrEnum):
     REGISTRATION = "registration"
     CLUSTER_RATIONALE = "cluster_rationale"
     GROUND_TRUTH = "ground_truth"

@@ -323,7 +323,7 @@ def test_manifest_rejects_extra_cluster():
     with pytest.raises(ValueError, match="Cluster provenance"):
         replace(
             manifest,
-            clusters=manifest.clusters + (additional,),
+            clusters=(*manifest.clusters, additional),
         )
 
 
@@ -464,7 +464,7 @@ def test_manifest_rejects_family_basis_with_mixed_families(
             registration=manifest.registration,
             registration_evidence_id=manifest.registration_evidence_id,
             clusters=cluster_records,
-            applications=manifest.applications + (extra_record,),
+            applications=(*manifest.applications, extra_record),
         )
 
 

@@ -5,7 +5,14 @@ import pytest
 from typer.testing import CliRunner
 
 from vintar import sqli_cli
-from vintar.checks.sqli.models import Verdict, VerificationResult
+from vintar.checks.sqli.models import (
+    Observation,
+    ProbeError,
+    ProbeFailure,
+    ProbeKind,
+    Verdict,
+    VerificationResult,
+)
 from vintar.cli import app
 from vintar.core import executor
 from vintar.core.rate_limit import RateLimiter
@@ -68,7 +75,7 @@ def test_successful_command_prints_json(monkeypatch):
 
     monkeypatch.setattr(sqli_cli, "verify_boolean_sqli", fake_verify)
 
-    result = runner.invoke(app, BASE_ARGS + ["--authorized"])
+    result = runner.invoke(app, [*BASE_ARGS, "--authorized"])
 
     assert result.exit_code == 0
     assert len(calls) == 1
@@ -81,6 +88,37 @@ def test_successful_command_prints_json(monkeypatch):
     assert result.stderr == ""
 
 
+def test_sqli_verify_enum_json_and_exit_code_are_contract(monkeypatch):
+    verification = VerificationResult(
+        check_id="cli-sqli",
+        verdict=Verdict.INCONCLUSIVE,
+        observations=(
+            Observation(
+                kind=ProbeKind.BASELINE,
+                status_code=200,
+                body_size=1,
+                elapsed=0.0,
+                body_digest="a" * 64,
+            ),
+        ),
+        failures=(ProbeFailure(kind=ProbeKind.TRUE, error=ProbeError.TIMEOUT),),
+        request_count=2,
+        reason_code="probe_failed",
+        reason="A probe timed out.",
+    )
+    monkeypatch.setattr(sqli_cli, "verify_boolean_sqli", lambda **kwargs: verification)
+
+    result = runner.invoke(app, [*BASE_ARGS, "--authorized"])
+
+    assert result.exit_code == 0
+    report = json.loads(result.stdout)
+    assert report["verdict"] == "inconclusive"
+    assert [item["kind"] for item in report["observations"]] == ["baseline"]
+    assert report["failures"] == [
+        {"kind": "true", "error": "timeout", "elapsed": None},
+    ]
+
+
 def test_context_has_required_limits(monkeypatch):
     contexts = []
 
@@ -90,7 +128,7 @@ def test_context_has_required_limits(monkeypatch):
 
     monkeypatch.setattr(sqli_cli, "verify_boolean_sqli", fake_verify)
 
-    result = runner.invoke(app, BASE_ARGS + ["--authorized"])
+    result = runner.invoke(app, [*BASE_ARGS, "--authorized"])
 
     assert result.exit_code == 0
     assert contexts[0].budget.max_requests == 6
@@ -110,7 +148,7 @@ def test_out_of_scope_target_is_rejected(monkeypatch):
     args = BASE_ARGS.copy()
     args[3] = "http://example.com/items"
 
-    result = runner.invoke(app, args + ["--authorized"])
+    result = runner.invoke(app, [*args, "--authorized"])
 
     assert result.exit_code == 2
     assert calls == []
@@ -138,7 +176,7 @@ def test_invalid_origin_is_rejected(origin, monkeypatch):
     args = BASE_ARGS.copy()
     args[5] = origin
 
-    result = runner.invoke(app, args + ["--authorized"])
+    result = runner.invoke(app, [*args, "--authorized"])
 
     assert result.exit_code == 2
     assert calls == []
@@ -157,7 +195,7 @@ def test_invalid_query_parameter_is_rejected(monkeypatch):
     args = BASE_ARGS.copy()
     args[7] = "missing-equals"
 
-    result = runner.invoke(app, args + ["--authorized"])
+    result = runner.invoke(app, [*args, "--authorized"])
 
     assert result.exit_code == 2
     assert calls == []
@@ -172,7 +210,7 @@ def test_pretty_output_is_valid_json(monkeypatch):
 
     result = runner.invoke(
         app,
-        BASE_ARGS + ["--authorized", "--pretty"],
+        [*BASE_ARGS, "--authorized", "--pretty"],
     )
 
     assert result.exit_code == 0
@@ -186,7 +224,7 @@ def test_internal_validation_does_not_leak_secrets(monkeypatch):
 
     monkeypatch.setattr(sqli_cli, "verify_boolean_sqli", fake_verify)
 
-    result = runner.invoke(app, BASE_ARGS + ["--authorized"])
+    result = runner.invoke(app, [*BASE_ARGS, "--authorized"])
 
     assert result.exit_code == 2
     assert result.stdout == ""
@@ -199,7 +237,7 @@ def test_unexpected_exception_does_not_leak_secrets(monkeypatch):
 
     monkeypatch.setattr(sqli_cli, "verify_boolean_sqli", fake_verify)
 
-    result = runner.invoke(app, BASE_ARGS + ["--authorized"])
+    result = runner.invoke(app, [*BASE_ARGS, "--authorized"])
 
     assert result.exit_code == 2
     assert result.stdout == ""
@@ -213,7 +251,7 @@ def test_keyboard_interrupt_is_safely_reported(monkeypatch):
 
     monkeypatch.setattr(sqli_cli, "verify_boolean_sqli", fake_verify)
 
-    result = runner.invoke(app, BASE_ARGS + ["--authorized"])
+    result = runner.invoke(app, [*BASE_ARGS, "--authorized"])
 
     assert result.exit_code == 130
     assert result.stdout == ""
@@ -240,7 +278,7 @@ def test_equivalent_origins_are_normalized(url, origin, monkeypatch):
     args[3] = url
     args[5] = origin
 
-    result = runner.invoke(app, args + ["--authorized"])
+    result = runner.invoke(app, [*args, "--authorized"])
 
     assert result.exit_code == 0
 
@@ -256,7 +294,7 @@ def test_explicit_zero_port_is_rejected_before_verification(monkeypatch):
     args = BASE_ARGS.copy()
     args[5] = "http://localhost:0"
 
-    result = runner.invoke(app, args + ["--authorized"])
+    result = runner.invoke(app, [*args, "--authorized"])
 
     assert result.exit_code == 2
     assert calls == []
@@ -274,8 +312,8 @@ def test_duplicate_parameter_occurrence_and_append_are_preserved(monkeypatch):
 
     result = runner.invoke(
         app,
-        BASE_ARGS
-        + [
+        [
+            *BASE_ARGS,
             "--param",
             "id=2",
             "--param",
@@ -347,7 +385,7 @@ def test_cli_runs_six_probes_through_execution_context(monkeypatch):
         ),
     )
 
-    result = runner.invoke(app, BASE_ARGS + ["--authorized"])
+    result = runner.invoke(app, [*BASE_ARGS, "--authorized"])
 
     assert result.exit_code == 0
     assert len(requests) == 6

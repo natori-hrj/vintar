@@ -6,7 +6,7 @@ sample. Independent controls do not prove that SQL was executed.
 
 import math
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from statistics import NormalDist
 
 from vintar.checks.sqli.time_analyzer import TimeAnalysisStatus
@@ -287,7 +287,7 @@ def summarize_research(
     )
 
 
-class ControlAssessment(str, Enum):
+class ControlAssessment(StrEnum):
     """Research interpretation of an independently executed control."""
 
     CONTROL_REACTIVE = "control_reactive"

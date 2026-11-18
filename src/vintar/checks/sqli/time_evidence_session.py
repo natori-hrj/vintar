@@ -8,7 +8,7 @@ No filesystem or network I/O is performed.
 import hashlib
 import hmac
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from vintar.checks.sqli.time_evidence import (
     MAX_EVIDENCE_BYTES,
@@ -18,13 +18,13 @@ from vintar.checks.sqli.time_evidence import (
 )
 
 
-class EvidenceCheckStatus(str, Enum):
+class EvidenceCheckStatus(StrEnum):
     MATCHED = "matched"
     MISMATCHED = "mismatched"
     UNCHECKED = "unchecked"
 
 
-class SessionStatus(str, Enum):
+class SessionStatus(StrEnum):
     COMPLETE = "complete"
     INCOMPLETE = "incomplete"
     FAILED = "failed"

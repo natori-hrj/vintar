@@ -8,7 +8,7 @@ It does not prove SQL execution or a SQL injection vulnerability.
 """
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from vintar.checks.sqli.confirmation import (
     ConfirmationKind,
@@ -25,7 +25,7 @@ from vintar.checks.sqli.models import (
 )
 
 
-class CrossPhaseStatus(str, Enum):
+class CrossPhaseStatus(StrEnum):
     MATCH = "match"
     MISMATCH = "mismatch"
 

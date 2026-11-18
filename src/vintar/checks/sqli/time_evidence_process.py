@@ -9,7 +9,7 @@ import math
 import multiprocessing
 import time
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from multiprocessing.connection import Connection
 from pathlib import Path
 
@@ -36,7 +36,7 @@ _TERMINATION_GRACE_SECONDS = 0.2
 _MAX_TIMEOUT_SECONDS = 3600.0
 
 
-class ProcessAcquisitionStatus(str, Enum):
+class ProcessAcquisitionStatus(StrEnum):
     COMPLETED = "completed"
     TIMED_OUT = "timed_out"
     WORKER_FAILED = "worker_failed"

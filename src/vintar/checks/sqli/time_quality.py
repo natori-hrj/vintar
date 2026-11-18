@@ -6,7 +6,7 @@ These metrics do not establish real-world detector performance.
 
 import math
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from vintar.checks.sqli.time_analyzer import (
     REASONS,
@@ -22,7 +22,7 @@ MAX_ELAPSED_SECONDS_PER_RUN = 1_000_000
 _RATE_TOLERANCE = 1e-12
 
 
-class GroundTruth(str, Enum):
+class GroundTruth(StrEnum):
     VULNERABLE = "vulnerable"
     NON_VULNERABLE = "non_vulnerable"
 

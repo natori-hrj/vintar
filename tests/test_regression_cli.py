@@ -146,6 +146,34 @@ def mock_http(monkeypatch):
     return received, response_status
 
 
+@pytest.mark.parametrize(
+    ("expected", "http_status", "verdict", "status", "exit_code"),
+    [
+        ("not_detected", 200, "not_detected", "pass", 0),
+        ("vulnerable", 200, "not_detected", "fail", 1),
+        ("inconclusive", 429, "inconclusive", "inconclusive", 3),
+    ],
+)
+def test_verify_enum_json_and_exit_code_are_contract(
+    tmp_path, mock_http, expected, http_status, verdict, status, exit_code
+):
+    case = write_case(tmp_path, expected=expected)
+    _, statuses = mock_http
+    statuses[0] = http_status
+
+    result = cli.invoke(app, args_for(case), env=ENV)
+
+    assert result.exit_code == exit_code
+    report = json.loads(result.stdout)
+    assert report["exit_code"] == exit_code
+    assert report["status"] == status
+    [outcome] = report["outcomes"]
+    assert outcome["status"] == status
+    assert outcome["expected_verdict"] == expected
+    assert outcome["actual_verdict"] == verdict
+    assert outcome["verification"]["verdict"] == verdict
+
+
 def test_environment_rebinds_target_origin(
     tmp_path,
     mock_http,
@@ -305,7 +333,7 @@ def test_cli_cannot_override_environment_origins(
 
     result = cli.invoke(
         app,
-        args_for(case) + [option, "http://attacker.invalid:9999"],
+        [*args_for(case), option, "http://attacker.invalid:9999"],
         env=ENV,
     )
 
@@ -727,7 +755,7 @@ def test_pretty_output(
 
     result = cli.invoke(
         app,
-        args_for(case) + ["--pretty"],
+        [*args_for(case), "--pretty"],
         env=ENV,
     )
 
@@ -770,7 +798,7 @@ def test_verify_uses_real_local_http_transport(tmp_path):
 
         result = cli.invoke(
             app,
-            args_for(case) + ["--rps", "10"],
+            [*args_for(case), "--rps", "10"],
             env={
                 "VINTAR_TARGET_ORIGIN": origin,
                 "VINTAR_ALLOWED_ORIGIN": origin,

@@ -5,7 +5,7 @@ application samples. No vulnerability verdict is produced.
 """
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from vintar.checks.sqli.time_quality import (
     MAX_CASES,
@@ -32,7 +32,7 @@ def _validate_tag(value: object) -> None:
         raise ValueError("Invalid application evaluation identifier.")
 
 
-class ApplicationOutcome(str, Enum):
+class ApplicationOutcome(StrEnum):
     CANDIDATE = "candidate"
     NOT_CONFIRMED = "not_confirmed"
     INCONCLUSIVE = "inconclusive"

@@ -3,7 +3,7 @@
 import math
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import httpx
 
@@ -68,7 +68,7 @@ class TrustedExecutionPolicy:
             object.__setattr__(self, name, normalized)
 
 
-class RegressionStatus(str, Enum):
+class RegressionStatus(StrEnum):
     """Security-gate result, independent of expected-verdict matching.
 
     PASS means only that the expected NOT_DETECTED verdict was observed for

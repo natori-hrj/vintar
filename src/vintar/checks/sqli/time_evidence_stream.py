@@ -9,7 +9,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from vintar.checks.sqli._time_evidence_posix import (
@@ -38,7 +38,7 @@ from vintar.checks.sqli.time_evidence_session import (
 _MAX_TOTAL_BYTES = MAX_EVIDENCE_BYTES * MAX_EVIDENCE_RECORDS
 
 
-class AcquisitionOutcome(str, Enum):
+class AcquisitionOutcome(StrEnum):
     MATCHED = "matched"
     MISMATCHED = "mismatched"
     ACQUISITION_FAILED = "acquisition_failed"

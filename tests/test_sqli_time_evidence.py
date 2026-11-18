@@ -287,7 +287,7 @@ def test_extra_evidence_is_rejected():
     with pytest.raises(ValueError, match="Evidence does not match"):
         replace(
             binding,
-            index=create_evidence_index(binding.index.records + (extra,)),
+            index=create_evidence_index((*binding.index.records, extra)),
         )
 
 
@@ -547,8 +547,8 @@ def test_index_limit():
 
     with pytest.raises(ValueError, match="size"):
         create_evidence_index(
-            records
-            + (
+            (
+                *records,
                 create_evidence_record(
                     evidence_id="overflow",
                     kind=EvidenceKind.EVALUATION_PLAN,
