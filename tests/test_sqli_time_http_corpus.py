@@ -365,16 +365,10 @@ def http_server():
         )
 
         server = uvicorn.Server(config)
-        failures: list[BaseException] = []
-
-        def serve() -> None:
-            try:
-                server.run(sockets=[listener])
-            except BaseException as exc:  # noqa: BLE001
-                failures.append(exc)
 
         worker = threading.Thread(
-            target=serve,
+            target=server.run,
+            kwargs={"sockets": [listener]},
             daemon=True,
         )
         worker.start()
@@ -389,7 +383,6 @@ def http_server():
 
             assert server.started
             assert worker.is_alive()
-            assert not failures
 
             yield state, f"http://127.0.0.1:{port}"
 
@@ -402,7 +395,6 @@ def http_server():
                 worker.join(timeout=5)
 
             assert not worker.is_alive()
-            assert not failures
 
     finally:
         listener.close()

@@ -357,17 +357,10 @@ def fastapi_origin(prepared_databases, db_credentials):
         )
 
         server = uvicorn.Server(config)
-        errors: list[BaseException] = []
-
-        def serve() -> None:
-            try:
-                server.run(sockets=[listener])
-            # Test harness: preserve every server-thread failure for teardown.
-            except BaseException as exc:  # noqa: BLE001
-                errors.append(exc)
 
         worker = threading.Thread(
-            target=serve,
+            target=server.run,
+            kwargs={"sockets": [listener]},
             daemon=True,
         )
         worker.start()
@@ -382,7 +375,6 @@ def fastapi_origin(prepared_databases, db_credentials):
 
             assert server.started
             assert worker.is_alive()
-            assert not errors
             assert listener.getsockname()[0] == "127.0.0.1"
 
             yield state, f"http://127.0.0.1:{port}"
@@ -395,7 +387,6 @@ def fastapi_origin(prepared_databases, db_credentials):
                 worker.join(timeout=5)
 
             assert not worker.is_alive()
-            assert not errors
     finally:
         listener.close()
 

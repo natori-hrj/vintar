@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import threading
 from dataclasses import replace
 
 import pytest
@@ -689,30 +688,18 @@ def test_append_failure_does_not_partially_update_journal(
     assert journal.head_digest == before_head
 
 
-def test_concurrent_appends_have_contiguous_sequences():
+def test_concurrent_appends_have_contiguous_sequences(worker_pool):
     journal = AcquisitionAuditJournal()
-    errors: list[BaseException] = []
-    threads = []
     thread_count = 8
     records_per_thread = 25
 
     def append_events() -> None:
-        try:
-            for _ in range(records_per_thread):
-                journal.append(event=registered())
-        except BaseException as exc:  # noqa: BLE001 - surface thread failures
-            errors.append(exc)
+        for _ in range(records_per_thread):
+            journal.append(event=registered())
 
-    for _ in range(thread_count):
-        thread = threading.Thread(target=append_events)
-        threads.append(thread)
-        thread.start()
-
-    for thread in threads:
-        thread.join(timeout=5.0)
-
-    assert all(not thread.is_alive() for thread in threads)
-    assert not errors
+    futures = [worker_pool.submit(append_events) for _ in range(thread_count)]
+    for future in futures:
+        future.result(timeout=5.0)
 
     records = journal.snapshot()
     assert len(records) == thread_count * records_per_thread

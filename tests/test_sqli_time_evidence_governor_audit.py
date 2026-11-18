@@ -1,7 +1,5 @@
 """Integration tests for governed acquisition audit event emission."""
 
-import threading
-
 import pytest
 from test_sqli_time_evidence_loader import make_session
 
@@ -489,29 +487,11 @@ def test_multiple_runs_share_one_audit_chain(tmp_path):
     assert verification.head_digest == records[-1].digest
 
 
-def test_concurrent_registration_is_serialized():
+def test_concurrent_registration_is_serialized(worker_pool):
     governor = make_governor()
-    errors = []
-    handles = []
-    lock = threading.Lock()
 
-    def task():
-        try:
-            result = register(governor)
-            with lock:
-                handles.append(result)
-        except BaseException as exc:  # noqa: BLE001 - surface thread failures
-            with lock:
-                errors.append(exc)
-
-    threads = [threading.Thread(target=task) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5.0)
-
-    assert all(not thread.is_alive() for thread in threads)
-    assert not errors
+    futures = [worker_pool.submit(register, governor) for _ in range(8)]
+    handles = [future.result(timeout=5.0) for future in futures]
     assert len(handles) == 8
     assert len({handle.run_id for handle in handles}) == 8
     assert governor.audit_verify().record_count == 8
