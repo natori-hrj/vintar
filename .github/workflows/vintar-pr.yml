@@ -59,11 +59,17 @@ jobs:
       - name: Check Python types
         run: uv run --locked mypy --strict src/vintar
 
-      - name: Check distributions
+      - name: Check distributions and smoke-test the wheel
         run: uv run --locked python scripts/check_distributions.py
 
-      - name: Run pytest
-        run: uv run pytest
+      - name: Run pytest with branch coverage
+        run: |
+          set -euo pipefail
+          coverage_dir="$(mktemp -d "${RUNNER_TEMP}/vintar-coverage.XXXXXX")"
+          export COVERAGE_FILE="$coverage_dir/.coverage"
+          uv run --locked coverage run -m pytest
+          uv run --locked coverage combine
+          uv run --locked coverage report --show-missing
 
   loopback-e2e:
     name: Vintar PR Loopback E2E

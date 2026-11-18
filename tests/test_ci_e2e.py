@@ -50,11 +50,13 @@ def test_cli_environment_does_not_inherit_ambient_values(monkeypatch):
     monkeypatch.setenv("TOP_SECRET", "must-not-reach-child")
     monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid")
     monkeypatch.setenv("VINTAR_TARGET_ORIGIN", "https://production.invalid")
+    monkeypatch.setenv("COVERAGE_PROCESS_CONFIG", "coverage-configuration")
 
     env = _cli_environment("http://127.0.0.1:12345")
 
     assert env["VINTAR_TARGET_ORIGIN"] == "http://127.0.0.1:12345"
     assert env["VINTAR_ALLOWED_ORIGIN"] == "http://127.0.0.1:12345"
+    assert env["COVERAGE_PROCESS_CONFIG"] == "coverage-configuration"
     assert "TOP_SECRET" not in env
     assert "HTTP_PROXY" not in env
     assert "PYTHONPATH" not in env

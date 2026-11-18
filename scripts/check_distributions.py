@@ -1,5 +1,6 @@
 """Build and verify the wheel and source distribution for CI."""
 
+import os
 import subprocess
 import sys
 import tarfile
@@ -182,6 +183,114 @@ def inspect_distributions(root: Path, output: Path) -> tuple[Path, Path] | None:
         return None
 
 
+def smoke_command(
+    command: list[str],
+    *,
+    directory: Path,
+    environment: dict[str, str],
+    failure: str,
+    expected_exit: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=directory,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise ValueError(f"{failure} Could not start {command[0]}: {error}") from error
+    require(
+        result.returncode == expected_exit,
+        f"{failure} Expected exit {expected_exit}, got {result.returncode}. "
+        f"{result.stderr.strip()}",
+    )
+    return result
+
+
+def smoke_wheel(wheel: Path, directory: Path) -> None:
+    require(
+        not directory.resolve().is_relative_to(ROOT),
+        "The wheel smoke directory is inside the checkout. Set TMPDIR to a location outside the repository.",
+    )
+    environment = os.environ.copy()
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "VINTAR_TARGET_ORIGIN",
+        "VINTAR_ALLOWED_ORIGIN",
+    ):
+        environment.pop(name, None)
+    environment["NO_COLOR"] = "1"
+
+    venv = directory / "wheel-venv"
+    python = str(venv / "bin" / "python")
+    cli = str(venv / "bin" / "vintar")
+
+    def run(
+        command: list[str], failure: str, *, expected_exit: int = 0
+    ) -> subprocess.CompletedProcess[str]:
+        return smoke_command(
+            command,
+            directory=directory,
+            environment=environment,
+            failure=failure,
+            expected_exit=expected_exit,
+        )
+
+    run(
+        ["uv", "venv", "--python", "3.13", str(venv)],
+        "Could not create the smoke-test environment. Install Python 3.13 and retry.",
+    )
+    run(
+        ["uv", "pip", "install", "--python", python, str(wheel)],
+        "The wheel could not be installed. Fix its package metadata or restore access to the dependency index.",
+    )
+    run(
+        ["uv", "pip", "check", "--python", python],
+        "The wheel's installed dependencies are inconsistent. Fix the runtime dependency declarations.",
+    )
+    installed = run(
+        [
+            python,
+            "-I",
+            "-c",
+            "from importlib.metadata import version; print(version('vintar'))",
+        ],
+        "Could not read the installed version. Ensure the wheel includes vintar distribution metadata.",
+    ).stdout.strip()
+    version = run(
+        [cli, "version"],
+        "The installed version command failed. Fix the console entry point and rebuild the wheel.",
+    )
+    require(
+        bool(installed) and version.stdout == f"Vintar v{installed}\n",
+        "The CLI version differs from the installed metadata. Read the version from importlib.metadata.",
+    )
+    help_output = run(
+        [cli, "verify", "--help"],
+        "The installed verify help command failed. Ensure the wheel includes the verify command.",
+    )
+    require(
+        "--cases" in help_output.stdout and "--authorized" in help_output.stdout,
+        "Installed verify help is missing the expected options. Restore --cases and --authorized.",
+    )
+    unauthorized = run(
+        [cli, "verify", "--cases", "case.toml"],
+        "The installed CLI returned the wrong status without authorization. Reject before verification with exit 2.",
+        expected_exit=2,
+    )
+    require(
+        unauthorized.stdout == ""
+        and unauthorized.stderr
+        == "Error: explicit testing authorization is required.\n",
+        "Unexpected output without authorization. Emit only the authorization diagnostic on stderr.",
+    )
+
+
 def main() -> int:
     with TemporaryDirectory(prefix="vintar-distributions-") as directory:
         output = Path(directory)
@@ -222,6 +331,12 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+        try:
+            smoke_wheel(wheel, output)
+        except ValueError as error:
+            print(f"Installed-wheel smoke test failed: {error}", file=sys.stderr)
+            return 1
+        print("Installed-wheel smoke test passed on Python 3.13.")
     return 0
 
 
