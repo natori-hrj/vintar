@@ -1,219 +1,158 @@
-# Vintar
+# Vintar (Unreleased)
 
-**Precision Security Toolkit**
+Vintar is an unreleased Python tool for running authorized web security regression checks in CI. It runs reviewed cases against a configured target and reports the batch result as JSON and a process exit code.
 
-Vintar is a modular, standalone security testing toolkit written in Python.
+## Install from Source
 
-Built for learning, experimenting with, and understanding web security vulnerabilities through hands-on development.
-
-The project focuses on precise vulnerability verification, automation, and extensibility without depending on external security testing tools.
-
-> [!NOTE]
-> Vintar is in early development. The current version provides HTTP request and response inspection, configurable timeouts, and response size limits. Vulnerability testing modules are under development.
-
-## Features
-
-### Available
-
-- Standalone CLI powered by Typer
-- HTTP GET and POST requests
-- Custom HTTP request bodies
-- Custom HTTP headers and cookies
-- Query parameter handling, including repeated parameter names
-- HTTP response status and header inspection
-- Response time measurement
-- Structured HTTP response model (`HttpResult`)
-- Response body capture and size measurement
-- Configurable HTTP request timeouts
-- Streaming response handling with configurable size limits
-- Truncated response detection
-- Automated tests using pytest
-- Code linting and formatting with Ruff
-
-### Planned
-
-- Structured HTTP request templates
-- Injection point identification and payload placement
-- SQL injection testing module
-- Boolean-based and time-based blind SQL injection verification
-- Automated response analysis and false-positive reduction
-- Request rate limiting and execution budgets
-- Binary search optimization
-- JSON reporting and result export
-- Additional security testing modules
-
-## Requirements
-
-- Python 3.13+
-- uv
-
-## Installation
-
-Clone the repository and install dependencies:
+Use Python 3.13 or later and uv. Clone the repository with an account that has access, then install from the lockfile.
 
 ```bash
 git clone https://github.com/natori-hrj/vintar.git
 cd vintar
-uv sync
+uv sync --locked
 ```
 
-## Usage
+## Run Your First Regression Batch
 
-Display available commands:
+### Create a TOML Case
+
+Save this example as `security/cases/a-case.toml`. It expects a test fixture with an `/ok` endpoint and a `category` query parameter. Adapt the path, parameter, and reviewed probe values to your authorized fixture. `--cases` accepts one TOML file or a directory of TOML files. Directory discovery is nonrecursive.
+
+<!-- cli-example: verify-pass/case -->
+```toml
+version = 1
+id = "a-case"
+type = "sqli.boolean"
+expected_verdict = "not_detected"
+
+[target]
+url = "http://placeholder.invalid:8000/ok"
+allowed_origin = "http://placeholder.invalid:8000"
+
+[[target.params]]
+name = "category"
+value = "Pets"
+
+[injection]
+location = "query"
+name = "category"
+occurrence = 0
+mode = "append"
+
+[probes]
+true_payload = "true-probe"
+false_payload = "false-probe"
+
+[limits]
+max_requests = 6
+requests_per_second = 10.0
+timeout_seconds = 5.0
+```
+
+### Configure the Authorized Target
+
+Run verification only against systems you own or have explicit permission to test. `--authorized` is your attestation. Set both `VINTAR_TARGET_ORIGIN` and `VINTAR_ALLOWED_ORIGIN` to the authorized service's exact origin in the trusted CI environment. Vintar replaces the case's placeholder origin with the runtime target and preserves the case path. Keep credentials and secrets out of origins and case files.
+
+### Run `vintar verify`
+
+Replace `https://staging.example.com` with your authorized fixture origin.
+
+<!-- cli-example: verify-pass/command -->
+```bash
+VINTAR_TARGET_ORIGIN=https://staging.example.com \
+VINTAR_ALLOWED_ORIGIN=https://staging.example.com \
+uv run --locked vintar verify \
+  --cases security/cases/a-case.toml --max-requests 6 --authorized
+```
+
+## Exit Codes and JSON Reports
+
+| `verify` exit code | Meaning |
+| --- | --- |
+| `0` | PASS. The batch completed and all cases passed. |
+| `1` | FAIL. At least one case failed. Failure takes precedence over an incomplete batch. |
+| `2` | ERROR. An input, configuration, execution, or output error prevented a usable result. |
+| `3` | INCONCLUSIVE. There are no failed cases and the batch has an inconclusive case or is incomplete. |
+| `130` | Interrupted. |
+
+`verify` emits one [schema v1 JSON report](schemas/regression-batch-report-v1.schema.json) on stdout for results `0`, `1`, and `3`. Diagnostics go to stderr. Use `--pretty` for indentation. An error or interruption can leave stdout empty or incomplete.
+
+This excerpt shows the summary fields of a passing report.
+
+<!-- cli-example: verify-pass/report -->
+```json
+{
+  "schema_version": 1,
+  "report_type": "regression_batch",
+  "status": "pass",
+  "exit_code": 0,
+  "complete": true,
+  "requests_used": 6
+}
+```
+
+## Integrate with GitHub Actions
+
+- **PR loopback checks.** The PR workflow runs lint, architecture checks, and pytest before loopback E2E. The E2E uses a local fixture and verifies the batch exit and report contracts.
+- **Authorized staging verification.** The staging workflow is manually dispatched from `main` using the `security-testing` environment. Configure the trusted origins and add reviewed cases under `security/cases/`.
+- **Report validation and artifacts.** The staging workflow captures the CLI exit code, validates the report against it, and uploads the report only after validation. An absent or invalid report becomes workflow error `2`, including when the CLI was interrupted. Restrict artifact access because case IDs and response metadata can be sensitive.
+
+See the [CI integration guide](docs/ci-integration.md) for setup and operational details.
+
+## Scope, Request Budgets, and Rate Limits
+
+Verification scope is the origin, which consists of scheme, host, and port. Redirects are disabled. The batch preflights its cases against `--max-requests` before sending traffic and shares one request budget and rate limiter across the batch. `--rps`, `--timeout`, and `--max-response-size` set trusted caps. Case settings can tighten the applicable limits.
+
+Apply network egress controls in sensitive environments. Origin validation leaves DNS-resolved IPs and individual URL paths outside its enforcement.
+
+## Other CLI Commands
+
+- `vintar --help` lists commands, and `vintar version` prints the current project version.
+- `vintar http send` inspects a GET or POST response and prints text. It accepts `--body`, `--header`, `--cookie`, repeatable `--param`, and `--timeout`. The response body limit for this command is 1 MiB.
+- `vintar sqli verify` runs a single bounded Boolean check and exits `0` whenever it emits a report, including an `inconclusive` verdict. Use `verify` for a batch gate that distinguishes PASS, FAIL, and INCONCLUSIVE.
+
+For the same authorized test fixture, a single-check invocation looks like this.
+
+<!-- cli-example: sqli-normal/command -->
+```bash
+uv run --locked vintar sqli verify \
+  --url https://staging.example.com/ok --allow-origin https://staging.example.com \
+  --param category=Pets --inject-param category --append \
+  --true-payload true-probe --false-payload false-probe \
+  --authorized
+```
+
+<!-- cli-example: sqli-normal/report -->
+```json
+{
+  "schema_version": 1,
+  "check_type": "sqli_boolean",
+  "verdict": "not_detected",
+  "reason_code": "no_boolean_difference",
+  "request_count": 6
+}
+```
+
+## Current Limitations
+
+- The current Boolean analyzer reports a candidate as inconclusive. `not_detected` describes a single check result and provides no general security guarantee.
+- Time-based verification is experimental Python functionality. The CLI exposes Boolean verification.
+- Cases use schema v1 with placeholder origins. Automatic OpenAPI discovery is unavailable.
+- The batch engine has per-request timeouts. The staging workflow supplies the job-level timeout.
+- Schema validation checks the report. Case definitions still require trusted review.
+
+## Development and Golden Tests
 
 ```bash
-uv run vintar --help
+uv run pytest
+uv run ruff check
+uv run ruff format --check
+uv run lint-imports
+uv run python scripts/check_architecture.py
 ```
 
-Check the version:
-
-```bash
-uv run vintar version
-```
-
-Send an HTTP GET request:
-
-```bash
-uv run vintar http send GET http://127.0.0.1:8000/
-```
-
-Send an HTTP POST request:
-
-```bash
-uv run vintar http send POST http://127.0.0.1:8000/ \
-  --body '{"message":"hello vintar"}'
-```
-
-Send a request with custom headers:
-
-```bash
-uv run vintar http send GET http://127.0.0.1:8000/ \
-  --header "X-Test: vintar"
-```
-
-Send a request with cookies:
-
-```bash
-uv run vintar http send GET http://127.0.0.1:8000/ \
-  --cookie "session=test123"
-```
-
-Send a request with query parameters:
-
-```bash
-uv run vintar http send GET http://127.0.0.1:8000/ \
-  --param "category=Pets" \
-  --param "page=1"
-```
-
-Configure the request timeout:
-
-```bash
-uv run vintar http send GET http://127.0.0.1:8000/ \
-  --timeout 15
-```
-
-Example output:
-
-```text
-Target: http://127.0.0.1:8000/
-Method: GET
-Status: 200
-Response time: 0.004s
-Content size: 527 bytes
-```
-
-### HTTP Response Model
-
-The HTTP core returns a structured `HttpResult` object.
-
-```python
-result.status_code
-result.elapsed
-result.body
-result.headers
-result.size
-result.truncated
-```
-
-Responses are read using streaming with a configurable maximum body size.
-
-When a response exceeds the configured limit, Vintar retains the captured portion and marks the result as truncated.
-
-The default maximum response size is 1 MiB.
-
-## Development
-
-Run tests:
-
-```bash
-uv run pytest -v
-```
-
-Run lint checks:
-
-```bash
-uv run ruff check .
-```
-
-Format code:
-
-```bash
-uv run ruff format .
-```
-
-Check formatting without modifying files:
-
-```bash
-uv run ruff format --check .
-```
-
-## Architecture
-
-```text
-src/vintar/
-├── __init__.py
-├── cli.py
-└── core/
-    ├── __init__.py
-    ├── http.py
-    └── models.py
-```
-
-Vintar separates CLI commands, HTTP transport, and response models.
-
-Future vulnerability testing modules will reuse the shared HTTP core rather than implementing their own networking logic.
-
-The planned SQL injection module will separate request templates, payload generation, injection, response analysis, and scanning orchestration.
-
-## Roadmap
-
-- [x] Initialize Python project with uv
-- [x] Implement CLI foundation
-- [x] Implement HTTP GET and POST support
-- [x] Add request body support
-- [x] Add custom headers and cookies
-- [x] Add query parameter support
-- [x] Introduce structured HTTP response model
-- [x] Add configurable request timeout
-- [x] Implement streaming response size limits
-- [x] Add truncated response detection
-- [x] Add automated HTTP client tests
-- [ ] Introduce structured request templates
-- [ ] Implement injection point handling
-- [ ] Add request rate limiting and execution budgets
-- [ ] Implement Boolean-based SQL injection verification
-- [ ] Add automated response analysis
-- [ ] Implement Time-based SQL injection verification
-- [ ] Add JSON reporting and result export
-- [ ] Expand vulnerability testing modules
-
-## Security
-
-Vintar is intended for educational purposes and authorized security testing only.
-
-Only use Vintar against systems you own or have explicit permission to test.
+The CLI golden tests use deterministic fixtures. After an intentional output change, run `uv run python scripts/update_cli_goldens.py --write` and review the resulting diff. The README examples are checked against the same goldens by pytest.
 
 ## License
 
-A license has not yet been selected.
+The license has not yet been decided.
