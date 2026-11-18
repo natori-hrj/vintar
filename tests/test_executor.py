@@ -40,6 +40,33 @@ def make_context(max_requests: int = 2) -> ExecutionContext:
     )
 
 
+@pytest.mark.parametrize(
+    "value", [object(), "1", True], ids=["object", "string", "bool"]
+)
+def test_transport_rejects_invalid_timeout_extension_value(value):
+    def handler(request: httpx.Request) -> httpx.Response:
+        pytest.fail("An invalid timeout extension must prevent dispatch.")
+
+    context = make_context()
+    transport = ScopedTransport(
+        httpx.MockTransport(handler),
+        scope=context.scope,
+        budget=context.budget,
+        rate_limiter=RateLimiter(requests_per_second=2),
+        deadline=5.0,
+        clock=FakeClock().monotonic,
+    )
+    request = httpx.Request(
+        "GET", "http://localhost:8000/", extensions={"timeout": {"read": value}}
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid HTTP timeout extension value\. Expected an int, float, or None, excluding booleans\.",
+    ):
+        transport.handle_request(request)
+
+
 def test_allowed_request():
     requests = []
 

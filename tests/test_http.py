@@ -69,11 +69,14 @@ def test_custom_headers_and_cookies():
     assert result.size == 7
 
 
-def test_query_parameters():
+def test_query_parameters_preserve_repeated_key_order():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
-        assert request.url.params.get("category") == "Pets"
-        assert request.url.params.get("page") == "1"
+        assert request.url.params.multi_items() == [
+            ("category", "Pets"),
+            ("category", "Toys"),
+            ("page", "1"),
+        ]
 
         return httpx.Response(200, text="success")
 
@@ -83,7 +86,7 @@ def test_query_parameters():
         result = send_request(
             method="GET",
             url="http://localhost/",
-            params=[("category", "Pets"), ("page", "1")],
+            params=[("category", "Pets"), ("category", "Toys"), ("page", "1")],
             client=client,
         )
 

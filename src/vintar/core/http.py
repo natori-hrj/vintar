@@ -42,7 +42,7 @@ def send_request(
             url=url,
             content=body,
             headers=request_headers,
-            params=params,
+            params=tuple(params) if params is not None else None,
             timeout=timeout,
             follow_redirects=False,
         ) as response:
