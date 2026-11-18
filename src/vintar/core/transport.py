@@ -104,10 +104,18 @@ class ScopedTransport(httpx.BaseTransport):
         if not isinstance(configured, dict):
             return
 
-        request.extensions["timeout"] = {
-            name: remaining if value is None else min(float(value), remaining)
-            for name, value in configured.items()
-        }
+        capped: dict[object, float] = {}
+        for name, value in configured.items():
+            if value is None:
+                capped[name] = remaining
+            elif isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    "Invalid HTTP timeout extension value. "
+                    "Expected an int, float, or None, excluding booleans."
+                )
+            else:
+                capped[name] = min(float(value), remaining)
+        request.extensions["timeout"] = capped
 
     def _notify_rate_wait(self, started: float) -> None:
         if self._on_rate_wait is not None:
