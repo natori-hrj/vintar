@@ -1,0 +1,59 @@
+{
+  "exit_code": 3,
+  "stderr": "",
+  "stdout_json": {
+    "complete": false,
+    "counts": {
+      "fail": 0,
+      "inconclusive": 1,
+      "not_run": 1,
+      "pass": 0
+    },
+    "executed_case_ids": [
+      "a-case"
+    ],
+    "executed_count": 1,
+    "exit_code": 3,
+    "not_run_case_ids": [
+      "b-case"
+    ],
+    "outcomes": [
+      {
+        "actual_verdict": "inconclusive",
+        "case_id": "a-case",
+        "expectation_match": false,
+        "expected_verdict": "not_detected",
+        "status": "inconclusive",
+        "verification": {
+          "check_type": "sqli_boolean",
+          "confidence": null,
+          "evidence": null,
+          "failures": [],
+          "observations": [
+            {
+              "body_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "body_size": 0,
+              "elapsed": 0.125,
+              "kind": "baseline",
+              "status_code": 429,
+              "truncated": true
+            }
+          ],
+          "reason_code": "rate_limited",
+          "request_count": 1,
+          "schema_version": 1,
+          "verdict": "inconclusive"
+        }
+      }
+    ],
+    "planned_case_ids": [
+      "a-case",
+      "b-case"
+    ],
+    "planned_count": 2,
+    "report_type": "regression_batch",
+    "requests_used": 1,
+    "schema_version": 1,
+    "status": "inconclusive"
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "exit_code": 0,
+  "stderr": "",
+  "stdout_json": {
+    "check_type": "sqli_boolean",
+    "confidence": null,
+    "evidence": {
+      "baseline_false_similarity": 1.0,
+      "baseline_true_similarity": 1.0,
+      "true_false_similarity": 1.0
+    },
+    "failures": [],
+    "observations": [
+      {
+        "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+        "body_size": 14,
+        "elapsed": 0.125,
+        "kind": "baseline",
+        "status_code": 200,
+        "truncated": false
+      },
+      {
+        "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+        "body_size": 14,
+        "elapsed": 0.5,
+        "kind": "baseline",
+        "status_code": 200,
+        "truncated": false
+      },
+      {
+        "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+        "body_size": 14,
+        "elapsed": 0.5,
+        "kind": "true",
+        "status_code": 200,
+        "truncated": false
+      },
+      {
+        "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+        "body_size": 14,
+        "elapsed": 0.5,
+        "kind": "true",
+        "status_code": 200,
+        "truncated": false
+      },
+      {
+        "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+        "body_size": 14,
+        "elapsed": 0.5,
+        "kind": "false",
+        "status_code": 200,
+        "truncated": false
+      },
+      {
+        "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+        "body_size": 14,
+        "elapsed": 0.5,
+        "kind": "false",
+        "status_code": 200,
+        "truncated": false
+      }
+    ],
+    "reason_code": "no_boolean_difference",
+    "request_count": 6,
+    "schema_version": 1,
+    "verdict": "not_detected"
+  }
+}
