@@ -125,3 +125,22 @@ def test_e2e_workflow_is_manual_loopback_only():
     assert "refs/heads/main" in workflow
     assert "scripts.run_ci_e2e" in workflow
     assert "retention-days: 1" in workflow
+
+
+def test_installed_loopback_uses_console_executable_outside_checkout(
+    monkeypatch, tmp_path
+):
+    executable = tmp_path / "venv/bin/vintar"
+    cases = tmp_path / "cases"
+    case = cases / "case.toml"
+
+    def run(args, **kwargs):
+        assert args[:4] == [str(executable), "verify", "--cases", str(case)]
+        assert kwargs["cwd"] == cases
+        return "installed executable result"
+
+    monkeypatch.setattr("subprocess.run", run)
+    assert (
+        _E2E["_run_cli"](case, origin="http://127.0.0.1:12345", executable=executable)
+        == "installed executable result"
+    )

@@ -69,10 +69,10 @@ def test_smoke_wheel_runs_installed_commands_in_order(tmp_path, smoke_processes)
     python = str(venv / "bin" / "python")
     cli = str(venv / "bin" / "vintar")
 
-    smoke_wheel(wheel, tmp_path)
+    assert smoke_wheel(wheel, tmp_path) == venv
 
     assert commands[:3] == [
-        ["uv", "venv", "--python", "3.13", str(venv)],
+        ["uv", "venv", "--python", "cpython@3.13", str(venv)],
         ["uv", "pip", "install", "--python", python, str(wheel)],
         ["uv", "pip", "check", "--python", python],
     ]
