@@ -24,9 +24,43 @@ build-backend = "uv_build"
 [tool.ruff.lint]
 extend-select = ["I", "UP", "B", "RUF", "TID", "RUF100"]
 
+[tool.importlinter]
+root_package = "vintar"
+
+[[tool.importlinter.contracts]]
+name = "Core must stay independent of orchestration and CLI. Put shared primitives in core."
+type = "forbidden"
+source_modules = ["vintar.core"]
+forbidden_modules = [
+    "vintar.checks", "vintar.regression", "vintar.cli",
+    "vintar.sqli_cli", "vintar.regression_cli",
+]
+
+[[tool.importlinter.contracts]]
+name = "Checks must stay independent of batch orchestration and CLI. Pass inputs through check APIs."
+type = "forbidden"
+source_modules = ["vintar.checks"]
+forbidden_modules = [
+    "vintar.regression", "vintar.cli", "vintar.sqli_cli", "vintar.regression_cli",
+]
+
+[[tool.importlinter.contracts]]
+name = "Regression must stay independent of CLI. Pass runtime settings through regression APIs."
+type = "forbidden"
+source_modules = ["vintar.regression"]
+forbidden_modules = ["vintar.cli", "vintar.sqli_cli", "vintar.regression_cli"]
+
+[[tool.importlinter.contracts]]
+name = "Direct core.http access bypasses scope, request budgets, and rate limits. Use vintar.core.executor.ExecutionContext."
+type = "forbidden"
+source_modules = ["vintar.checks"]
+forbidden_modules = ["vintar.core.http"]
+allow_indirect_imports = true
+
 [dependency-groups]
 dev = [
     "fastapi>=0.162.5",
+    "import-linter>=2.16",
     "jsonschema>=4.25.1",
     "psycopg[binary]>=3.3.9",
     "pymysql>=1.2.4",

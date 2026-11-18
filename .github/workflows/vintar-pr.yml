@@ -46,6 +46,12 @@ jobs:
       - name: Check Ruff formatting
         run: uv run ruff format --check
 
+      - name: Check import contracts
+        run: uv run lint-imports
+
+      - name: Check HTTP architecture
+        run: uv run python scripts/check_architecture.py
+
       - name: Run pytest
         run: uv run pytest
 
