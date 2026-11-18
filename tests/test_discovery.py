@@ -344,3 +344,136 @@ def test_opened_descriptor_must_still_be_a_regular_file(tmp_path, monkeypatch):
     with pytest.raises(DiscoveryError, match="Input is not a regular file") as caught:
         load_inventory(path)
     assert caught.value.source == Source(path)
+
+
+@pytest.mark.parametrize("value", [True, False])
+@pytest.mark.parametrize("version", ["3.0.4", "3.1.2"])
+@pytest.mark.parametrize("referenced", [True, False])
+def test_boolean_query_schema_is_version_specific(tmp_path, value, version, referenced):
+    definition = "/components/schemas/Boolean"
+    source = "/paths/~1a/get/parameters/0/schema"
+    schema = {"$ref": f"#{definition}"} if referenced else value
+    path = write_spec(
+        tmp_path,
+        openapi=version,
+        paths={
+            "/a": {
+                "get": {"parameters": [{"in": "query", "name": "q", "schema": schema}]}
+            },
+            "/b": {
+                "get": {
+                    "parameters": [
+                        {"in": "query", "name": "other", "schema": {"type": "string"}}
+                    ]
+                }
+            },
+        },
+        components={"schemas": {"Boolean": value}},
+    )
+    resolved = Source(path, definition if referenced else source)
+    if version.startswith("3.0."):
+        with pytest.raises(DiscoveryError, match="Use a schema object") as caught:
+            load_inventory(path)
+        assert caught.value.source == resolved
+        return
+    inventory = load_inventory(path)
+    first, second = inventory.operations
+    assert not first.inputs[0].compatible
+    assert second.compatible
+    [held] = inventory.held
+    assert held.source == Source(path, source)
+    assert held.definition == resolved
+    assert "Review this input separately or use a schema object" in held.reason
+
+
+@pytest.mark.parametrize("value", [True, False])
+@pytest.mark.parametrize("version", ["3.0.4", "3.1.2"])
+def test_referenced_boolean_request_body_schema(tmp_path, value, version):
+    definition = "/components/schemas/Boolean"
+    path = write_spec(
+        tmp_path,
+        openapi=version,
+        paths={
+            "/a": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {"schema": {"$ref": f"#{definition}"}}
+                        }
+                    }
+                }
+            },
+            "/b": {"get": {}},
+        },
+        components={"schemas": {"Boolean": value}},
+    )
+    if version.startswith("3.0."):
+        with pytest.raises(DiscoveryError, match="Use a schema object") as caught:
+            load_inventory(path)
+        assert caught.value.source == Source(path, definition)
+        return
+    inventory = load_inventory(path)
+    assert [op.path for op in inventory.operations] == ["/b", "/a"]
+    [body] = inventory.operations[1].inputs
+    assert body.name == "application/json" and not body.compatible
+    [held] = [item for item in inventory.held if item.definition is not None]
+    assert held.source == Source(
+        path, "/paths/~1a/post/requestBody/content/application~1json/schema"
+    )
+    assert held.definition == Source(path, definition)
+    assert "Review this input separately" in held.reason
+
+
+@pytest.mark.parametrize("header", ["Authorization", "aCCePt", "CONTENT-TYPE"])
+def test_openapi_ignored_headers_do_not_block_compatible_query(tmp_path, header):
+    path = write_spec(
+        tmp_path,
+        paths={
+            "/a": {
+                "get": {
+                    "parameters": [
+                        {"in": "query", "name": "q", "schema": {"type": "string"}},
+                        {
+                            "in": "header",
+                            "name": header,
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                    ]
+                }
+            }
+        },
+    )
+    inventory = load_inventory(path)
+    [operation] = inventory.operations
+    ignored, query = operation.inputs
+    assert operation.compatible and query.compatible
+    assert (ignored.name, ignored.required, ignored.compatible) == (header, True, False)
+    assert (
+        ignored.source
+        == ignored.definition
+        == Source(path, "/paths/~1a/get/parameters/1")
+    )
+    assert (
+        ignored.ignored_reason is not None
+        and "OpenAPI ignores" in ignored.ignored_reason
+    )
+    assert inventory.held == ()
+
+
+def test_reused_path_item_unsupported_fields_consume_work_budget(tmp_path, monkeypatch):
+    path = write_spec(
+        tmp_path,
+        paths={
+            f"/{i:02}": {"$ref": "#/components/pathItems/shared"} for i in range(10)
+        },
+        components={"pathItems": {"shared": {"unsupportedA": {}, "unsupportedB": {}}}},
+    )
+    monkeypatch.setattr(discovery, "MAX_INVENTORY_WORK", 7)
+    with pytest.raises(
+        DiscoveryError, match=r"Inventory work limit exceeded. Supply a smaller spec"
+    ) as caught:
+        load_inventory(path)
+    assert caught.value.source == Source(
+        path, "/components/pathItems/shared/unsupportedB"
+    )

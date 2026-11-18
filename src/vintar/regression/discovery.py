@@ -50,6 +50,7 @@ class DiscoveryError(ValueError):
 class HeldItem:
     source: Source
     reason: str
+    definition: Source | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class Input:
     compatible: bool
     source: Source
     definition: Source
+    ignored_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +188,7 @@ def _required(value: JSONMap, source: Source) -> bool:
 class _Discovery:
     root: JSONMap
     source: Source
+    version: str
     held: list[HeldItem] = field(default_factory=list)
     reference_work: int = 0
     inventory_work: int = 0
@@ -250,8 +253,34 @@ class _Discovery:
     def resolve(
         self, value: JSON, source: Source, trail: tuple[Source, ...] = ()
     ) -> tuple[JSONMap, Source, tuple[Source, ...]]:
-        node = _mapping(value, source)
-        while "$ref" in node:
+        value, source, trail = self._resolve(value, source, trail)
+        return _mapping(value, source), source, trail
+
+    def resolve_schema(
+        self, value: JSON, source: Source, trail: tuple[Source, ...]
+    ) -> tuple[JSONMap | bool, Source, tuple[Source, ...]]:
+        value, definition, trail = self._resolve(value, source, trail)
+        if isinstance(value, bool):
+            if self.version.startswith("3.0."):
+                raise DiscoveryError(
+                    definition,
+                    "OpenAPI 3.0 does not support boolean schemas. Use a schema object.",
+                )
+            self.held.append(
+                HeldItem(
+                    source,
+                    "Boolean schema is unsupported for compatibility. Review this input separately or use a schema object.",
+                    definition,
+                )
+            )
+            return value, definition, trail
+        return _mapping(value, definition), definition, trail
+
+    def _resolve(
+        self, value: JSON, source: Source, trail: tuple[Source, ...]
+    ) -> tuple[JSON, Source, tuple[Source, ...]]:
+        while isinstance(value, dict) and "$ref" in value:
+            node = value
             site = source.child("$ref")
             self.reference_work += 1
             if (
@@ -277,8 +306,7 @@ class _Discovery:
                 )
             trail = (*trail, target)
             source = target
-            node = _mapping(value, source)
-        return node, source, trail
+        return value, source, trail
 
     def parameters(self, node: JSONMap, source: Source) -> dict[tuple[str, str], Input]:
         result: dict[tuple[str, str], Input] = {}
@@ -299,18 +327,34 @@ class _Discovery:
                     "Duplicate parameter. Keep one declaration per name and location.",
                 )
             required = _required(parameter, definition)
+            if location == "header" and name.lower() in {
+                "accept",
+                "content-type",
+                "authorization",
+            }:
+                result[key] = Input(
+                    location,
+                    name,
+                    required,
+                    False,
+                    declared,
+                    definition,
+                    "OpenAPI ignores this header parameter. Remove the parameter declaration.",
+                )
+                continue
             if location == "path" and not required:
                 raise DiscoveryError(
                     definition.child("required"),
                     "Path parameters must be required. Set required to true.",
                 )
-            schema: JSONMap = {}
+            schema: JSONMap | bool = {}
             if "schema" in parameter:
-                schema, _, _ = self.resolve(
+                schema, _, _ = self.resolve_schema(
                     parameter["schema"], definition.child("schema"), trail
                 )
             compatible = (
                 location == "query"
+                and isinstance(schema, dict)
                 and schema.get("type") in ("string", "integer", "number", "boolean")
                 and parameter.get("style", "form") == "form"
                 and parameter.get("allowReserved", False) is False
@@ -323,7 +367,7 @@ class _Discovery:
                         "Unknown parameter location. Use path, query, header, or cookie.",
                     )
                 )
-            elif not compatible:
+            elif not compatible and isinstance(schema, dict):
                 self.held.append(
                     HeldItem(
                         declared,
@@ -351,21 +395,14 @@ class _Discovery:
                 source,
                 "Expanded body nesting exceeds the limit. Flatten the body schema.",
             )
-        if isinstance(value, bool):
-            self.held.append(
-                HeldItem(source, "Boolean schema is unsupported. Review it separately.")
-            )
-            return (
-                [Input("body", f"{media}#{name}", required, False, source, source)]
-                if name
-                else []
-            )
-        node, definition, trail = self.resolve(value, source, trail)
+        node, definition, trail = self.resolve_schema(value, source, trail)
         found = (
             [Input("body", f"{media}#{name}", required, False, source, definition)]
             if name
             else []
         )
+        if isinstance(node, bool):
+            return found
         keys = {"allOf", "anyOf", "oneOf", "additionalProperties", "$dynamicRef", "$id"}
         for key in sorted(keys & node.keys()):
             self.held.append(
@@ -440,6 +477,7 @@ class _Discovery:
                 compatible and p.compatible,
                 p.source,
                 p.definition,
+                p.ignored_reason,
             )
             for _, p in sorted(params.items())
         ]
@@ -492,10 +530,13 @@ class _Discovery:
             source,
             tuple(sorted(inputs, key=lambda item: (item.location, item.name))),
             any(item.compatible for item in inputs)
-            and all(not item.required or item.compatible for item in inputs),
+            and all(
+                item.ignored_reason is not None or not item.required or item.compatible
+                for item in inputs
+            ),
         )
 
-    def inventory(self, version: str) -> Inventory:
+    def inventory(self) -> Inventory:
         operations: list[Operation] = []
         paths_source = self.source.child("paths")
         paths = _mapping(self.root.get("paths", {}), paths_source)
@@ -527,9 +568,11 @@ class _Discovery:
                 - {"summary", "description", "servers", "parameters"}
             ):
                 if not key.startswith("x-"):
+                    field_source = source.child(key)
+                    self.count(field_source)
                     self.held.append(
                         HeldItem(
-                            source.child(key),
+                            field_source,
                             "Unsupported path item field. Review it separately.",
                         )
                     )
@@ -550,7 +593,7 @@ class _Discovery:
                     )
                 )
         return Inventory(
-            version,
+            self.version,
             self.source,
             tuple(sorted(operations, key=lambda op: (op.method, op.path))),
             tuple(
@@ -587,4 +630,4 @@ def load_inventory(path: Path) -> Inventory:
         raise DiscoveryError(
             source.child("paths"), "OpenAPI 3.0 requires paths. Supply a paths object."
         )
-    return _Discovery(root, source).inventory(version)
+    return _Discovery(root, source, version).inventory()
