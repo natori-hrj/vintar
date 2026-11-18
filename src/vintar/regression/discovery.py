@@ -1,4 +1,4 @@
-"""Inventory declared OpenAPI inputs from a single local JSON document."""
+"""Inventory declared OpenAPI inputs from a single local JSON or YAML document."""
 
 from __future__ import annotations
 
@@ -8,9 +8,24 @@ import math
 import os
 import re
 import stat
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote
+
+import yaml
+from yaml.events import (
+    AliasEvent,
+    DocumentEndEvent,
+    DocumentStartEvent,
+    Event,
+    MappingEndEvent,
+    MappingStartEvent,
+    ScalarEvent,
+    SequenceEndEvent,
+    SequenceStartEvent,
+    StreamEndEvent,
+)
 
 MAX_SPEC_BYTES = 1_048_576
 MAX_NESTING = 48
@@ -18,6 +33,8 @@ MAX_OPERATIONS = 512
 MAX_REFERENCE_DEPTH = 24
 MAX_REFERENCE_WORK = 4096
 MAX_INVENTORY_WORK = 8192
+MAX_DOCUMENT_NODES = MAX_INVENTORY_WORK
+JSON_NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 
 METHODS = frozenset(
     {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
@@ -95,11 +112,26 @@ def _validate_unicode(value: str, source: Source) -> None:
         )
 
 
-def _normalize(value: object, source: Source, depth: int = 0) -> JSON:
-    if depth > MAX_NESTING:
-        raise DiscoveryError(
-            source, f"JSON nesting exceeds {MAX_NESTING}. Flatten the spec."
-        )
+@dataclass
+class _DocumentBudget:
+    nodes: int = 0
+
+    def check(self, source: Source, depth: int) -> None:
+        if depth > MAX_NESTING:
+            raise DiscoveryError(
+                source, f"Document nesting exceeds {MAX_NESTING}. Flatten the spec."
+            )
+        self.nodes += 1
+        if self.nodes > MAX_DOCUMENT_NODES:
+            raise DiscoveryError(
+                source, "Document node limit exceeded. Supply a smaller spec."
+            )
+
+
+def _normalize(
+    value: object, source: Source, budget: _DocumentBudget, depth: int = 0
+) -> JSON:
+    budget.check(source, depth)
     if isinstance(value, _Pairs):
         result: JSONMap = {}
         for key, item in value.values:
@@ -107,11 +139,12 @@ def _normalize(value: object, source: Source, depth: int = 0) -> JSON:
             child = source.child(key)
             if key in result:
                 raise DiscoveryError(child, "Duplicate JSON key. Keep one declaration.")
-            result[key] = _normalize(item, child, depth + 1)
+            result[key] = _normalize(item, child, budget, depth + 1)
         return result
     if isinstance(value, list):
         return [
-            _normalize(item, source.child(i), depth + 1) for i, item in enumerate(value)
+            _normalize(item, source.child(i), budget, depth + 1)
+            for i, item in enumerate(value)
         ]
     if isinstance(value, str):
         _validate_unicode(value, source)
@@ -126,9 +159,153 @@ def _reject_constant(value: str) -> None:
     raise ValueError(f"Invalid JSON number {value}. Use finite numbers.")
 
 
+class _RestrictedYAMLLoader(yaml.SafeLoader):
+    """Read parser events and construct only bounded JSON values."""
+
+    @classmethod
+    def load_document(cls, text: str, source: Source) -> JSON:
+        events = yaml.parse(text, Loader=cls)
+        next(events, None)
+        if not isinstance(next(events, None), DocumentStartEvent):
+            raise DiscoveryError(source, "YAML is empty. Supply one OpenAPI document.")
+        result = cls.read_value(
+            next(events, None), events, source, _DocumentBudget(), 0
+        )
+        if not isinstance(next(events, None), DocumentEndEvent) or not isinstance(
+            next(events, None), StreamEndEvent
+        ):
+            raise DiscoveryError(
+                source,
+                "Multiple YAML documents are unsupported. Supply one OpenAPI document.",
+            )
+        return result
+
+    @classmethod
+    def read_value(
+        cls,
+        event: Event | None,
+        events: Iterator[Event],
+        source: Source,
+        budget: _DocumentBudget,
+        depth: int,
+    ) -> JSON:
+        budget.check(source, depth)
+        node = cls.read_node(event, source)
+        if isinstance(node, ScalarEvent):
+            return cls.scalar(node, source)
+        if isinstance(node, SequenceStartEvent):
+            values: list[JSON] = []
+            for child_event in events:
+                if isinstance(child_event, SequenceEndEvent):
+                    break
+                values.append(
+                    cls.read_value(
+                        child_event,
+                        events,
+                        source.child(len(values)),
+                        budget,
+                        depth + 1,
+                    )
+                )
+            return values
+        result: JSONMap = {}
+        for key_event in events:
+            if isinstance(key_event, MappingEndEvent):
+                break
+            key_node = cls.read_node(key_event, source)
+            if not isinstance(key_node, ScalarEvent):
+                raise DiscoveryError(
+                    source, "Non-string YAML mapping key. Use a quoted string key."
+                )
+            key = cls.scalar(key_node, source)
+            if not isinstance(key, str):
+                raise DiscoveryError(
+                    source,
+                    "Non-string YAML mapping key. Quote numbers, true, false, and null to use them as keys.",
+                )
+            child = source.child(key)
+            if key == "<<":
+                raise DiscoveryError(
+                    child,
+                    "YAML merge keys are unsupported. Write the entries explicitly.",
+                )
+            if key in result:
+                raise DiscoveryError(child, "Duplicate YAML key. Keep one declaration.")
+            result[key] = cls.read_value(
+                next(events, None), events, child, budget, depth + 1
+            )
+        return result
+
+    @staticmethod
+    def read_node(
+        event: Event | None, source: Source
+    ) -> ScalarEvent | MappingStartEvent | SequenceStartEvent:
+        if isinstance(event, AliasEvent):
+            raise DiscoveryError(
+                source,
+                "YAML aliases are unsupported. Write the value explicitly or use a local OpenAPI reference.",
+            )
+        if not isinstance(event, (ScalarEvent, MappingStartEvent, SequenceStartEvent)):
+            raise DiscoveryError(
+                source, "Expected a YAML value. Supply a scalar, mapping, or sequence."
+            )
+        if event.anchor is not None:
+            raise DiscoveryError(
+                source,
+                "YAML anchors are unsupported. Write the value explicitly or use a local OpenAPI reference.",
+            )
+        if event.tag is not None:
+            raise DiscoveryError(
+                source,
+                "Explicit YAML tags are unsupported. Use plain JSON-compatible YAML values.",
+            )
+        return event
+
+    @staticmethod
+    def scalar(event: ScalarEvent, source: Source) -> JSON:
+        value = event.value
+        _validate_unicode(value, source)
+        if event.style is not None:
+            return value
+        if value == "null":
+            return None
+        if value in {"true", "false"}:
+            return value == "true"
+        if JSON_NUMBER.fullmatch(value):
+            try:
+                if "." not in value and "e" not in value.lower():
+                    return int(value)
+                number = float(value)
+            except ValueError as exc:
+                raise DiscoveryError(
+                    source,
+                    "YAML number is too large. Use a smaller JSON number or quote it as a string.",
+                ) from exc
+            if not math.isfinite(number):
+                raise DiscoveryError(
+                    source,
+                    "YAML number is outside the finite range. Use a smaller JSON number or quote it as a string.",
+                )
+            return number
+        return value
+
+
+def _read_yaml(data: bytes, source: Source) -> JSON:
+    try:
+        return _RestrictedYAMLLoader.load_document(data.decode("utf-8"), source)
+    except (yaml.YAMLError, UnicodeError) as exc:
+        raise DiscoveryError(
+            source,
+            "Invalid YAML. Supply one UTF-8 document with JSON-compatible scalars. "
+            "Use true/false for booleans and null for nulls. Dates and yes/no are strings.",
+        ) from exc
+
+
 def _read(path: Path) -> bytes:
     source = Source(path)
-    not_regular = "Input is not a regular file. Supply a local JSON file."
+    not_regular = (
+        "Input is not a regular file. Supply a local JSON file or a YAML file."
+    )
     try:
         if not stat.S_ISREG(path.lstat().st_mode):
             raise DiscoveryError(source, not_regular)
@@ -150,7 +327,8 @@ def _read(path: Path) -> bytes:
             os.close(descriptor)
     except OSError as exc:
         raise DiscoveryError(
-            source, "Cannot read the spec. Supply a readable local JSON file."
+            source,
+            "Cannot read the spec. Supply a readable local JSON file or a YAML file.",
         ) from exc
     if len(data) > MAX_SPEC_BYTES:
         raise DiscoveryError(
@@ -604,10 +782,7 @@ class _Discovery:
         )
 
 
-def load_inventory(path: Path) -> Inventory:
-    """Load a local OpenAPI JSON file and inventory its declared inputs."""
-    source = Source(path)
-    data = _read(path)
+def _read_json(data: bytes, source: Source) -> JSON:
     try:
         parsed: object = json.loads(
             data.decode("utf-8"),
@@ -619,7 +794,22 @@ def load_inventory(path: Path) -> Inventory:
             source,
             "Invalid JSON or excessive nesting. Supply a bounded UTF-8 JSON document.",
         ) from exc
-    root = _mapping(_normalize(parsed, source), source)
+    return _normalize(parsed, source, _DocumentBudget())
+
+
+def load_inventory(path: Path) -> Inventory:
+    """Inventory a local spec. YAML dates, yes/no, and other non-JSON scalars stay strings."""
+    source = Source(path)
+    extension = path.suffix.lower()
+    if extension not in {".json", ".yaml", ".yml"}:
+        raise DiscoveryError(
+            source, "Unsupported spec extension. Use .json, .yaml, or .yml."
+        )
+    data = _read(path)
+    root = _mapping(
+        _read_json(data, source) if extension == ".json" else _read_yaml(data, source),
+        source,
+    )
     version = _string(root.get("openapi"), source.child("openapi"))
     if not re.fullmatch(r"3\.[01]\.[0-9]+", version):
         raise DiscoveryError(

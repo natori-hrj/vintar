@@ -1,0 +1,64 @@
+openapi: 3.1.2
+info:
+  title: Inventory fixture
+  version: '1'
+servers:
+- url: https://never-fetch.invalid
+paths:
+  /items/{id}:
+    $ref: '#/components/pathItems/items'
+webhooks:
+  changed: {}
+components:
+  pathItems:
+    items:
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: mode
+        in: cookie
+        schema:
+          type: string
+      patch:
+        requestBody:
+          $ref: '#/components/requestBodies/item'
+        callbacks: {}
+        responses:
+          '200':
+            description: OK
+      get:
+        parameters:
+        - name: filter
+          in: query
+          style: deepObject
+          schema:
+            type: object
+        responses:
+          '200':
+            description: OK
+  requestBodies:
+    item:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Item'
+  schemas:
+    Item:
+      type: object
+      required:
+      - code
+      properties:
+        code:
+          type: string
+        children:
+          type: array
+          items:
+            type: object
+            properties:
+              x/y:
+                type: integer
+      additionalProperties: false

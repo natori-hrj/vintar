@@ -26,6 +26,7 @@ HTTPX_SEND_APIS = {
 SEND_TEMPLATE = "vintar.core.template.send_template"
 DISCOVERY_IMPORTS = {
     "__future__",
+    "collections.abc",
     "dataclasses",
     "hashlib",
     "json",
@@ -35,6 +36,8 @@ DISCOVERY_IMPORTS = {
     "re",
     "stat",
     "urllib.parse",
+    "yaml",
+    "yaml.events",
 }
 
 

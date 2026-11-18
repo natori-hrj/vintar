@@ -1,0 +1,44 @@
+openapi: 3.0.4
+info:
+  title: Inventory fixture
+  version: '1'
+paths:
+  /z:
+    parameters:
+    - $ref: '#/components/parameters/q'
+    - name: X-Mode
+      in: header
+      schema:
+        type: string
+    post:
+      responses:
+        '200':
+          description: OK
+    get:
+      parameters:
+      - name: q
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: x-mode
+        in: header
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+  /a:
+    get:
+      parameters:
+      - $ref: '#/components/parameters/q'
+      responses:
+        '200':
+          description: OK
+components:
+  parameters:
+    q:
+      name: q
+      in: query
+      schema:
+        type: string
