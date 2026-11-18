@@ -24,6 +24,35 @@ HTTPX_SEND_APIS = {
     )
 }
 SEND_TEMPLATE = "vintar.core.template.send_template"
+DISCOVERY_IMPORTS = {
+    "__future__",
+    "dataclasses",
+    "hashlib",
+    "json",
+    "math",
+    "os",
+    "pathlib",
+    "re",
+    "stat",
+    "urllib.parse",
+}
+
+
+def discovery_diagnostics(path, tree):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = ["." * node.level + (node.module or "")]
+        else:
+            continue
+        for module in modules:
+            if module not in DISCOVERY_IMPORTS:
+                yield (
+                    f"{path}:{node.lineno}: Discovery must remain offline; importing {module} "
+                    "can expose HTTP or execution. Use the local parser for inventory and "
+                    "keep execution in the regression runner through ExecutionContext."
+                )
 
 
 def import_names(node, package):
@@ -52,6 +81,11 @@ def qualified_names(node, imports):
 def check_source(path: Path, source: str) -> list[str]:
     """Check Python source at a path relative to src/vintar."""
     tree = ast.parse(source, filename=str(path))
+    if path == Path("regression/discovery.py") or path.parts[:2] == (
+        "regression",
+        "discovery",
+    ):
+        return sorted(discovery_diagnostics(path, tree))
     package = ".".join(("vintar", *path.parent.parts))
     in_checks = path.parts[0] == "checks"
     imports: dict[str, set[str]] = {}

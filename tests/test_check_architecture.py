@@ -58,3 +58,27 @@ def check(client: httpx.Client, other: httpx.AsyncClient):
         raise
 """
     assert not check_source(Path("checks/example.py"), source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import httpx as hx",
+        "import urllib.request",
+        "from socket import socket",
+        "from vintar.core.executor import ExecutionContext",
+        "from vintar.regression import run_regression_batch",
+        "from .runner import run_regression_case",
+        "import requests",
+    ],
+)
+def test_discovery_cannot_import_http_or_execution(source):
+    [diagnostic] = check_source(Path("regression/discovery.py"), source)
+    assert "must remain offline" in diagnostic
+    assert "Use the local parser" in diagnostic
+
+
+def test_discovery_can_import_pure_url_parsing():
+    assert not check_source(
+        Path("regression/discovery.py"), "from urllib.parse import unquote"
+    )
