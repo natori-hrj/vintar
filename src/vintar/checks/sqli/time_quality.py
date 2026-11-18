@@ -45,7 +45,7 @@ def _validate_rate(value: object, expected: float | None) -> None:
             raise ValueError("Inconsistent evaluation metric.")
         return
 
-    if type(value) not in (int, float):
+    if type(value) is not int and type(value) is not float:
         raise TypeError("Invalid evaluation metric.")
     if not 0 <= value <= 1 or not math.isfinite(value):
         raise ValueError("Invalid evaluation metric.")
@@ -117,7 +117,7 @@ class QualitySample:
             raise ValueError("Invalid completed evaluation accounting.")
 
         value = self.elapsed_seconds
-        if type(value) not in (int, float):
+        if type(value) is not int and type(value) is not float:
             raise TypeError("Invalid evaluation elapsed time.")
         if not 0 <= value <= MAX_ELAPSED_SECONDS_PER_RUN or not math.isfinite(value):
             raise ValueError("Invalid evaluation elapsed time.")
@@ -354,7 +354,7 @@ class QualitySummary:
             raise ValueError("Inconsistent evaluation summary observations.")
 
         elapsed = self.total_elapsed_seconds
-        if type(elapsed) not in (int, float):
+        if type(elapsed) is not int and type(elapsed) is not float:
             raise TypeError("Invalid evaluation summary duration.")
         if not (
             0 <= elapsed <= self.total_runs * MAX_ELAPSED_SECONDS_PER_RUN

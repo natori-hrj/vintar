@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from multiprocessing.connection import Connection
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 
 from vintar.checks.sqli._time_evidence_posix import (
@@ -94,7 +95,7 @@ def _worker(
         connection.close()
 
 
-def _stop_worker(process: multiprocessing.Process) -> bool:
+def _stop_worker(process: BaseProcess) -> bool:
     """Attempt termination, escalation, and child reaping."""
     try:
         if not process.is_alive():

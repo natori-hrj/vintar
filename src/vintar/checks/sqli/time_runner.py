@@ -80,7 +80,7 @@ class TimeRunReport:
 
         elapsed = self.total_elapsed_seconds
 
-        if type(elapsed) not in (int, float):
+        if type(elapsed) is not int and type(elapsed) is not float:
             raise TypeError("Invalid time run duration.")
 
         if not 0 <= elapsed <= 1_000_000 or not math.isfinite(elapsed):
@@ -98,7 +98,7 @@ class TimeRunReport:
 
 
 def _validate_total_seconds(value: object) -> float:
-    if type(value) not in (int, float):
+    if type(value) is not int and type(value) is not float:
         raise TypeError("Invalid total time limit.")
 
     if not 0 < value <= MAX_TOTAL_SECONDS or not math.isfinite(value):
@@ -110,7 +110,7 @@ def _validate_total_seconds(value: object) -> float:
 def _read_clock(clock: Callable[[], float]) -> float:
     value = clock()
     if (
-        type(value) not in (int, float)
+        (type(value) is not int and type(value) is not float)
         or not -sys.float_info.max <= value <= sys.float_info.max
         or not math.isfinite(value)
     ):
