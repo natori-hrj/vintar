@@ -79,7 +79,14 @@ def cli_args(name: str, scenario: Scenario, folder: Path) -> list[str]:
     return args
 
 
-def capture(name: str, scenario: Scenario, folder: Path) -> str:
+def capture(
+    name: str,
+    scenario: Scenario,
+    folder: Path,
+    *,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     request_count = 0
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -118,13 +125,18 @@ def capture(name: str, scenario: Scenario, folder: Path) -> str:
     ):
         result = CliRunner().invoke(
             app,
-            cli_args(name, scenario, folder),
-            env={"VINTAR_TARGET_ORIGIN": ORIGIN, "VINTAR_ALLOWED_ORIGIN": ORIGIN},
+            cli_args(name, scenario, folder) if args is None else args,
+            env=(
+                {"VINTAR_TARGET_ORIGIN": ORIGIN, "VINTAR_ALLOWED_ORIGIN": ORIGIN}
+                if env is None
+                else env
+            ),
         )
 
     if result.exit_code != scenario.exit_code:
         raise ValueError(
-            f"Expected exit code {scenario.exit_code}, got {result.exit_code}."
+            f"Expected exit code {scenario.exit_code}, got {result.exit_code}. "
+            f"CLI stderr: {result.stderr.strip()}"
         )
     if request_count != scenario.requests:
         raise ValueError(f"Expected {scenario.requests} requests, got {request_count}.")
