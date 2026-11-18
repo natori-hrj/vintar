@@ -34,7 +34,12 @@ def _report(inventory: Inventory, selected: frozenset[str]) -> str:
     for operation, record in zip(
         inventory.operations, report["operations"], strict=True
     ):
+        if operation.compatibility_blocker is None:
+            del record["compatibility_blocker"]
+        else:
+            record["compatibility_status"] = "unverified"
         for item, entry in zip(operation.inputs, record["inputs"], strict=True):
+            del entry["body_path"]
             identifier = input_id(operation, item)
             entry["id"] = identifier
             entry["selected"] = identifier in selected

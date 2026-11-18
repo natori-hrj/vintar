@@ -9,7 +9,9 @@ from typer.testing import CliRunner
 
 from vintar import discover_cli
 from vintar.cli import app
+from vintar.regression import discovery
 from vintar.regression.discovery import (
+    DiscoveryError,
     HeldItem,
     SelectionError,
     input_id,
@@ -220,3 +222,106 @@ def test_selection_rejects_input_with_held_reference_sibling(tmp_path):
     )
     with pytest.raises(SelectionError, match=identifier):
         load_selection(review(tmp_path / "review.toml", identifier), inventory)
+
+
+@pytest.mark.parametrize(
+    "kind", ["path-item-sibling", "required-parameter", "required-flag-sibling"]
+)
+def test_held_path_item_parameters_block_every_operation(tmp_path, kind):
+    spec = tmp_path / "openapi.json"
+    query = {"name": "q", "in": "query", "schema": {"type": "string"}}
+    header = {"name": "X-Required", "in": "header", "required": True}
+    shared = {"get": {"parameters": [query]}, "head": {}}
+    path_item = {"$ref": "#/components/pathItems/Shared"}
+    components = {
+        "pathItems": {"Shared": shared},
+        "parameters": {
+            "Optional": {"name": "other", "in": "query", "schema": {"type": "string"}}
+        },
+    }
+    if kind == "path-item-sibling":
+        path_item["parameters"] = [header]
+        pointer = "/paths/~1a/parameters"
+        remediation = "Move it into the referenced declaration"
+    elif kind == "required-parameter":
+        shared["parameters"] = [header]
+        pointer = "/components/pathItems/Shared/parameters/0"
+        remediation = "Declare required inputs as supported scalar query parameters"
+    else:
+        shared["parameters"] = [
+            {"$ref": "#/components/parameters/Optional", "required": True}
+        ]
+        pointer = "/components/pathItems/Shared/parameters/0/required"
+        remediation = "Move it into the referenced declaration"
+    spec.write_text(
+        json.dumps(
+            {
+                "openapi": "3.1.2",
+                "paths": {"/a": path_item},
+                "components": components,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inventory = load_inventory(spec)
+    get, head = inventory.operations
+    assert not get.compatible and not head.compatible
+    assert get.compatibility_blocker == head.compatibility_blocker
+    assert get.compatibility_blocker.source.pointer == pointer
+    item = next(item for item in get.inputs if item.name == "q")
+    identifier = input_id(get, item)
+    with pytest.raises(SelectionError, match=remediation) as caught:
+        load_selection(review(tmp_path / "review.toml", identifier), inventory)
+    assert identifier in str(caught.value)
+    assert pointer in str(caught.value)
+    output = tmp_path / "report.json"
+    assert invoke(output, spec).exit_code == 0
+    operations = json.loads(output.read_text(encoding="utf-8"))["operations"]
+    assert [operation["compatibility_status"] for operation in operations] == [
+        "unverified",
+        "unverified",
+    ]
+
+
+def test_body_ids_distinguish_star_property_and_array_item(tmp_path):
+    spec = tmp_path / "openapi.json"
+    string = {"$ref": "#/components/schemas/String"}
+    schema = {"properties": {"*": string}, "items": string}
+    spec.write_text(
+        json.dumps(
+            {
+                "openapi": "3.1.2",
+                "paths": {
+                    "/a": {
+                        "post": {
+                            "requestBody": {
+                                "content": {"application/json": {"schema": schema}}
+                            }
+                        }
+                    }
+                },
+                "components": {"schemas": {"String": {"type": "string"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    [operation] = load_inventory(spec).operations
+    _, property_input, array_input = operation.inputs
+    assert property_input.name == array_input.name == "application/json#/*"
+    assert property_input.definition == array_input.definition
+    assert property_input.source.pointer.endswith("/properties/*")
+    assert array_input.source.pointer.endswith("/items")
+    assert input_id(operation, property_input) != input_id(operation, array_input)
+
+
+def test_inventory_rejects_duplicate_input_id(tmp_path, monkeypatch):
+    collision = "input-" + "0" * 32
+    monkeypatch.setattr(discovery, "input_id", lambda operation, item: collision)
+    with pytest.raises(
+        DiscoveryError, match=f"Duplicate input ID {collision}"
+    ) as caught:
+        load_inventory(SPEC)
+    assert caught.value.source.file == SPEC
+    assert "also declared at /paths/" in str(caught.value)
+    assert "Give these inputs distinct declarations" in str(caught.value)

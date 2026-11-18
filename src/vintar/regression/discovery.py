@@ -10,7 +10,7 @@ import re
 import stat
 import tomllib
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -80,6 +80,7 @@ class Input:
     source: Source
     definition: Source
     ignored_reason: str | None = None
+    body_path: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ class Operation:
     definition: Source
     inputs: tuple[Input, ...]
     compatible: bool
+    compatibility_blocker: HeldItem | None = None
 
 
 @dataclass(frozen=True)
@@ -489,7 +491,9 @@ class _Discovery:
             source = target
         return value, source, trail
 
-    def parameters(self, node: JSONMap, source: Source) -> dict[tuple[str, str], Input]:
+    def parameters(
+        self, node: JSONMap, source: Source, blockers: list[HeldItem] | None = None
+    ) -> dict[tuple[str, str], Input]:
         result: dict[tuple[str, str], Input] = {}
         values = node.get("parameters", [])
         container = source.child("parameters")
@@ -560,6 +564,10 @@ class _Discovery:
             result[key] = Input(
                 location, name, required, compatible, declared, definition
             )
+            if blockers is not None:
+                for held in self.held[previous_holds:]:
+                    if required or held.source.pointer.endswith("/required"):
+                        blockers.append(held)
         return result
 
     def body_schema(
@@ -571,6 +579,7 @@ class _Discovery:
         name: str = "",
         required: bool = False,
         depth: int = 0,
+        body_path: tuple[tuple[str, str], ...] = (),
     ) -> list[Input]:
         self.count(source)
         if depth > MAX_NESTING:
@@ -580,7 +589,17 @@ class _Discovery:
             )
         node, definition, trail = self.resolve_schema(value, source, trail)
         found = (
-            [Input("body", f"{media}#{name}", required, False, source, definition)]
+            [
+                Input(
+                    "body",
+                    f"{media}#{name}",
+                    required,
+                    False,
+                    source,
+                    definition,
+                    body_path=body_path,
+                )
+            ]
             if name
             else []
         )
@@ -618,6 +637,7 @@ class _Discovery:
                     f"{name}/{token}",
                     key in required_names,
                     depth + 1,
+                    (*body_path, ("property", key)),
                 )
             )
         if "items" in node:
@@ -629,6 +649,7 @@ class _Discovery:
                     media,
                     f"{name}/*",
                     depth=depth + 1,
+                    body_path=(*body_path, ("items", "")),
                 )
             )
         return found
@@ -641,11 +662,16 @@ class _Discovery:
         source: Source,
         declaration: Source,
         inherited: dict[tuple[str, str], Input],
+        compatibility_blocker: HeldItem | None,
     ) -> Operation:
         node = _mapping(value, source)
         params = inherited | self.parameters(node, source)
         self.count(source, len(params))
-        compatible = method == "get" and "requestBody" not in node
+        compatible = (
+            method == "get"
+            and "requestBody" not in node
+            and compatibility_blocker is None
+        )
         if method != "get":
             self.held.append(
                 HeldItem(
@@ -653,15 +679,7 @@ class _Discovery:
                 )
             )
         inputs = [
-            Input(
-                p.location,
-                p.name,
-                p.required,
-                compatible and p.compatible,
-                p.source,
-                p.definition,
-                p.ignored_reason,
-            )
+            replace(p, compatible=compatible and p.compatible)
             for _, p in sorted(params.items())
         ]
         if "requestBody" in node:
@@ -686,6 +704,7 @@ class _Discovery:
                         False,
                         declared,
                         media_source,
+                        body_path=(("media", media),),
                     )
                 )
                 if "schema" in descriptor:
@@ -695,6 +714,7 @@ class _Discovery:
                             media_source.child("schema"),
                             trail,
                             media,
+                            body_path=(("media", media),),
                         )
                     )
         if "callbacks" in node:
@@ -717,6 +737,7 @@ class _Discovery:
                 item.ignored_reason is not None or not item.required or item.compatible
                 for item in inputs
             ),
+            compatibility_blocker,
         )
 
     def inventory(self) -> Inventory:
@@ -743,8 +764,14 @@ class _Discovery:
                     declaration,
                     "Invalid operation path. Use a root-relative path without an authority, query, or fragment.",
                 )
+            previous_holds = len(self.held)
             node, source, _ = self.resolve(value, declaration)
-            inherited = self.parameters(node, source)
+            blockers = [
+                held
+                for held in self.held[previous_holds:]
+                if held.source.pointer.endswith("/parameters")
+            ]
+            inherited = self.parameters(node, source, blockers)
             for key in sorted(
                 node.keys()
                 - METHODS
@@ -773,6 +800,7 @@ class _Discovery:
                         source.child(method),
                         declaration if declaration != source else source.child(method),
                         inherited,
+                        blockers[0] if blockers else None,
                     )
                 )
         return Inventory(
@@ -825,7 +853,9 @@ def load_inventory(path: Path) -> Inventory:
         raise DiscoveryError(
             source.child("paths"), "OpenAPI 3.0 requires paths. Supply a paths object."
         )
-    return _Discovery(root, source, version).inventory()
+    inventory = _Discovery(root, source, version).inventory()
+    _inventory_inputs(inventory)
+    return inventory
 
 
 class SelectionError(ValueError):
@@ -835,11 +865,29 @@ class SelectionError(ValueError):
 def input_id(operation: Operation, item: Input) -> str:
     """Identify a declared input independently of parameter array order."""
     name = item.name.lower() if item.location == "header" else item.name
-    identity = [operation.id, item.location, name]
-    if item.location == "body":
-        identity.append(item.definition.pointer)
+    identity = [
+        operation.id,
+        item.location,
+        item.body_path if item.location == "body" else name,
+    ]
     digest = hashlib.sha256(json.dumps(identity).encode("ascii")).hexdigest()[:32]
     return f"input-{digest}"
+
+
+def _inventory_inputs(inventory: Inventory) -> dict[str, tuple[Operation, Input]]:
+    inputs: dict[str, tuple[Operation, Input]] = {}
+    for operation in inventory.operations:
+        for item in operation.inputs:
+            identifier = input_id(operation, item)
+            if identifier in inputs:
+                previous = inputs[identifier][1]
+                raise DiscoveryError(
+                    item.source,
+                    f"Duplicate input ID {identifier}, also declared at {previous.source.pointer}. "
+                    "Give these inputs distinct declarations and reload the spec.",
+                )
+            inputs[identifier] = (operation, item)
+    return inputs
 
 
 def load_selection(path: Path, inventory: Inventory) -> frozenset[str]:
@@ -862,11 +910,7 @@ def load_selection(path: Path, inventory: Inventory) -> frozenset[str]:
         raise SelectionError(
             "Invalid selection schema. Set version = 1 and approved to an array of input IDs."
         )
-    inputs = {
-        input_id(operation, item): (operation, item)
-        for operation in inventory.operations
-        for item in operation.inputs
-    }
+    inputs = _inventory_inputs(inventory)
     held_sources = set()
     for held in inventory.held:
         pointer = held.source.pointer
@@ -890,6 +934,12 @@ def load_selection(path: Path, inventory: Inventory) -> frozenset[str]:
                 f"Stale input ID {identifier}. Remove it or select its replacement from the current inventory."
             )
         operation, item = inputs[identifier]
+        if blocker := operation.compatibility_blocker:
+            raise SelectionError(
+                f"Input ID {identifier} has unverified compatibility due to held Path Item "
+                f"parameters at {json.dumps(blocker.source.pointer)}. {blocker.reason} "
+                "Declare required inputs as supported scalar query parameters before approving."
+            )
         if (
             not operation.compatible
             or not item.compatible
