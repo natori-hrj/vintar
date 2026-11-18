@@ -62,15 +62,32 @@ def verify_checksum(archive: Path) -> None:
         )
 
 
-def scan(directory: Path) -> int:
-    history = subprocess.run(
-        ["git", "rev-parse", "--is-shallow-repository"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if history.returncode or history.stdout.strip() != "false":
-        raise RuntimeError("A complete, non-shallow Git checkout is required.")
+def scan(directory: Path, *, release_contents: Path | None = None) -> int:
+    if release_contents is None:
+        history = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if history.returncode or history.stdout.strip() != "false":
+            raise RuntimeError(
+                "A shallow or invalid checkout cannot be scanned. Use a complete Git checkout."
+            )
+        mode = [
+            "git",
+            "--log-opts=--all --reflog --full-history -m --no-ext-diff --no-textconv",
+        ]
+        target = "."
+        scope = "Git history"
+    else:
+        if not release_contents.is_dir():
+            raise RuntimeError(
+                "Release contents are missing. Unpack the verified distributions first."
+            )
+        mode = ["dir"]
+        target = str(release_contents.resolve())
+        scope = "release contents"
 
     binary = directory / "gitleaks"
     with tarfile.open(verified_archive(), "r:gz") as archive:
@@ -90,8 +107,7 @@ def scan(directory: Path) -> int:
     result = subprocess.run(
         [
             str(binary),
-            "git",
-            "--log-opts=--all --reflog --full-history -m --no-ext-diff --no-textconv",
+            *mode,
             "--redact=100",
             "--ignore-gitleaks-allow",
             "--gitleaks-ignore-path",
@@ -104,14 +120,14 @@ def scan(directory: Path) -> int:
             "json",
             "--report-path",
             str(report),
-            ".",
+            target,
         ],
         capture_output=True,
         check=False,
     )
 
     if result.returncode == 0:
-        print(f"Gitleaks {VERSION} found no secrets in Git history.")
+        print(f"Gitleaks {VERSION} found no secrets in {scope}.")
         return 0
     if result.returncode != FINDINGS:
         raise RuntimeError(
@@ -121,7 +137,12 @@ def scan(directory: Path) -> int:
     findings = json.loads(report.read_text(encoding="utf-8"))
     if not isinstance(findings, list) or not findings:
         raise RuntimeError("Gitleaks reported findings without a usable report.")
-    print(REMEDIATION, file=sys.stderr)
+    message = (
+        REMEDIATION
+        if release_contents is None
+        else REMEDIATION.replace("Commit rejected", "Release contents rejected")
+    )
+    print(message, file=sys.stderr)
     for finding in findings:
         location = {
             key: finding[key] for key in ("File", "Commit", "StartLine", "RuleID")
@@ -130,10 +151,10 @@ def scan(directory: Path) -> int:
     return FINDINGS
 
 
-def main() -> int:
+def main(*, release_contents: Path | None = None) -> int:
     try:
         with TemporaryDirectory(prefix="vintar-gitleaks-") as directory:
-            return scan(Path(directory))
+            return scan(Path(directory), release_contents=release_contents)
     except RuntimeError as exc:
         print(f"Secret scan failed to run: {exc}", file=sys.stderr)
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError):

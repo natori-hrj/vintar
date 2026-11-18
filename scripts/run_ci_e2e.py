@@ -145,14 +145,18 @@ def _run_cli(
     case: Path,
     *,
     origin: str,
+    executable: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     env = _cli_environment(origin)
 
+    command = (
+        [str(executable.resolve())]
+        if executable
+        else [sys.executable, "-m", "vintar.cli"]
+    )
     return subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "vintar.cli",
+            *command,
             "verify",
             "--cases",
             str(case),
@@ -162,7 +166,7 @@ def _run_cli(
             "10",
             "--authorized",
         ],
-        cwd=ROOT,
+        cwd=case.parent if executable else ROOT,
         env=env,
         capture_output=True,
         timeout=30,
@@ -179,9 +183,10 @@ def _check_scenario(
     expected_requests: int,
     server: FixtureServer,
     report_dir: Path,
+    executable: Path | None = None,
 ) -> None:
     requests_before = len(server.received_paths)
-    completed = _run_cli(case, origin=origin)
+    completed = _run_cli(case, origin=origin, executable=executable)
     requests_received = len(server.received_paths) - requests_before
 
     if completed.returncode != expected_code:
@@ -265,7 +270,7 @@ def _check_scenario(
     print(f"{name.upper()}: verified")
 
 
-def run_e2e(report_dir: Path) -> None:
+def run_e2e(report_dir: Path, *, executable: Path | None = None) -> None:
     """Verify all four CI exit paths against real loopback HTTP."""
     report_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
 
@@ -305,6 +310,7 @@ def run_e2e(report_dir: Path) -> None:
                     expected_requests=requests,
                     server=server,
                     report_dir=report_dir,
+                    executable=executable,
                 )
 
             # An invalid case must produce ERROR with no JSON.
@@ -321,6 +327,7 @@ def run_e2e(report_dir: Path) -> None:
                 expected_requests=0,
                 server=server,
                 report_dir=report_dir,
+                executable=executable,
             )
 
     finally:

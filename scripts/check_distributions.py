@@ -218,7 +218,7 @@ def help_excerpt(output: str) -> str:
     return f"Captured help stdout (last 2000 characters): {output[-2000:]!r}"
 
 
-def smoke_wheel(wheel: Path, directory: Path) -> None:
+def smoke_wheel(wheel: Path, directory: Path, *, python_version: str = "3.13") -> Path:
     require(
         not directory.resolve().is_relative_to(ROOT),
         "The wheel smoke directory is inside the checkout. Set TMPDIR to a location outside the repository.",
@@ -255,8 +255,8 @@ def smoke_wheel(wheel: Path, directory: Path) -> None:
         )
 
     run(
-        ["uv", "venv", "--python", "3.13", str(venv)],
-        "Could not create the smoke-test environment. Install Python 3.13 and retry.",
+        ["uv", "venv", "--python", f"cpython@{python_version}", str(venv)],
+        f"Could not create the smoke-test environment. Install Python {python_version} and retry.",
     )
     run(
         ["uv", "pip", "install", "--python", python, str(wheel)],
@@ -311,48 +311,54 @@ def smoke_wheel(wheel: Path, directory: Path) -> None:
         == "Error: explicit testing authorization is required.\n",
         "Unexpected output without authorization. Emit only the authorization diagnostic on stderr.",
     )
+    return venv
+
+
+def build_distributions(output: Path) -> tuple[Path, Path] | None:
+    try:
+        subprocess.run(
+            ["uv", "build", "--no-sources", "--out-dir", str(output)],
+            cwd=ROOT,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        print(
+            "Distribution build failed. Fix the uv build errors and rebuild.",
+            file=sys.stderr,
+        )
+        return None
+
+    distributions = inspect_distributions(ROOT, output)
+    if distributions is None:
+        return None
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "twine",
+                "check",
+                "--strict",
+                *map(str, distributions),
+            ],
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        print(
+            "Twine rejected the distributions. Fix the reported package metadata or README and rebuild.",
+            file=sys.stderr,
+        )
+        return None
+    return distributions
 
 
 def main() -> int:
     with TemporaryDirectory(prefix="vintar-distributions-") as directory:
         output = Path(directory)
-        try:
-            subprocess.run(
-                ["uv", "build", "--no-sources", "--out-dir", str(output)],
-                cwd=ROOT,
-                check=True,
-            )
-        except (OSError, subprocess.CalledProcessError):
-            print(
-                "Distribution build failed. Fix the uv build errors and rebuild.",
-                file=sys.stderr,
-            )
-            return 1
-
-        distributions = inspect_distributions(ROOT, output)
+        distributions = build_distributions(output)
         if distributions is None:
             return 1
-        wheel, sdist = distributions
-
-        try:
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "twine",
-                    "check",
-                    "--strict",
-                    str(wheel),
-                    str(sdist),
-                ],
-                check=True,
-            )
-        except (OSError, subprocess.CalledProcessError):
-            print(
-                "Twine rejected the distributions. Fix the reported package metadata or README and rebuild.",
-                file=sys.stderr,
-            )
-            return 1
+        wheel, _ = distributions
         try:
             smoke_wheel(wheel, output)
         except ValueError as error:
