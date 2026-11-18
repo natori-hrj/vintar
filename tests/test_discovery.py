@@ -2,6 +2,7 @@
 
 import json
 import socket
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -218,10 +219,12 @@ def test_inventory_limits(tmp_path, monkeypatch, constant, limit, reason):
 
 
 def test_only_regular_files_are_read(tmp_path):
+    directory = tmp_path / "not-a-file.json"
+    directory.mkdir()
     with pytest.raises(DiscoveryError, match="Supply a readable local JSON file"):
         load_inventory(tmp_path / "missing.json")
     with pytest.raises(DiscoveryError, match="Supply a local JSON file"):
-        load_inventory(tmp_path)
+        load_inventory(directory)
 
 
 def test_unknown_path_fields_and_reference_siblings_are_held(tmp_path):
@@ -477,3 +480,169 @@ def test_reused_path_item_unsupported_fields_consume_work_budget(tmp_path, monke
     assert caught.value.source == Source(
         path, "/components/pathItems/shared/unsupportedB"
     )
+
+
+def without_filename(value, path):
+    if isinstance(value, Path):
+        assert value == path
+        return "<spec>"
+    if isinstance(value, dict):
+        return {key: without_filename(item, path) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(without_filename(item, path) for item in value)
+    return value
+
+
+@pytest.mark.parametrize(
+    "stem, extension", [("openapi30", ".yaml"), ("openapi31", ".yml")]
+)
+def test_yaml_fixtures_match_json_inventory_and_evidence(stem, extension):
+    json_path = FIXTURES / f"{stem}.json"
+    yaml_path = FIXTURES / f"{stem}{extension}"
+    assert without_filename(
+        asdict(load_inventory(yaml_path)), yaml_path
+    ) == without_filename(asdict(load_inventory(json_path)), json_path)
+
+
+def test_yaml_scalars_follow_json_spellings():
+    text = b"""
+true_values: [true, false, null, 12, -2.5, 1e2]
+strings: [yes, no, ON, 2026-11-19, 0x10, 01, .nan, Null, "true"]
+quoted_key:
+  "200": OK
+"""
+    document = discovery._read_yaml(text, Source(Path("scalars.yaml")))
+    assert document == {
+        "true_values": [True, False, None, 12, -2.5, 100.0],
+        "strings": [
+            "yes",
+            "no",
+            "ON",
+            "2026-11-19",
+            "0x10",
+            "01",
+            ".nan",
+            "Null",
+            "true",
+        ],
+        "quoted_key": {"200": "OK"},
+    }
+    assert type(document["true_values"][0]) is bool
+    assert type(document["true_values"][3]) is int
+    assert type(document["true_values"][5]) is float
+
+
+@pytest.mark.parametrize(
+    ("fragment", "pointer", "reason"),
+    [
+        ("paths: {}\npaths: {}\n", "/paths", "Keep one declaration"),
+        ("paths: &shared {}", "/paths", "YAML anchors are unsupported"),
+        ("paths: *shared", "/paths", "YAML aliases are unsupported"),
+        ("paths: {<<: *shared}", "/paths/<<", "Write the entries explicitly"),
+        ("paths: {<<: {}}", "/paths/<<", "Write the entries explicitly"),
+        ("paths: !custom {}", "/paths", "Use plain JSON-compatible YAML values"),
+        ("paths: !!map {}", "/paths", "Use plain JSON-compatible YAML values"),
+        ("paths: {2: {}}", "/paths", "Quote numbers"),
+        ("paths: {true: {}}", "/paths", "Quote numbers"),
+        ("paths: {null: {}}", "/paths", "Quote numbers"),
+        ("paths: {[one, two]: {}}", "/paths", "Use a quoted string key"),
+        ("paths: {", "", "Dates and yes/no are strings"),
+        ("paths: {}\n---\npaths: {}\n", "", "Supply one OpenAPI document"),
+        ("paths: {}\nx-number: 1e999", "/x-number", "Use a smaller JSON number"),
+    ],
+)
+def test_restricted_yaml_errors_include_source_and_remediation(
+    tmp_path, fragment, pointer, reason
+):
+    path = tmp_path / "restricted.yaml"
+    path.write_text(f"openapi: 3.1.2\n{fragment}", encoding="utf-8")
+    with pytest.raises(DiscoveryError, match=reason) as caught:
+        load_inventory(path)
+    assert caught.value.source == Source(path, pointer)
+
+
+def test_empty_yaml_is_rejected(tmp_path):
+    path = tmp_path / "empty.yml"
+    path.write_text("# empty\n", encoding="utf-8")
+    with pytest.raises(DiscoveryError, match="Supply one OpenAPI document"):
+        load_inventory(path)
+
+
+@pytest.mark.parametrize(
+    ("limit", "threshold", "reason"),
+    [
+        ("MAX_SPEC_BYTES", 12, "Supply a smaller spec"),
+        ("MAX_NESTING", 2, "Flatten the spec"),
+        ("MAX_DOCUMENT_NODES", 3, "Document node limit exceeded"),
+        ("MAX_OPERATIONS", 1, "Operation count exceeds"),
+        ("MAX_REFERENCE_WORK", 1, "Reference work limit exceeded"),
+        ("MAX_INVENTORY_WORK", 1, "Inventory work limit exceeded"),
+    ],
+)
+def test_yaml_limits_apply_to_construction_and_inventory(
+    monkeypatch, limit, threshold, reason
+):
+    path = FIXTURES / "openapi30.yaml"
+    monkeypatch.setattr(discovery, limit, threshold)
+    with pytest.raises(DiscoveryError, match=reason) as caught:
+        load_inventory(path)
+    assert caught.value.source.file == path
+
+
+def test_unsupported_spec_extension_has_remediation(tmp_path):
+    path = tmp_path / "openapi.toml"
+    with pytest.raises(DiscoveryError, match=r"Use \.json, \.yaml, or \.yml") as caught:
+        load_inventory(path)
+    assert caught.value.source == Source(path)
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_quoted_merge_spelling_is_an_ordinary_body_property(tmp_path, quote):
+    yaml_path = tmp_path / "openapi.yaml"
+    yaml_path.write_text(
+        f"""openapi: 3.1.2
+paths:
+  /example:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                {quote}<<{quote}: {{type: string}}
+""",
+        encoding="utf-8",
+    )
+    json_path = write_spec(
+        tmp_path,
+        paths={
+            "/example": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {"properties": {"<<": {"type": "string"}}}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    )
+    yaml_inventory = load_inventory(yaml_path)
+    assert yaml_inventory.operations[0].inputs[1].name == "application/json#/<<"
+    assert without_filename(asdict(yaml_inventory), yaml_path) == without_filename(
+        asdict(load_inventory(json_path)), json_path
+    )
+
+
+def test_yaml_out_of_range_unicode_escape_names_source(tmp_path):
+    path = tmp_path / "bad-unicode.yaml"
+    path.write_text(
+        'openapi: 3.1.2\npaths: {}\nx-label: "' + r"\U00110000" + '"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(DiscoveryError, match="Use valid Unicode") as caught:
+        load_inventory(path)
+    assert caught.value.source == Source(path)
+    assert str(path) in str(caught.value)
