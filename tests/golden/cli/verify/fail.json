@@ -1,0 +1,100 @@
+{
+  "exit_code": 1,
+  "stderr": "",
+  "stdout_json": {
+    "complete": true,
+    "counts": {
+      "fail": 1,
+      "inconclusive": 0,
+      "not_run": 0,
+      "pass": 0
+    },
+    "executed_case_ids": [
+      "a-case"
+    ],
+    "executed_count": 1,
+    "exit_code": 1,
+    "not_run_case_ids": [],
+    "outcomes": [
+      {
+        "actual_verdict": "not_detected",
+        "case_id": "a-case",
+        "expectation_match": false,
+        "expected_verdict": "vulnerable",
+        "status": "fail",
+        "verification": {
+          "check_type": "sqli_boolean",
+          "confidence": null,
+          "evidence": {
+            "baseline_false_similarity": 1.0,
+            "baseline_true_similarity": 1.0,
+            "true_false_similarity": 1.0
+          },
+          "failures": [],
+          "observations": [
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.125,
+              "kind": "baseline",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "baseline",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "true",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "true",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "false",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "false",
+              "status_code": 200,
+              "truncated": false
+            }
+          ],
+          "reason_code": "no_boolean_difference",
+          "request_count": 6,
+          "schema_version": 1,
+          "verdict": "not_detected"
+        }
+      }
+    ],
+    "planned_case_ids": [
+      "a-case"
+    ],
+    "planned_count": 1,
+    "report_type": "regression_batch",
+    "requests_used": 6,
+    "schema_version": 1,
+    "status": "fail"
+  }
+}

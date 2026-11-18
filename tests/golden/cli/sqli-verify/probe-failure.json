@@ -1,0 +1,30 @@
+{
+  "exit_code": 0,
+  "stderr": "",
+  "stdout_json": {
+    "check_type": "sqli_boolean",
+    "confidence": null,
+    "evidence": null,
+    "failures": [
+      {
+        "elapsed": null,
+        "error": "timeout",
+        "kind": "true"
+      }
+    ],
+    "observations": [
+      {
+        "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+        "body_size": 14,
+        "elapsed": 0.125,
+        "kind": "baseline",
+        "status_code": 200,
+        "truncated": false
+      }
+    ],
+    "reason_code": "probe_failed",
+    "request_count": 2,
+    "schema_version": 1,
+    "verdict": "inconclusive"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "exit_code": 2,
+  "stderr": "Error: explicit authorization is required.\n",
+  "stdout_json": null
+}
