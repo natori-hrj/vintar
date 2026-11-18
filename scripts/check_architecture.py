@@ -35,13 +35,25 @@ DISCOVERY_IMPORTS = {
     "pathlib",
     "re",
     "stat",
+    "tomllib",
     "urllib.parse",
     "yaml",
     "yaml.events",
 }
 
 
+DISCOVER_CLI_IMPORTS = DISCOVERY_IMPORTS | {
+    "tempfile",
+    "typing",
+    "typer",
+    "vintar.regression.discovery",
+}
+
+
 def discovery_diagnostics(path, tree):
+    allowed = (
+        DISCOVER_CLI_IMPORTS if path == Path("discover_cli.py") else DISCOVERY_IMPORTS
+    )
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules = [alias.name for alias in node.names]
@@ -50,7 +62,7 @@ def discovery_diagnostics(path, tree):
         else:
             continue
         for module in modules:
-            if module not in DISCOVERY_IMPORTS:
+            if module not in allowed:
                 yield (
                     f"{path}:{node.lineno}: Discovery must remain offline; importing {module} "
                     "can expose HTTP or execution. Use the local parser for inventory and "
@@ -84,7 +96,9 @@ def qualified_names(node, imports):
 def check_source(path: Path, source: str) -> list[str]:
     """Check Python source at a path relative to src/vintar."""
     tree = ast.parse(source, filename=str(path))
-    if path == Path("regression/discovery.py") or path.parts[:2] == (
+    if path in {Path("discover_cli.py"), Path("regression/discovery.py")} or path.parts[
+        :2
+    ] == (
         "regression",
         "discovery",
     ):

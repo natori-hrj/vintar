@@ -105,6 +105,36 @@ Verification scope is the origin, which consists of scheme, host, and port. Redi
 
 Apply network egress controls in sensitive environments. Origin validation leaves DNS-resolved IPs and individual URL paths outside its enforcement.
 
+## Discover Inputs for Review
+
+Use `vintar discover` to inventory a single local OpenAPI 3.0 or 3.1 spec in JSON or YAML. The report lists operations, declared inputs, held and ignored items, and source pointers. Discovery performs no HTTP requests. It produces review data that is separate from regression case files.
+
+Run discovery with your local `openapi.json` to find stable input IDs. To reproduce this example, copy `tests/fixtures/discovery/openapi30.json` to `openapi.json`. Commit `review.toml` with the IDs a reviewer approved. Omit `--selection` to inventory inputs before review.
+
+<!-- cli-example: discover-review/selection -->
+```toml
+version = 1
+approved = ["input-24a9c3cf0c3d01709121ac0d09079903"]
+```
+
+<!-- cli-example: discover-review/command -->
+```bash
+uv run --locked vintar discover \
+  --spec openapi.json --selection review.toml --output inventory.json
+```
+
+`inventory.json` contains the versioned report. Stdout contains one JSON summary and stderr carries diagnostics. Exit codes are `0` for success, `2` for invalid input or output, and `130` for interruption. Choose an output path separate from the spec and selection.
+
+<!-- cli-example: discover-review/report -->
+```json
+{
+  "schema_version": 1,
+  "report_type": "discovery_summary",
+  "operations": 3,
+  "selected": 1
+}
+```
+
 ## Other CLI Commands
 
 - `vintar --help` lists commands, and `vintar version` prints the current project version.

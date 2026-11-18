@@ -1,0 +1,6 @@
+{
+  "exit_code": 2,
+  "report_json": null,
+  "stderr": "Error: Stale input ID input-00000000000000000000000000000000. Remove it or select its replacement from the current inventory.\n",
+  "stdout_json": null
+}

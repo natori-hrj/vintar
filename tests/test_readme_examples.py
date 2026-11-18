@@ -13,6 +13,7 @@ README = Path(__file__).resolve().parents[1] / "README.md"
 EXAMPLES = {
     "verify-pass": "verify/pass.json",
     "sqli-normal": "sqli-verify/normal.json",
+    "discover-review": "discover/success.json",
 }
 BLOCKS = {
     "verify-pass/case": "toml",
@@ -20,6 +21,9 @@ BLOCKS = {
     "verify-pass/report": "json",
     "sqli-normal/command": "bash",
     "sqli-normal/report": "json",
+    "discover-review/selection": "toml",
+    "discover-review/command": "bash",
+    "discover-review/report": "json",
 }
 CASE_PATH = "security/cases/a-case.toml"
 ORIGIN_VARIABLES = {"VINTAR_TARGET_ORIGIN", "VINTAR_ALLOWED_ORIGIN"}
@@ -105,6 +109,16 @@ def test_readme_cli_example(example, readme_blocks, tmp_path):
         case_path = tmp_path / Path(CASE_PATH).name
         case_path.write_text(case, encoding="utf-8")
         args[path_arg] = str(case_path)
+    elif example == "discover-review":
+        assert not env, "Remove origin variables from the offline discovery command."
+        selection = readme_blocks[f"{example}/selection"]
+        try:
+            tomllib.loads(selection)
+        except tomllib.TOMLDecodeError as error:
+            pytest.fail(
+                f"Invalid discovery selection TOML: {error}. Fix the README TOML block."
+            )
+        (tmp_path / "review.toml").write_text(selection, encoding="utf-8")
     else:
         assert not env, (
             "Remove batch-only origin variables from the README single-check command."

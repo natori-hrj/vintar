@@ -8,6 +8,7 @@ import math
 import os
 import re
 import stat
+import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -497,6 +498,7 @@ class _Discovery:
         for i, value in enumerate(values):
             declared = container.child(i)
             self.count(declared)
+            previous_holds = len(self.held)
             parameter, definition, trail = self.resolve(value, declared)
             location = _string(parameter.get("in"), definition.child("in"))
             name = _string(parameter.get("name"), definition.child("name"))
@@ -534,6 +536,7 @@ class _Discovery:
                 )
             compatible = (
                 location == "query"
+                and len(self.held) == previous_holds
                 and isinstance(schema, dict)
                 and schema.get("type") in ("string", "integer", "number", "boolean")
                 and parameter.get("style", "form") == "form"
@@ -823,3 +826,79 @@ def load_inventory(path: Path) -> Inventory:
             source.child("paths"), "OpenAPI 3.0 requires paths. Supply a paths object."
         )
     return _Discovery(root, source, version).inventory()
+
+
+class SelectionError(ValueError):
+    """A safe, actionable selection diagnostic."""
+
+
+def input_id(operation: Operation, item: Input) -> str:
+    """Identify a declared input independently of parameter array order."""
+    name = item.name.lower() if item.location == "header" else item.name
+    identity = [operation.id, item.location, name]
+    if item.location == "body":
+        identity.append(item.definition.pointer)
+    digest = hashlib.sha256(json.dumps(identity).encode("ascii")).hexdigest()[:32]
+    return f"input-{digest}"
+
+
+def load_selection(path: Path, inventory: Inventory) -> frozenset[str]:
+    """Read and validate a reviewer's versioned selection against the inventory."""
+    try:
+        value: object = tomllib.loads(_read(path).decode("utf-8"))
+    except DiscoveryError as exc:
+        raise SelectionError(
+            "Cannot read selection. Supply a bounded local TOML file."
+        ) from exc
+    except (ValueError, RecursionError) as exc:
+        raise SelectionError(
+            "Invalid selection TOML. Use version = 1 and an approved list of inventory input IDs."
+        ) from exc
+    if not isinstance(value, dict) or value.keys() != {"version", "approved"}:
+        raise SelectionError("Invalid selection keys. Use only version and approved.")
+    version: object = value["version"]
+    approved: object = value["approved"]
+    if type(version) is not int or version != 1 or not isinstance(approved, list):
+        raise SelectionError(
+            "Invalid selection schema. Set version = 1 and approved to an array of input IDs."
+        )
+    inputs = {
+        input_id(operation, item): (operation, item)
+        for operation in inventory.operations
+        for item in operation.inputs
+    }
+    held_sources = set()
+    for held in inventory.held:
+        pointer = held.source.pointer
+        while pointer:
+            held_sources.add(Source(held.source.file, pointer))
+            pointer = pointer.rpartition("/")[0]
+    selected: set[str] = set()
+    for index, identifier in enumerate(approved):
+        if not isinstance(identifier, str) or not re.fullmatch(
+            r"input-[0-9a-f]{32}", identifier
+        ):
+            raise SelectionError(
+                f"Invalid input ID at approved[{index}]. Copy its ID from the current inventory."
+            )
+        if identifier in selected:
+            raise SelectionError(
+                f"Duplicate input ID {identifier}. Keep it only once in approved."
+            )
+        if identifier not in inputs:
+            raise SelectionError(
+                f"Stale input ID {identifier}. Remove it or select its replacement from the current inventory."
+            )
+        operation, item = inputs[identifier]
+        if (
+            not operation.compatible
+            or not item.compatible
+            or item.ignored_reason is not None
+            or item.source in held_sources
+            or item.definition in held_sources
+        ):
+            raise SelectionError(
+                f"Input ID {identifier} is held, ignored, or incompatible. Remove it and select a compatible input from the current inventory."
+            )
+        selected.add(identifier)
+    return frozenset(selected)

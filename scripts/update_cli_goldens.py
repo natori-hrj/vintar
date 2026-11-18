@@ -3,6 +3,7 @@
 import argparse
 import json
 import runpy
+from contextlib import chdir
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -42,6 +43,12 @@ SCENARIOS = {
     "verify/fail.json": Scenario(1, 6, expected_verdict="vulnerable"),
     "verify/partial-inconclusive.json": Scenario(3, 1, rate_limited=True),
     "verify/authorization-required.json": Scenario(2, 0),
+    "discover/success.json": Scenario(0, 0),
+    "discover/stale-selection.json": Scenario(2, 0),
+    "discover/invalid-selection.json": Scenario(2, 0),
+    "discover/invalid-spec.json": Scenario(2, 0),
+    "discover/output-spec-conflict.json": Scenario(2, 0),
+    "discover/output-selection-conflict.json": Scenario(2, 0),
 }
 
 
@@ -79,6 +86,85 @@ def cli_args(name: str, scenario: Scenario, folder: Path) -> list[str]:
     return args
 
 
+DISCOVERY_SELECTION = (
+    'version = 1\napproved = ["input-24a9c3cf0c3d01709121ac0d09079903"]\n'
+)
+
+
+def capture_discovery(name, scenario, folder, args, env):
+    spec = folder / "openapi.json"
+    selection = folder / "review.toml"
+    if name == "discover/invalid-spec.json":
+        spec.write_text("{", encoding="utf-8")
+    else:
+        spec.write_bytes(
+            (ROOT / "tests/fixtures/discovery/openapi30.json").read_bytes()
+        )
+    if not selection.exists():
+        selection_text = DISCOVERY_SELECTION
+        if name == "discover/stale-selection.json":
+            selection_text = f'version = 1\napproved = ["input-{"0" * 32}"]\n'
+        elif name == "discover/invalid-selection.json":
+            selection_text = "version = 2\napproved = []\n"
+        selection.write_text(selection_text, encoding="utf-8")
+    output = {
+        "discover/output-spec-conflict.json": spec.name,
+        "discover/output-selection-conflict.json": selection.name,
+    }.get(name, "inventory.json")
+    before = (spec.read_bytes(), selection.read_bytes())
+    with (
+        chdir(folder),
+        patch(
+            "socket.socket", side_effect=AssertionError("Discovery opened a socket.")
+        ),
+        patch(
+            "socket.getaddrinfo", side_effect=AssertionError("Discovery resolved DNS.")
+        ),
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "discover",
+                "--spec",
+                spec.name,
+                "--selection",
+                selection.name,
+                "--output",
+                output,
+            ]
+            if args is None
+            else args,
+            env=env,
+        )
+    if (spec.read_bytes(), selection.read_bytes()) != before:
+        raise ValueError("Discovery modified an input file.")
+    if result.exit_code != scenario.exit_code:
+        raise ValueError(
+            f"Expected exit code {scenario.exit_code}, got {result.exit_code}. "
+            f"CLI stderr: {result.stderr.strip()}"
+        )
+    report_path = folder / "inventory.json"
+    if result.exit_code == 0:
+        if (
+            not result.stdout.endswith("\n")
+            or result.stderr
+            or not report_path.is_file()
+        ):
+            raise ValueError("Expected JSON summary and report with empty stderr.")
+        summary = json.loads(result.stdout)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    else:
+        if result.stdout or not result.stderr or report_path.exists():
+            raise ValueError("Expected a diagnostic on stderr and no discovery report.")
+        summary = report = None
+    return {
+        "exit_code": result.exit_code,
+        "stdout_json": summary,
+        "stderr": result.stderr,
+        "report_json": report,
+    }
+
+
 def capture(
     name: str,
     scenario: Scenario,
@@ -87,6 +173,18 @@ def capture(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
 ) -> str:
+    if name.startswith("discover/"):
+        return (
+            json.dumps(
+                capture_discovery(name, scenario, folder, args, env),
+                ensure_ascii=False,
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
     request_count = 0
 
     def handle(request: httpx.Request) -> httpx.Response:
