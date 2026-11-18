@@ -99,10 +99,19 @@ class RegressionCase:
         )
 
 
-def _table(value: object, keys: set[str]) -> dict:
-    if type(value) is not dict or set(value) != keys:
+def _table(value: object, keys: set[str]) -> dict[str, object]:
+    if type(value) is not dict:
         raise ValueError("Invalid regression case schema.")
-    return value
+
+    table: dict[str, object] = {}
+    for key, item in value.items():
+        if type(key) is not str:
+            raise ValueError("Invalid regression case schema.")
+        table[key] = item
+
+    if table.keys() != keys:
+        raise ValueError("Invalid regression case schema.")
+    return table
 
 
 def _string(
@@ -157,7 +166,7 @@ def _positive_number(
     minimum: float,
     maximum: float,
 ) -> float:
-    if type(value) not in (int, float):
+    if type(value) is not int and type(value) is not float:
         raise ValueError("Invalid numeric limit.")
 
     if not minimum <= value <= maximum:
@@ -204,7 +213,7 @@ def parse_regression_case(source: str) -> RegressionCase:
         if len(source.encode("utf-8")) > MAX_CASE_BYTES:
             raise ValueError("Invalid regression case size.")
 
-        data = tomllib.loads(source)
+        data: object = tomllib.loads(source)
 
         root = _table(
             data,
@@ -274,10 +283,11 @@ def parse_regression_case(source: str) -> RegressionCase:
         )
 
         # Boolean SQLi verification currently requires six probes.
-        if type(limits["max_requests"]) is not int:
+        max_requests = limits["max_requests"]
+        if type(max_requests) is not int:
             raise ValueError("Invalid request budget.")
 
-        if limits["max_requests"] != 6:
+        if max_requests != 6:
             raise ValueError("This check requires exactly six requests.")
 
         rps = _positive_number(
@@ -334,13 +344,16 @@ def parse_regression_case(source: str) -> RegressionCase:
             params=tuple(params),
         )
 
-        if injection["location"] != "query":
+        location = injection["location"]
+        if type(location) is not str or location != "query":
             raise ValueError("Unsupported injection location.")
 
-        if injection["mode"] not in {"append", "replace"}:
+        mode = injection["mode"]
+        if type(mode) is not str or mode not in {"append", "replace"}:
             raise ValueError("Unsupported injection mode.")
 
-        if type(injection["occurrence"]) is not int or injection["occurrence"] < 0:
+        occurrence = injection["occurrence"]
+        if type(occurrence) is not int or occurrence < 0:
             raise ValueError("Invalid occurrence.")
 
         point = InjectionPoint(
@@ -349,8 +362,8 @@ def parse_regression_case(source: str) -> RegressionCase:
                 injection["name"],
                 max_length=128,
             ),
-            occurrence=injection["occurrence"],
-            mode=InjectionMode(injection["mode"]),
+            occurrence=occurrence,
+            mode=InjectionMode(mode),
         )
 
         true_payload = _string(
@@ -376,7 +389,7 @@ def parse_regression_case(source: str) -> RegressionCase:
             false_payload=false_payload,
             expected_verdict=expected_verdict,
             scope=scope,
-            max_requests=6,
+            max_requests=max_requests,
             max_response_size=CASE_MAX_RESPONSE_SIZE,
             requests_per_second=rps,
             timeout_seconds=timeout,
@@ -384,7 +397,9 @@ def parse_regression_case(source: str) -> RegressionCase:
 
     except (TypeError, ValueError, OverflowError, UnicodeError, httpx.HTTPError):
         # Do not expose payloads, URLs, or parser details.
-        raise ValueError("Invalid or unsupported regression case.") from None
+        raise ValueError(
+            "Invalid or unsupported regression case. Use a valid schema v1 TOML case."
+        ) from None
 
 
 def load_regression_case(path: str | Path) -> RegressionCase:

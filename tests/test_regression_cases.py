@@ -1,4 +1,5 @@
 import os
+import tomllib
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
@@ -107,7 +108,9 @@ def test_case_can_be_loaded_from_file(tmp_path):
         ("max_requests = 6", "max_requests = 100"),
         ("max_requests = 6", "max_requests = true"),
         ("requests_per_second = 2.0", "requests_per_second = 100.0"),
+        ("requests_per_second = 2.0", "requests_per_second = true"),
         ("timeout_seconds = 10.0", "timeout_seconds = 0.0"),
+        ("timeout_seconds = 10.0", "timeout_seconds = true"),
         (
             'allowed_origin = "http://localhost:8000"',
             'allowed_origin = "http://example.com"',
@@ -126,6 +129,41 @@ def test_case_can_be_loaded_from_file(tmp_path):
 def test_invalid_cases_are_rejected(old, new):
     with pytest.raises(ValueError):
         parse_regression_case(VALID_CASE.replace(old, new, 1))
+
+
+class IntSubclass(int):
+    pass
+
+
+class FloatSubclass(float):
+    pass
+
+
+@pytest.mark.parametrize(
+    "field", ["max_requests", "requests_per_second", "timeout_seconds"]
+)
+@pytest.mark.parametrize("number_type", [IntSubclass, FloatSubclass])
+def test_case_parser_rejects_numeric_subclasses_in_limits(
+    monkeypatch, field, number_type
+):
+    data = tomllib.loads(VALID_CASE)
+    data["limits"][field] = number_type(data["limits"][field])
+    monkeypatch.setattr(cases_module.tomllib, "loads", lambda source: data)
+
+    with pytest.raises(ValueError, match="Invalid or unsupported regression case"):
+        parse_regression_case(VALID_CASE)
+
+
+def test_invalid_case_file_explains_expected_format_without_exposing_input(tmp_path):
+    path = tmp_path / "case.toml"
+    path.write_text("invalid case with private content", encoding="utf-8")
+
+    with pytest.raises(ValueError) as caught:
+        load_regression_case(path)
+
+    assert str(caught.value) == (
+        "Invalid or unsupported regression case. Use a valid schema v1 TOML case."
+    )
 
 
 def test_unknown_top_level_field_is_rejected():

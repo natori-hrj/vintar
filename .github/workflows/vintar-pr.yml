@@ -53,7 +53,7 @@ jobs:
         run: uv run python scripts/check_architecture.py
 
       - name: Check Python types
-        run: uv run --locked mypy --strict src/vintar/core src/vintar/checks
+        run: uv run --locked mypy --strict src/vintar/core src/vintar/checks src/vintar/regression
 
       - name: Run pytest
         run: uv run pytest
