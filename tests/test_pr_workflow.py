@@ -3,13 +3,9 @@
 import re
 from pathlib import Path
 
-WORKFLOW_PATH = Path(".github/workflows/vintar-pr.yml")
+import yaml
 
-EXPECTED_ACTIONS = {
-    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2",
-    "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
-}
+WORKFLOW_PATH = Path(".github/workflows/vintar-pr.yml")
 
 
 def workflow_text() -> str:
@@ -60,11 +56,27 @@ def test_untrusted_pr_has_no_privileged_inputs():
 
 
 def test_all_actions_are_sha_pinned():
-    source = workflow_text()
-    actions = set(re.findall(r"uses:\s+([^\s#]+)", source))
-
-    assert actions == EXPECTED_ACTIONS
-    assert all(re.fullmatch(r"[0-9a-f]{40}", item.split("@", 1)[1]) for item in actions)
+    workflows = sorted(
+        (*WORKFLOW_PATH.parent.glob("*.yml"), *WORKFLOW_PATH.parent.glob("*.yaml"))
+    )
+    assert workflows, (
+        "No workflow files found. Restore the workflows before checking action pins."
+    )
+    for path in workflows:
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job in workflow["jobs"].values():
+            for entry in (job, *job.get("steps", [])):
+                action = entry.get("uses")
+                if action is None or action.startswith("./"):
+                    continue
+                if action.startswith("docker://"):
+                    assert re.fullmatch(r"docker://.+@sha256:[0-9a-f]{64}", action), (
+                        f"{path}: {action} is mutable. Pin the container to its full SHA-256 digest."
+                    )
+                else:
+                    assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), (
+                        f"{path}: {action} is mutable. Pin the action or reusable workflow to its full commit SHA."
+                    )
 
 
 def test_checkout_does_not_keep_credentials():

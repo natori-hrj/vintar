@@ -59,6 +59,9 @@ jobs:
       - name: Check Python types
         run: uv run --locked mypy --strict src/vintar
 
+      - name: Check distributions
+        run: uv run --locked python scripts/check_distributions.py
+
       - name: Run pytest
         run: uv run pytest
 

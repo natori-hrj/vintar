@@ -157,4 +157,4 @@ On Linux x86-64, run `uv run python scripts/scan_git_history.py` from a full Git
 
 ## License
 
-The license has not yet been decided.
+Vintar is licensed under the [Apache License, Version 2.0](LICENSE).

@@ -1,5 +1,6 @@
 """Vintar command-line interface."""
 
+from importlib import metadata
 from typing import Annotated
 
 import httpx
@@ -32,7 +33,7 @@ def main() -> None:
 @app.command()
 def version() -> None:
     """Show the current version."""
-    console.print("[bold cyan]Vintar[/bold cyan] v0.1.0")
+    console.print(f"[bold cyan]Vintar[/bold cyan] v{metadata.version('vintar')}")
 
 
 @http_app.command("send")
