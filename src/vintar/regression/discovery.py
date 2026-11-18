@@ -492,7 +492,10 @@ class _Discovery:
         return value, source, trail
 
     def parameters(
-        self, node: JSONMap, source: Source, blockers: list[HeldItem] | None = None
+        self,
+        node: JSONMap,
+        source: Source,
+        blockers: dict[tuple[str, str], HeldItem] | None = None,
     ) -> dict[tuple[str, str], Input]:
         result: dict[tuple[str, str], Input] = {}
         values = node.get("parameters", [])
@@ -567,7 +570,7 @@ class _Discovery:
             if blockers is not None:
                 for held in self.held[previous_holds:]:
                     if required or held.source.pointer.endswith("/required"):
-                        blockers.append(held)
+                        blockers.setdefault(key, held)
         return result
 
     def body_schema(
@@ -662,10 +665,21 @@ class _Discovery:
         source: Source,
         declaration: Source,
         inherited: dict[tuple[str, str], Input],
+        inherited_blockers: dict[tuple[str, str], HeldItem],
         compatibility_blocker: HeldItem | None,
     ) -> Operation:
         node = _mapping(value, source)
-        params = inherited | self.parameters(node, source)
+        overrides = self.parameters(node, source)
+        params = inherited | overrides
+        if compatibility_blocker is None:
+            compatibility_blocker = next(
+                (
+                    held
+                    for key, held in inherited_blockers.items()
+                    if key not in overrides
+                ),
+                None,
+            )
         self.count(source, len(params))
         compatible = (
             method == "get"
@@ -766,12 +780,16 @@ class _Discovery:
                 )
             previous_holds = len(self.held)
             node, source, _ = self.resolve(value, declaration)
-            blockers = [
-                held
-                for held in self.held[previous_holds:]
-                if held.source.pointer.endswith("/parameters")
-            ]
-            inherited = self.parameters(node, source, blockers)
+            list_blocker = next(
+                (
+                    held
+                    for held in self.held[previous_holds:]
+                    if held.source.pointer.endswith("/parameters")
+                ),
+                None,
+            )
+            inherited_blockers: dict[tuple[str, str], HeldItem] = {}
+            inherited = self.parameters(node, source, inherited_blockers)
             for key in sorted(
                 node.keys()
                 - METHODS
@@ -800,7 +818,8 @@ class _Discovery:
                         source.child(method),
                         declaration if declaration != source else source.child(method),
                         inherited,
-                        blockers[0] if blockers else None,
+                        inherited_blockers,
+                        list_blocker,
                     )
                 )
         return Inventory(

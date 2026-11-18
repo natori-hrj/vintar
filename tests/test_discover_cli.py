@@ -325,3 +325,60 @@ def test_inventory_rejects_duplicate_input_id(tmp_path, monkeypatch):
     assert caught.value.source.file == SPEC
     assert "also declared at /paths/" in str(caught.value)
     assert "Give these inputs distinct declarations" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("override", "unverified_list", "compatible"),
+    [(True, False, True), (False, False, False), (True, True, False)],
+)
+def test_path_item_held_parameters_follow_operation_overrides(
+    tmp_path, override, unverified_list, compatible
+):
+    array = {
+        "name": "q",
+        "in": "query",
+        "required": True,
+        "schema": {"type": "array", "items": {"type": "string"}},
+    }
+    scalar = {"name": "q", "in": "query", "schema": {"type": "string"}}
+    get_parameters = (
+        [scalar]
+        if override
+        else [{"name": "other", "in": "query", "schema": {"type": "string"}}]
+    )
+    shared = {"parameters": [array], "get": {"parameters": get_parameters}}
+    path_item = {"$ref": "#/components/pathItems/Shared"}
+    if unverified_list:
+        path_item["parameters"] = [array]
+    path = tmp_path / "spec.json"
+    path.write_text(
+        json.dumps(
+            {
+                "openapi": "3.1.2",
+                "paths": {"/a": path_item},
+                "components": {"pathItems": {"Shared": shared}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    inventory = load_inventory(path)
+    [operation] = inventory.operations
+    item = next(
+        item for item in operation.inputs if item.name == ("q" if override else "other")
+    )
+    identifier = input_id(operation, item)
+    selection = review(tmp_path / "review.toml", identifier)
+    assert operation.compatible is compatible
+    assert item.compatible is compatible
+    inherited_pointer = "/components/pathItems/Shared/parameters/0"
+    assert any(held.source.pointer == inherited_pointer for held in inventory.held)
+    if compatible:
+        assert operation.compatibility_blocker is None
+        assert load_selection(selection, inventory) == frozenset({identifier})
+    else:
+        pointer = "/paths/~1a/parameters" if unverified_list else inherited_pointer
+        assert operation.compatibility_blocker.source.pointer == pointer
+        with pytest.raises(SelectionError, match="Declare required inputs") as caught:
+            load_selection(selection, inventory)
+        assert identifier in str(caught.value)
+        assert pointer in str(caught.value)
