@@ -32,6 +32,18 @@ extend-select = ["I", "UP", "B", "RUF", "TID", "RUF100", "BLE001"]
 [tool.pytest.ini_options]
 filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]
 
+[tool.coverage.run]
+branch = true
+source = ["src/vintar"]
+concurrency = ["multiprocessing"]
+parallel = true
+patch = ["subprocess"]
+sigterm = true
+
+[tool.coverage.report]
+fail_under = 89
+precision = 2
+
 [tool.importlinter]
 root_package = "vintar"
 
@@ -67,6 +79,7 @@ allow_indirect_imports = true
 
 [dependency-groups]
 dev = [
+    "coverage==7.17.3",
     "fastapi>=0.162.5",
     "import-linter>=2.16",
     "jsonschema>=4.25.1",

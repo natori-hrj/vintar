@@ -131,6 +131,8 @@ def _cli_environment(origin: str) -> dict[str, str]:
         "VINTAR_TARGET_ORIGIN": origin,
         "VINTAR_ALLOWED_ORIGIN": origin,
     }
+    if configuration := os.environ.get("COVERAGE_PROCESS_CONFIG"):
+        env["COVERAGE_PROCESS_CONFIG"] = configuration
     if os.name == "nt":
         for name in ("SYSTEMROOT", "WINDIR"):
             if value := os.environ.get(name):

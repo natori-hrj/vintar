@@ -229,6 +229,9 @@ def _cli_environment(origin: str) -> dict[str, str]:
         "VINTAR_ALLOWED_ORIGIN": origin,
     }
 
+    if configuration := os.environ.get("COVERAGE_PROCESS_CONFIG"):
+        env["COVERAGE_PROCESS_CONFIG"] = configuration
+
     if os.name == "nt":
         for name in ("SYSTEMROOT", "WINDIR"):
             if value := os.environ.get(name):
@@ -505,11 +508,13 @@ def test_cli_environment_does_not_inherit_ambient_values(
     monkeypatch.setenv("VINTAR_TARGET_ORIGIN", "https://wrong.invalid")
     monkeypatch.setenv("VINTAR_ALLOWED_ORIGIN", "https://wrong.invalid")
     monkeypatch.setenv("VINTAR_TEST_SECRET", "not-for-child")
+    monkeypatch.setenv("COVERAGE_PROCESS_CONFIG", "coverage-configuration")
 
     environment = _cli_environment("http://127.0.0.1:43210")
 
     assert environment["VINTAR_TARGET_ORIGIN"] == "http://127.0.0.1:43210"
     assert environment["VINTAR_ALLOWED_ORIGIN"] == "http://127.0.0.1:43210"
+    assert environment["COVERAGE_PROCESS_CONFIG"] == "coverage-configuration"
     assert "HTTP_PROXY" not in environment
     assert "HTTPS_PROXY" not in environment
     assert "VINTAR_TEST_SECRET" not in environment
