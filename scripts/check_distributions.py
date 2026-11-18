@@ -190,6 +190,7 @@ def smoke_command(
     environment: dict[str, str],
     failure: str,
     expected_exit: int = 0,
+    show_stdout: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
@@ -202,12 +203,19 @@ def smoke_command(
         )
     except OSError as error:
         raise ValueError(f"{failure} Could not start {command[0]}: {error}") from error
-    require(
-        result.returncode == expected_exit,
-        f"{failure} Expected exit {expected_exit}, got {result.returncode}. "
-        f"{result.stderr.strip()}",
-    )
+    if result.returncode != expected_exit:
+        diagnostic = (
+            f"{failure} Expected exit {expected_exit}, got {result.returncode}. "
+            f"{result.stderr.strip()}"
+        )
+        if show_stdout:
+            diagnostic += f"\n{help_excerpt(result.stdout)}"
+        raise ValueError(diagnostic)
     return result
+
+
+def help_excerpt(output: str) -> str:
+    return f"Captured help stdout (last 2000 characters): {output[-2000:]!r}"
 
 
 def smoke_wheel(wheel: Path, directory: Path) -> None:
@@ -231,7 +239,11 @@ def smoke_wheel(wheel: Path, directory: Path) -> None:
     cli = str(venv / "bin" / "vintar")
 
     def run(
-        command: list[str], failure: str, *, expected_exit: int = 0
+        command: list[str],
+        failure: str,
+        *,
+        expected_exit: int = 0,
+        show_stdout: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         return smoke_command(
             command,
@@ -239,6 +251,7 @@ def smoke_wheel(wheel: Path, directory: Path) -> None:
             environment=environment,
             failure=failure,
             expected_exit=expected_exit,
+            show_stdout=show_stdout,
         )
 
     run(
@@ -253,6 +266,13 @@ def smoke_wheel(wheel: Path, directory: Path) -> None:
         ["uv", "pip", "check", "--python", python],
         "The wheel's installed dependencies are inconsistent. Fix the runtime dependency declarations.",
     )
+
+    environment = {
+        "NO_COLOR": "1",
+        "TERM": "dumb",
+        "COLUMNS": "100",
+        "PYTHONIOENCODING": "utf-8",
+    }
     installed = run(
         [
             python,
@@ -273,10 +293,12 @@ def smoke_wheel(wheel: Path, directory: Path) -> None:
     help_output = run(
         [cli, "verify", "--help"],
         "The installed verify help command failed. Ensure the wheel includes the verify command.",
+        show_stdout=True,
     )
     require(
         "--cases" in help_output.stdout and "--authorized" in help_output.stdout,
-        "Installed verify help is missing the expected options. Restore --cases and --authorized.",
+        "Installed verify help is missing the expected options. Restore --cases and --authorized.\n"
+        f"{help_excerpt(help_output.stdout)}",
     )
     unauthorized = run(
         [cli, "verify", "--cases", "case.toml"],

@@ -2,12 +2,14 @@
 
 import runpy
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 _SCRIPT = runpy.run_path("scripts/check_distributions.py")
 smoke_wheel = _SCRIPT["smoke_wheel"]
+_RUN_PROCESS = subprocess.run
 
 AUTHORIZATION_ERROR = "Error: explicit testing authorization is required.\n"
 
@@ -32,6 +34,10 @@ def smoke_processes(monkeypatch, tmp_path):
         "VINTAR_ALLOWED_ORIGIN",
     ):
         monkeypatch.setenv(name, "ambient-value")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("COLUMNS", "24")
 
     def execute(command, *, cwd, env, **kwargs):
         assert cwd == tmp_path
@@ -41,6 +47,13 @@ def smoke_processes(monkeypatch, tmp_path):
         assert "VINTAR_TARGET_ORIGIN" not in env
         assert "VINTAR_ALLOWED_ORIGIN" not in env
         assert env["NO_COLOR"] == "1"
+        if len(commands) >= 3:
+            assert env == {
+                "NO_COLOR": "1",
+                "TERM": "dumb",
+                "COLUMNS": "100",
+                "PYTHONIOENCODING": "utf-8",
+            }
         code, stdout, stderr = responses[len(commands)]
         commands.append(command)
         return subprocess.CompletedProcess(command, code, stdout, stderr)
@@ -70,6 +83,37 @@ def test_smoke_wheel_runs_installed_commands_in_order(tmp_path, smoke_processes)
         [cli, "verify", "--help"],
         [cli, "verify", "--cases", "case.toml"],
     ]
+
+
+def test_smoke_wheel_checks_real_help_under_runner_environment(
+    monkeypatch, tmp_path, smoke_processes
+):
+    mock_run = subprocess.run
+
+    def execute(command, **kwargs):
+        result = mock_run(command, **kwargs)
+        if command[-2:] == ["verify", "--help"]:
+            return _RUN_PROCESS(
+                [sys.executable, "-m", "vintar.cli", "verify", "--help"], **kwargs
+            )
+        return result
+
+    monkeypatch.setattr(subprocess, "run", execute)
+    smoke_wheel(tmp_path / "fixture.whl", tmp_path)
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_smoke_wheel_help_failure_includes_bounded_output(
+    tmp_path, smoke_processes, exit_code
+):
+    responses, _ = smoke_processes
+    responses[5] = (exit_code, "outside excerpt" + "x" * 2100 + "visible help tail", "")
+
+    with pytest.raises(ValueError, match="Captured help stdout") as caught:
+        smoke_wheel(tmp_path / "fixture.whl", tmp_path)
+
+    assert "visible help tail" in str(caught.value)
+    assert "outside excerpt" not in str(caught.value)
 
 
 @pytest.mark.parametrize(
