@@ -499,6 +499,25 @@ def test_invalid_rate_wait_is_rejected(rate_wait):
         )
 
 
+class IntSubclass(int):
+    pass
+
+
+class FloatSubclass(float):
+    pass
+
+
+@pytest.mark.parametrize("field", ["elapsed_seconds", "rate_wait_seconds"])
+@pytest.mark.parametrize(
+    "value",
+    [True, IntSubclass(1), FloatSubclass(0.25)],
+    ids=["bool", "int-subclass", "float-subclass"],
+)
+def test_timing_measurements_require_exact_builtin_numbers(field, value):
+    with pytest.raises(TypeError, match="Invalid timing measurement"):
+        replace(make_observations()[0], **{field: value})
+
+
 def test_non_numeric_status_is_rejected():
     observation = make_observations()[0]
 

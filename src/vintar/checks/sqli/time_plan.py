@@ -137,9 +137,9 @@ class TimePlan:
         delay = self.expected_delay_seconds
         timeout = self.request_timeout_seconds
 
-        if type(delay) not in (int, float):
+        if type(delay) is not int and type(delay) is not float:
             raise TypeError("Invalid time plan duration.")
-        if type(timeout) not in (int, float):
+        if type(timeout) is not int and type(timeout) is not float:
             raise TypeError("Invalid time plan duration.")
 
         if not (MIN_DELAY_SECONDS <= delay <= MAX_DELAY_SECONDS) or not math.isfinite(
@@ -223,7 +223,7 @@ def prepare_time_plan(
 
     delay = expected_delay_seconds
 
-    if type(delay) not in (int, float):
+    if type(delay) is not int and type(delay) is not float:
         raise TypeError("Invalid expected time delay.")
 
     if not MIN_DELAY_SECONDS <= delay <= MAX_DELAY_SECONDS or not math.isfinite(delay):

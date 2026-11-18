@@ -66,7 +66,7 @@ def _seconds(value: object, *, allow_none: bool = False) -> float | None:
     if value is None and allow_none:
         return None
 
-    if type(value) not in (int, float):
+    if type(value) is not int and type(value) is not float:
         raise TypeError("Invalid timing measurement.")
 
     # Check the range before converting huge integers to float.
@@ -135,14 +135,15 @@ class TimeObservation:
                 raise ValueError("Failure cannot contain completed response data.")
 
 
-def _terminal_reason(observation: TimeObservation) -> str | None:
-    if observation.outcome is not TimeProbeOutcome.COMPLETED:
-        return {
-            TimeProbeOutcome.TIMEOUT: "probe_timeout",
-            TimeProbeOutcome.REQUEST_FAILED: "probe_failed",
-            TimeProbeOutcome.INTERRUPTED: "probe_interrupted",
-        }[observation.outcome]
+@dataclass(frozen=True, slots=True)
+class _CompletedObservation:
+    kind: TimeProbeKind
+    elapsed_seconds: float
+    status_code: int
+    truncated: bool
 
+
+def _terminal_reason(observation: _CompletedObservation) -> str | None:
     if observation.status_code == 429:
         return "rate_limited"
     if observation.truncated:
@@ -154,7 +155,7 @@ def _terminal_reason(observation: TimeObservation) -> str | None:
 
 def _validate_observation_series(
     observations: tuple[TimeObservation, ...],
-) -> str | None:
+) -> tuple[str | None, tuple[_CompletedObservation, ...]]:
     if len(observations) > TIME_REQUESTS:
         raise ValueError("Too many timing observations.")
 
@@ -162,18 +163,34 @@ def _validate_observation_series(
         raise TypeError("Invalid timing observation.")
 
     terminal_reason = None
+    completed = []
 
     for sequence, item in enumerate(observations, start=1):
         if item.sequence != sequence or item.kind is not TIME_PROBE_ORDER[sequence - 1]:
             raise ValueError("Invalid time observation order.")
 
-        reason = _terminal_reason(item)
+        if item.outcome is TimeProbeOutcome.COMPLETED:
+            elapsed = item.elapsed_seconds
+            status = item.status_code
+            if elapsed is None:
+                raise ValueError("Missing completed response time.")
+            if type(status) is not int:
+                raise TypeError("Invalid timing HTTP status.")
+            response = _CompletedObservation(item.kind, elapsed, status, item.truncated)
+            completed.append(response)
+            reason = _terminal_reason(response)
+        else:
+            reason = {
+                TimeProbeOutcome.TIMEOUT: "probe_timeout",
+                TimeProbeOutcome.REQUEST_FAILED: "probe_failed",
+                TimeProbeOutcome.INTERRUPTED: "probe_interrupted",
+            }[item.outcome]
         if reason is not None:
             if sequence != len(observations):
                 raise ValueError("Observations continued after terminal condition.")
             terminal_reason = reason
 
-    return terminal_reason
+    return terminal_reason, tuple(completed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +217,7 @@ class TimeEvidence:
         for name in self.__dataclass_fields__:
             value = getattr(self, name)
 
-            if type(value) not in (int, float):
+            if type(value) is not int and type(value) is not float:
                 raise TypeError("Invalid timing evidence.")
 
             if not -_MAX_MEASUREMENT_SECONDS <= value <= _MAX_MEASUREMENT_SECONDS:
@@ -250,7 +267,7 @@ class TimeAnalysis:
             raise ValueError("Inconsistent timing analysis reason.")
 
         expected_delay = self.expected_delay_seconds
-        if type(expected_delay) not in (int, float):
+        if type(expected_delay) is not int and type(expected_delay) is not float:
             raise TypeError("Invalid expected timing delay.")
         if not MIN_DELAY_SECONDS <= expected_delay <= MAX_DELAY_SECONDS:
             raise ValueError("Invalid expected timing delay.")
@@ -266,7 +283,7 @@ class TimeAnalysis:
         if self.evidence is not None and type(self.evidence) is not TimeEvidence:
             raise TypeError("Invalid timing evidence.")
 
-        terminal_reason = _validate_observation_series(self.observations)
+        terminal_reason, completed = _validate_observation_series(self.observations)
 
         if terminal_reason is not None:
             if (
@@ -289,7 +306,7 @@ class TimeAnalysis:
         if self.reason_code not in _EVIDENCE_REASONS or self.evidence is None:
             raise ValueError("Incomplete timing classification evidence.")
 
-        if self.evidence != _build_evidence(self.observations):
+        if self.evidence != _build_evidence(completed):
             raise ValueError("Evidence does not match timing observations.")
 
         expected_classification = _classify_evidence(
@@ -310,7 +327,7 @@ def _span(values: tuple[float, ...]) -> float:
 
 
 def _build_evidence(
-    observations: tuple[TimeObservation, ...],
+    observations: tuple[_CompletedObservation, ...],
 ) -> TimeEvidence:
     groups = {
         kind: tuple(item.elapsed_seconds for item in observations if item.kind is kind)
@@ -425,7 +442,7 @@ def analyze_time_probes(
     if type(observations) is not tuple:
         raise TypeError("Invalid time analysis observations.")
 
-    terminal_reason = _validate_observation_series(observations)
+    terminal_reason, completed = _validate_observation_series(observations)
 
     if terminal_reason is not None:
         return TimeAnalysis(
@@ -445,7 +462,7 @@ def analyze_time_probes(
 
     # Span-based jitter and endpoint drift are conservative
     # heuristics, not formal statistical tests.
-    evidence = _build_evidence(observations)
+    evidence = _build_evidence(completed)
 
     status, reason_code = _classify_evidence(
         evidence,

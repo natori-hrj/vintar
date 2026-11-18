@@ -103,7 +103,7 @@ def _signed_message(
     key_id: str,
 ) -> bytes:
     """Bind context, signature algorithm, key identifier and checkpoint."""
-    document = {
+    document: dict[str, object] = {
         "version": SIGNED_CHECKPOINT_VERSION,
         "algorithm": SIGNATURE_ALGORITHM,
         "key_id": key_id,
