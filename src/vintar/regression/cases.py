@@ -411,11 +411,11 @@ class _CaseTooLargeError(Exception):
 def _read_case_file(path: str | Path) -> bytes:
     """Read a regular file through one verified descriptor."""
     file_path = os.fspath(path)
-    before = os.lstat(file_path)
+    path_stat = os.lstat(file_path)
 
-    if not stat.S_ISREG(before.st_mode):
+    if not stat.S_ISREG(path_stat.st_mode):
         raise ValueError("Not a regular file.")
-    if before.st_size > MAX_CASE_BYTES:
+    if path_stat.st_size > MAX_CASE_BYTES:
         raise _CaseTooLargeError
 
     flags = os.O_RDONLY
@@ -430,11 +430,6 @@ def _read_case_file(path: str | Path) -> bytes:
         opened_before = os.fstat(descriptor)
         if not stat.S_ISREG(opened_before.st_mode):
             raise ValueError("Not a regular file.")
-        if (before.st_dev, before.st_ino) != (
-            opened_before.st_dev,
-            opened_before.st_ino,
-        ):
-            raise ValueError("File changed before it was opened.")
         if opened_before.st_size > MAX_CASE_BYTES:
             raise _CaseTooLargeError
 
