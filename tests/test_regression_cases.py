@@ -294,24 +294,32 @@ def test_path_is_not_exposed_by_read_error(tmp_path):
     assert str(secret_path) not in str(raised.value)
 
 
-def test_file_replacement_between_check_and_open_is_rejected(tmp_path, monkeypatch):
+@pytest.mark.parametrize("replacement", ["symlink", "fifo"])
+def test_non_regular_replacement_just_before_open_is_rejected(
+    tmp_path, monkeypatch, replacement
+):
     path = tmp_path / "case.toml"
     path.write_text(VALID_CASE, encoding="utf-8")
+    target = tmp_path / "target.toml"
+    target.write_text(VALID_CASE, encoding="utf-8")
     real_open = os.open
-    replaced = False
 
     def replacing_open(file_path, flags):
-        nonlocal replaced
-        if not replaced:
-            replaced = True
-            path.unlink()
-            path.write_text(VALID_CASE, encoding="utf-8")
+        assert file_path == os.fspath(path)
+        path.unlink()
+        if replacement == "symlink":
+            path.symlink_to(target)
+        else:
+            os.mkfifo(path)
+            assert flags & os.O_NONBLOCK
         return real_open(file_path, flags)
 
     monkeypatch.setattr(cases_module.os, "open", replacing_open)
 
     with pytest.raises(ValueError, match="Unable to read"):
         load_regression_case(path)
+
+    assert path.is_symlink() if replacement == "symlink" else path.is_fifo()
 
 
 def test_case_repr_does_not_expose_payloads():
