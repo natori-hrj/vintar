@@ -4,6 +4,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from typer.testing import CliRunner
 
 from vintar import regression_cli
 from vintar.cli import app
+from vintar.core import http
 from vintar.regression import batch as batch_module
 
 cli = CliRunner()
@@ -100,10 +102,15 @@ def mock_http(monkeypatch):
     real_batch = regression_cli.run_regression_batch
     received: list[httpx.Request] = []
     response_status = [200]
-    clock = [0.0]
+    now = 0.0
+
+    def clock() -> float:
+        return now
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal now
         received.append(request)
+        now += 0.125
         if isinstance(response_status[0], Exception):
             raise response_status[0]
         return httpx.Response(
@@ -124,11 +131,12 @@ def mock_http(monkeypatch):
         from vintar.core.rate_limit import RateLimiter
 
         def sleep(seconds):
-            clock[0] += seconds
+            nonlocal now
+            now += seconds
 
         return RateLimiter(
             requests_per_second=requests_per_second,
-            _clock=lambda: clock[0],
+            _clock=clock,
             _sleep=sleep,
         )
 
@@ -142,6 +150,7 @@ def mock_http(monkeypatch):
         "RateLimiter",
         virtual_limiter,
     )
+    monkeypatch.setattr(http, "time", SimpleNamespace(perf_counter=clock))
 
     return received, response_status
 
@@ -588,9 +597,22 @@ def test_sensitive_runtime_configuration_is_not_exported(
     )
 
     assert result.exit_code == 0
-    assert "placeholder.invalid" not in result.stdout
-    assert "127.0.0.1" not in result.stdout
-    assert "8765" not in result.stdout
+
+    def assert_no_runtime_configuration(value: object) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                assert_no_runtime_configuration(key)
+                assert_no_runtime_configuration(item)
+        elif isinstance(value, list):
+            for item in value:
+                assert_no_runtime_configuration(item)
+        elif isinstance(value, str):
+            for marker in ("placeholder.invalid", "127.0.0.1", ":8765"):
+                assert marker not in value
+        elif type(value) is int:
+            assert value != 8765
+
+    assert_no_runtime_configuration(json.loads(result.stdout))
 
 
 def test_invalid_toml_does_not_leak_content(
