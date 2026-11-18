@@ -4,7 +4,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -87,7 +87,7 @@ def _emit_json(payload: str) -> None:
     sys.stdout.flush()
 
 
-def _abort(message: str, code: int = 2) -> None:
+def _abort(message: str, code: int = 2) -> NoReturn:
     """Emit only fixed, non-sensitive diagnostics."""
     typer.echo(message, err=True)
     raise typer.Exit(code=code)
