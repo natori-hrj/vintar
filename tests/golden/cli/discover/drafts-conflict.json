@@ -1,0 +1,6 @@
+{
+  "draft_files": null,
+  "exit_code": 2,
+  "stderr": "Error: Draft path case-24a9c3cf0c3d01709121ac0d09079903.draft.toml already has different content. Use an empty directory or move the existing file.\n",
+  "stdout_json": null
+}

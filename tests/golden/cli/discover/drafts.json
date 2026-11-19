@@ -1,0 +1,14 @@
+{
+  "draft_files": {
+    "case-24a9c3cf0c3d01709121ac0d09079903.draft.toml": "kind = \"vintar_review_draft\"\ndraft_version = 1\nid = \"case-24a9c3cf0c3d01709121ac0d09079903\"\ninput_id = \"input-24a9c3cf0c3d01709121ac0d09079903\"\nmethod = \"GET\"\npath = \"/a\"\nquery_parameter = \"q\"\nmissing_decisions = [\"route mapping and baseline query values\", \"trusted target, authorization, and any credential requirements\", \"reviewed check configuration and probe inputs\", \"expected verdict\", \"trusted limits and required Schema v1 case fields\"]\n\n[source]\nfile = \"openapi.json\"\noperation = \"/paths/~1a/get\"\noperation_definition = \"/paths/~1a/get\"\ndeclaration = \"/paths/~1a/get/parameters/0\"\ndefinition = \"/components/parameters/q\"\n\n[[query_parameters]]\nname = \"q\"\nrequired = false\n"
+  },
+  "exit_code": 0,
+  "stderr": "",
+  "stdout_json": {
+    "drafts": [
+      "case-24a9c3cf0c3d01709121ac0d09079903.draft.toml"
+    ],
+    "report_type": "discovery_draft_summary",
+    "schema_version": 1
+  }
+}

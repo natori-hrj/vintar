@@ -201,6 +201,10 @@ def _validate_plan(
         validate_scope(planned.url, scope)
 
 
+class ReviewDraftError(ValueError):
+    """A review draft requires human decisions before verification."""
+
+
 def parse_regression_case(source: str) -> RegressionCase:
     """Validate a version-1 TOML case without executing HTTP requests."""
     try:
@@ -214,6 +218,12 @@ def parse_regression_case(source: str) -> RegressionCase:
             raise ValueError("Invalid regression case size.")
 
         data: object = tomllib.loads(source)
+        if isinstance(data, dict) and data.get("kind") == "vintar_review_draft":
+            raise ReviewDraftError(
+                "Review draft cannot be verified. Resolve route mapping, baseline query values, "
+                "target and authorization, credential requirements, check configuration and probe inputs, "
+                "expected verdict, and trusted limits. Use a reviewed Schema v1 case."
+            )
 
         root = _table(
             data,
@@ -395,6 +405,8 @@ def parse_regression_case(source: str) -> RegressionCase:
             timeout_seconds=timeout,
         )
 
+    except ReviewDraftError:
+        raise
     except (TypeError, ValueError, OverflowError, UnicodeError, httpx.HTTPError):
         # Do not expose payloads, URLs, or parser details.
         raise ValueError(

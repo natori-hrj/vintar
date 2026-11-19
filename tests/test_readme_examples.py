@@ -14,6 +14,7 @@ EXAMPLES = {
     "verify-pass": "verify/pass.json",
     "sqli-normal": "sqli-verify/normal.json",
     "discover-review": "discover/success.json",
+    "discover-drafts": "discover/drafts.json",
 }
 BLOCKS = {
     "verify-pass/case": "toml",
@@ -24,6 +25,8 @@ BLOCKS = {
     "discover-review/selection": "toml",
     "discover-review/command": "bash",
     "discover-review/report": "json",
+    "discover-drafts/command": "bash",
+    "discover-drafts/report": "json",
 }
 CASE_PATH = "security/cases/a-case.toml"
 ORIGIN_VARIABLES = {"VINTAR_TARGET_ORIGIN", "VINTAR_ALLOWED_ORIGIN"}
@@ -109,9 +112,9 @@ def test_readme_cli_example(example, readme_blocks, tmp_path):
         case_path = tmp_path / Path(CASE_PATH).name
         case_path.write_text(case, encoding="utf-8")
         args[path_arg] = str(case_path)
-    elif example == "discover-review":
+    elif example in {"discover-review", "discover-drafts"}:
         assert not env, "Remove origin variables from the offline discovery command."
-        selection = readme_blocks[f"{example}/selection"]
+        selection = readme_blocks["discover-review/selection"]
         try:
             tomllib.loads(selection)
         except tomllib.TOMLDecodeError as error:

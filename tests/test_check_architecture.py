@@ -92,3 +92,11 @@ def test_discover_cli_imports_inventory_but_not_execution():
     for module in ("httpx", "vintar.core.executor", "vintar.regression.runner"):
         [diagnostic] = check_source(path, f"import {module}")
         assert "Discovery must remain offline" in diagnostic
+
+
+def test_draft_serializer_stays_offline():
+    path = Path("regression/discovery_drafts.py")
+    assert not check_source(path, "from vintar.regression.discovery import Inventory")
+    for module in ("httpx", "vintar.regression.runner", "vintar.regression.cases"):
+        [diagnostic] = check_source(path, f"import {module}")
+        assert "Discovery must remain offline" in diagnostic
