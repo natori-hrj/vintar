@@ -442,3 +442,8 @@ the report. Pytest writes `sqli-candidate-reliability.json` under its temporary 
 directory. To retain it at a known location, pass `--basetemp` with a dedicated
 temporary directory. A future release gate should validate the schema, require the
 expected endpoint IDs by measurement mode, and interpret the explicit coverage marker.
+
+Expected fixed-loopback failures are recorded as `socket_bind`, `startup`,
+`transport`, or `unexpected_response`. The test writes the JSON before failing on
+an expected loopback failure or a replay non-decision. The failure names the mode
+and report path, so replay counts remain available when loopback is restricted.
