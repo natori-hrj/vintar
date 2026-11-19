@@ -13,6 +13,7 @@ import sys
 import threading
 from collections import Counter
 from collections.abc import Callable
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import cast
@@ -192,6 +193,41 @@ class _Server(HTTPServer):
         self.handler_failed = True
 
 
+class LoopbackStartupError(RuntimeError):
+    """The loopback server thread could not start."""
+
+
+@contextmanager
+def running_server(server):
+    assert server.server_address[0] == "127.0.0.1"
+
+    worker = threading.Thread(
+        target=server.serve_forever,
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except RuntimeError as exc:
+        server.server_close()
+        raise LoopbackStartupError(
+            "The loopback worker could not start. Check thread availability on the runner."
+        ) from exc
+
+    try:
+        yield (
+            server,
+            f"http://127.0.0.1:{server.server_port}",
+        )
+
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+        assert not worker.is_alive(), (
+            "The loopback worker did not stop. Check server shutdown and outstanding requests."
+        )
+
+
 @pytest.fixture
 def local_server():
     try:
@@ -199,26 +235,69 @@ def local_server():
     except OSError:
         pytest.skip("Loopback binding is not available")
 
-    assert server.server_address[0] == "127.0.0.1"
+    with running_server(server) as running:
+        yield running
+        assert not server.handler_failed, (
+            "The loopback handler failed. Check the SQLite fixture and server logs."
+        )
 
-    worker = threading.Thread(
-        target=server.serve_forever,
-        daemon=True,
-    )
-    worker.start()
+
+def fixed_loopback_record(category: str | None, message: str) -> dict[str, str | None]:
+    return {
+        "endpoint_id": "/safe",
+        "mode": "fixed_loopback",
+        "status": "passed" if category is None else "failed",
+        "failure_category": category,
+        "message": message,
+    }
+
+
+def check_parameterized_benign_response(
+    binder: Callable[[], _Server] = _Server,
+) -> dict[str, str | None]:
+    try:
+        server = binder()
+    except OSError:
+        return fixed_loopback_record(
+            "socket_bind",
+            "Cannot bind the fixed-app fixture. Check that the runner permits IPv4 loopback sockets.",
+        )
 
     try:
-        yield (
-            server,
-            f"http://127.0.0.1:{server.server_port}",
-        )
-        assert not server.handler_failed
+        with (
+            running_server(server) as (_, origin),
+            httpx.Client(trust_env=False, follow_redirects=False, timeout=5) as client,
+        ):
+            try:
+                result = client.get(origin + "/safe", params={"category": "Pets"})
+            except httpx.RequestError:
+                return fixed_loopback_record(
+                    "transport",
+                    "The fixed-app request failed. Check loopback transport and the server response.",
+                )
+            if result.status_code != 200 or result.content != b"Cat toy\nDog toy":
+                return fixed_loopback_record(
+                    "unexpected_response",
+                    f"The fixed endpoint returned status {result.status_code} or an unexpected body. "
+                    "Check the seeded SQLite rows, parameter binding, and response ordering.",
+                )
+            if (
+                [(path, category) for path, category, _ in server.received]
+                != [("/safe", "Pets")]
+                or server.query_errors
+                or server.handler_failed
+            ):
+                return fixed_loopback_record(
+                    "unexpected_response",
+                    "The fixed endpoint did not record one successful benign lookup. "
+                    "Check the route and query parameter handling.",
+                )
+    except LoopbackStartupError as exc:
+        return fixed_loopback_record("startup", str(exc))
 
-    finally:
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=5)
-        assert not worker.is_alive()
+    return fixed_loopback_record(
+        None, "The parameterized endpoint returned the expected benign response."
+    )
 
 
 def _cli_environment(origin: str) -> dict[str, str]:
