@@ -13,6 +13,7 @@ import sys
 import threading
 from collections import Counter
 from collections.abc import Callable
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import cast
@@ -192,13 +193,8 @@ class _Server(HTTPServer):
         self.handler_failed = True
 
 
-@pytest.fixture
-def local_server():
-    try:
-        server = _Server()
-    except OSError:
-        pytest.skip("Loopback binding is not available")
-
+@contextmanager
+def running_server(server):
     assert server.server_address[0] == "127.0.0.1"
 
     worker = threading.Thread(
@@ -212,13 +208,58 @@ def local_server():
             server,
             f"http://127.0.0.1:{server.server_port}",
         )
-        assert not server.handler_failed
+        assert not server.handler_failed, (
+            "The loopback handler failed. Check the SQLite fixture and server logs."
+        )
 
     finally:
         server.shutdown()
         server.server_close()
         worker.join(timeout=5)
-        assert not worker.is_alive()
+        assert not worker.is_alive(), (
+            "The loopback worker did not stop. Check server shutdown and outstanding requests."
+        )
+
+
+@pytest.fixture
+def local_server():
+    try:
+        server = _Server()
+    except OSError:
+        pytest.skip("Loopback binding is not available")
+
+    with running_server(server) as running:
+        yield running
+
+
+def check_parameterized_benign_response() -> None:
+    try:
+        server = _Server()
+    except OSError:
+        pytest.fail(
+            "Cannot bind the fixed-app fixture. Check that the runner permits IPv4 loopback sockets."
+        )
+
+    with (
+        running_server(server) as (_, origin),
+        httpx.Client(trust_env=False, follow_redirects=False, timeout=5) as client,
+    ):
+        try:
+            result = client.get(origin + "/safe", params={"category": "Pets"})
+        except httpx.RequestError:
+            pytest.fail(
+                "The fixed-app loopback request failed. Check server readiness and local transport."
+            )
+        assert result.status_code == 200 and result.content == b"Cat toy\nDog toy", (
+            f"The fixed endpoint returned status {result.status_code} or an unexpected response. "
+            "Check the seeded SQLite rows, parameter binding, and response ordering."
+        )
+        assert [(path, category) for path, category, _ in server.received] == [
+            ("/safe", "Pets")
+        ] and server.query_errors == 0, (
+            "The fixed endpoint did not record one successful benign lookup. "
+            "Check the route and query parameter handling."
+        )
 
 
 def _cli_environment(origin: str) -> dict[str, str]:

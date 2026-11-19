@@ -421,3 +421,24 @@ Priorities include:
 Any new evaluation must distinguish a genuine improvement
 in classification quality from a reduction in classification
 coverage.
+
+## Phase 8-1 candidate-signal measurement
+
+The always-on pytest suite measures the Boolean candidate signal on labeled synthetic
+observations. A positive is `INCONCLUSIVE / boolean_candidate`. A negative is
+`NOT_DETECTED`. All other results are non-decisions. Replay reports true positives,
+false negatives, false positives, true negatives, and non-decisions. Any false
+negative, false positive, or non-decision fails the test with remediation.
+
+The versioned JSON report separates `replay` from `fixed_app_loopback`. The latter
+checks the expected response to a benign request against the parameterized SQLite
+route. It contributes no entries to the detector confusion matrix.
+**Live positive measurement is not covered** (`live_positive_measurement: not_covered`).
+Replay results provide evidence about the candidate signal on the labeled fixtures.
+Confirmed vulnerability detection requires separate evidence.
+
+Run `uv run --locked pytest tests/test_sqli_candidate_reliability.py` to reproduce
+the report. Pytest writes `sqli-candidate-reliability.json` under its temporary test
+directory. To retain it at a known location, pass `--basetemp` with a dedicated
+temporary directory. A future release gate should validate the schema, require the
+expected endpoint IDs by measurement mode, and interpret the explicit coverage marker.
