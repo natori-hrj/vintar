@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 
 from vintar.core.http import send_request
+from vintar.discover_cli import discover_command
 from vintar.regression_cli import verify_command
 from vintar.sqli_cli import sqli_app
 
@@ -21,6 +22,7 @@ http_app = typer.Typer(help="HTTP inspection commands.")
 app.add_typer(http_app, name="http")
 app.add_typer(sqli_app, name="sqli")
 app.command("verify")(verify_command)
+app.command("discover")(discover_command)
 
 console = Console()
 

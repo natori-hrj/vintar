@@ -1,0 +1,182 @@
+{
+  "exit_code": 0,
+  "report_json": {
+    "held": [
+      {
+        "definition": null,
+        "reason": "Parameter is outside the v1 scalar query model. Review it separately.",
+        "source": {
+          "file": "openapi.json",
+          "pointer": "/paths/~1z/get/parameters/1"
+        }
+      },
+      {
+        "definition": null,
+        "reason": "Parameter is outside the v1 scalar query model. Review it separately.",
+        "source": {
+          "file": "openapi.json",
+          "pointer": "/paths/~1z/parameters/1"
+        }
+      },
+      {
+        "definition": null,
+        "reason": "Method is outside the v1 GET model. Review it separately.",
+        "source": {
+          "file": "openapi.json",
+          "pointer": "/paths/~1z/post"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "compatible": true,
+        "definition": {
+          "file": "openapi.json",
+          "pointer": "/paths/~1a/get"
+        },
+        "id": "op-f302dfbc31f97b899dc2601c904bbc09",
+        "inputs": [
+          {
+            "compatible": true,
+            "definition": {
+              "file": "openapi.json",
+              "pointer": "/components/parameters/q"
+            },
+            "id": "input-24a9c3cf0c3d01709121ac0d09079903",
+            "ignored_reason": null,
+            "location": "query",
+            "name": "q",
+            "required": false,
+            "selected": true,
+            "source": {
+              "file": "openapi.json",
+              "pointer": "/paths/~1a/get/parameters/0"
+            }
+          }
+        ],
+        "method": "GET",
+        "path": "/a",
+        "source": {
+          "file": "openapi.json",
+          "pointer": "/paths/~1a/get"
+        }
+      },
+      {
+        "compatible": true,
+        "definition": {
+          "file": "openapi.json",
+          "pointer": "/paths/~1z/get"
+        },
+        "id": "op-b034f5fae2c796b273576bc346ac53ca",
+        "inputs": [
+          {
+            "compatible": false,
+            "definition": {
+              "file": "openapi.json",
+              "pointer": "/paths/~1z/get/parameters/1"
+            },
+            "id": "input-cc8b6e7678bc183d2951f5fe039a872e",
+            "ignored_reason": null,
+            "location": "header",
+            "name": "x-mode",
+            "required": false,
+            "selected": false,
+            "source": {
+              "file": "openapi.json",
+              "pointer": "/paths/~1z/get/parameters/1"
+            }
+          },
+          {
+            "compatible": true,
+            "definition": {
+              "file": "openapi.json",
+              "pointer": "/paths/~1z/get/parameters/0"
+            },
+            "id": "input-46920645fa0d2e6498311f6f23e7f383",
+            "ignored_reason": null,
+            "location": "query",
+            "name": "q",
+            "required": true,
+            "selected": false,
+            "source": {
+              "file": "openapi.json",
+              "pointer": "/paths/~1z/get/parameters/0"
+            }
+          }
+        ],
+        "method": "GET",
+        "path": "/z",
+        "source": {
+          "file": "openapi.json",
+          "pointer": "/paths/~1z/get"
+        }
+      },
+      {
+        "compatible": false,
+        "definition": {
+          "file": "openapi.json",
+          "pointer": "/paths/~1z/post"
+        },
+        "id": "op-e11d3e066ea756b310b55a7b12f94045",
+        "inputs": [
+          {
+            "compatible": false,
+            "definition": {
+              "file": "openapi.json",
+              "pointer": "/paths/~1z/parameters/1"
+            },
+            "id": "input-ae0bb1bab9a4cbcf0af856ed32592b09",
+            "ignored_reason": null,
+            "location": "header",
+            "name": "X-Mode",
+            "required": false,
+            "selected": false,
+            "source": {
+              "file": "openapi.json",
+              "pointer": "/paths/~1z/parameters/1"
+            }
+          },
+          {
+            "compatible": false,
+            "definition": {
+              "file": "openapi.json",
+              "pointer": "/components/parameters/q"
+            },
+            "id": "input-00e407b31ed77d48d765358f447c30ff",
+            "ignored_reason": null,
+            "location": "query",
+            "name": "q",
+            "required": false,
+            "selected": false,
+            "source": {
+              "file": "openapi.json",
+              "pointer": "/paths/~1z/parameters/0"
+            }
+          }
+        ],
+        "method": "POST",
+        "path": "/z",
+        "source": {
+          "file": "openapi.json",
+          "pointer": "/paths/~1z/post"
+        }
+      }
+    ],
+    "report_type": "discovery_inventory",
+    "schema_version": 1,
+    "source": {
+      "file": "openapi.json",
+      "pointer": ""
+    },
+    "version": "3.0.4"
+  },
+  "stderr": "",
+  "stdout_json": {
+    "held": 3,
+    "ignored": 0,
+    "operations": 3,
+    "report_type": "discovery_summary",
+    "schema_version": 1,
+    "selected": 1
+  }
+}

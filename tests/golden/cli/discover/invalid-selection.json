@@ -1,0 +1,6 @@
+{
+  "exit_code": 2,
+  "report_json": null,
+  "stderr": "Error: Invalid selection schema. Set version = 1 and approved to an array of input IDs.\n",
+  "stdout_json": null
+}

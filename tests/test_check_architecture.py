@@ -82,3 +82,13 @@ def test_discovery_can_import_pure_url_parsing():
     assert not check_source(
         Path("regression/discovery.py"), "from urllib.parse import unquote"
     )
+
+
+def test_discover_cli_imports_inventory_but_not_execution():
+    path = Path("discover_cli.py")
+    assert not check_source(
+        path, "from vintar.regression.discovery import load_inventory"
+    )
+    for module in ("httpx", "vintar.core.executor", "vintar.regression.runner"):
+        [diagnostic] = check_source(path, f"import {module}")
+        assert "Discovery must remain offline" in diagnostic
