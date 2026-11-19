@@ -395,7 +395,7 @@ def evaluate(
     ("case", "six", "twelve"),
     [
         (CORPUS[0], "candidate", "candidate"),
-        (CORPUS[1], "inconclusive", "not_confirmed"),
+        (CORPUS[1], "not_confirmed", "not_confirmed"),
         (CORPUS[2], "candidate", "not_confirmed"),
         (CORPUS[3], "candidate", "candidate"),
         (CORPUS[4], "candidate", "candidate"),
@@ -436,9 +436,9 @@ def test_corpus_metrics_are_reproducible():
 
     # Conditional rates exclude abstentions from the denominator and are
     # separate so abstentions cannot improve apparent classifier quality.
-    assert six["classified_benign_cases"] == 3
+    assert six["classified_benign_cases"] == 4
     assert twelve["classified_benign_cases"] == 4
-    assert six["conditional_false_positive_rate"] == 1.0
+    assert six["conditional_false_positive_rate"] == 0.75
     assert twelve["conditional_false_positive_rate"] == 0.5
 
     assert six["false_negatives"] == 0
@@ -446,17 +446,17 @@ def test_corpus_metrics_are_reproducible():
     assert six["positive_inconclusive"] == 0
     assert twelve["positive_inconclusive"] == 0
 
-    assert six["inconclusive"] == 6
+    assert six["inconclusive"] == 5
     assert twelve["inconclusive"] == 5
 
     # Coverage excludes the two deliberately unavailable cases, but includes
     # vulnerable and benign fixtures that abstained.
-    assert six["classified_ground_truth_cases"] == 4
+    assert six["classified_ground_truth_cases"] == 5
     assert twelve["classified_ground_truth_cases"] == 5
-    assert six["classification_coverage"] == 4 / 8
+    assert six["classification_coverage"] == 5 / 8
     assert twelve["classification_coverage"] == 5 / 8
 
-    assert six["inconclusive_rate_all_cases"] == 6 / 10
+    assert six["inconclusive_rate_all_cases"] == 5 / 10
     assert twelve["inconclusive_rate_all_cases"] == 5 / 10
 
     assert six["requests_used"] == 50

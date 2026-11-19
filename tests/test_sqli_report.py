@@ -1,8 +1,12 @@
+import ast
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
+from vintar.checks.sqli import analyzer as sqli_analyzer
+from vintar.checks.sqli import report as sqli_report
 from vintar.checks.sqli.models import (
     BooleanEvidence,
     Observation,
@@ -96,11 +100,57 @@ def test_unknown_reason_code_is_not_exported():
         verification_report_json(result)
 
 
+def test_reason_code_contracts_do_not_drift():
+    schema_path = (
+        Path(__file__).parents[1] / "schemas" / "regression-batch-report-v1.schema.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema_reasons = set(
+        schema["$defs"]["verification"]["properties"]["reason_code"]["enum"]
+    )
+
+    assert schema_reasons == sqli_report._REPORT_REASON_CODES
+
+    analyzer_path = Path(sqli_analyzer.__file__)
+    tree = ast.parse(analyzer_path.read_text(encoding="utf-8"))
+    analyzer_reasons = {
+        node.args[1].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "result"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    }
+
+    assert analyzer_reasons <= schema_reasons
+    assert "no_boolean_difference_literal_input" in analyzer_reasons
+
+
 @pytest.mark.parametrize("reason_code", ["insufficient_evidence", "connection_error"])
 def test_step_39_reason_codes_remain_supported(reason_code):
     report = verification_report_dict(make_result(reason_code=reason_code))
 
     assert report["reason_code"] == reason_code
+
+
+def test_literal_input_reason_code_is_supported():
+    report = verification_report_dict(
+        make_result(
+            verdict=Verdict.NOT_DETECTED,
+            observations=(
+                observation(ProbeKind.BASELINE),
+                observation(ProbeKind.TRUE),
+                observation(ProbeKind.FALSE),
+            ),
+            request_count=3,
+            reason_code="no_boolean_difference_literal_input",
+            evidence=BooleanEvidence(0.0, 0.0, 1.0),
+        )
+    )
+
+    assert report["reason_code"] == "no_boolean_difference_literal_input"
 
 
 def test_future_model_fields_are_not_implicitly_exported():

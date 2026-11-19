@@ -61,6 +61,30 @@ def test_identical_responses_are_not_detected():
     assert "does not prove" in result.reason
 
 
+def test_identical_literal_input_responses_are_not_detected():
+    result = analyze(
+        true_responses=pair(b"literal-input-no-match"),
+        false_responses=pair(b"literal-input-no-match"),
+    )
+
+    assert result.verdict is Verdict.NOT_DETECTED
+    assert result.reason_code == "no_boolean_difference_literal_input"
+    assert "literal input" in result.reason
+    assert result.evidence is not None
+    assert result.evidence.baseline_true_similarity == 0.0
+    assert result.evidence.baseline_false_similarity == 0.0
+    assert result.evidence.true_false_similarity == 1.0
+
+
+def test_literal_input_rule_does_not_override_boolean_candidate():
+    result = analyze()
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "boolean_candidate"
+    assert result.evidence is not None
+    assert result.evidence.true_false_similarity == 0.0
+
+
 def test_unstable_baseline_is_inconclusive():
     result = analyze(baseline=(response(b"A"), response(b"dynamic")))
 

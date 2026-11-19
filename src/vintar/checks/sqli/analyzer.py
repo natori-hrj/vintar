@@ -162,6 +162,16 @@ def analyze_boolean_responses(
             evidence,
         )
 
+    if true_false:
+        return result(
+            Verdict.NOT_DETECTED,
+            "no_boolean_difference_literal_input",
+            "The stable TRUE and FALSE probes produced identical responses while "
+            "both differed from the baseline. No Boolean differential was detected; "
+            "check whether the target treats injected payloads as literal input.",
+            evidence,
+        )
+
     return result(
         Verdict.INCONCLUSIVE,
         "unexpected_difference",

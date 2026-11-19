@@ -422,7 +422,7 @@ Any new evaluation must distinguish a genuine improvement
 in classification quality from a reduction in classification
 coverage.
 
-## Phase 8-1 candidate-signal measurement
+## Candidate-signal measurement
 
 The always-on pytest suite measures the Boolean candidate signal on labeled synthetic
 observations. A positive is `INCONCLUSIVE / boolean_candidate`. A negative is
@@ -430,12 +430,34 @@ observations. A positive is `INCONCLUSIVE / boolean_candidate`. A negative is
 false negatives, false positives, true negatives, and non-decisions. Any false
 negative, false positive, or non-decision fails the test with remediation.
 
-The versioned JSON report separates `replay` from `fixed_app_loopback`. The latter
-checks the expected response to a benign request against the parameterized SQLite
-route. It contributes no entries to the detector confusion matrix.
-**Live positive measurement is not covered** (`live_positive_measurement: not_covered`).
-Replay results provide evidence about the candidate signal on the labeled fixtures.
-Confirmed vulnerability detection requires separate evidence.
+The schema-version 2 JSON report separates `replay`, `live_loopback`,
+`known_limitations`, and `fixed_app_loopback`. The live mode runs the production
+six-probe check through `ExecutionContext` against fresh socket-backed SQLite
+servers. `/vulnerable` is labeled positive next to its string-concatenating endpoint,
+and `/safe` is labeled negative next to its parameterized endpoint. The report marks
+the live positive measurement as covered.
+
+Both live twins use the declared initial category `Pets`, an ordinary value taken
+from the seeded fixture data. With the existing append-mode probes, the vulnerable
+endpoint returns the `Pets` rows for the baseline and true probes and no rows for the
+false probes, producing `INCONCLUSIVE / boolean_candidate`. The parameterized
+endpoint returns the `Pets` rows for the baseline and no rows for either injected
+probe, producing `INCONCLUSIVE / unexpected_difference`.
+
+The first Phase 8-2 run exposed that relation as a detector limitation: it was
+reported as `INCONCLUSIVE / unexpected_difference`. The analyzer now classifies the
+stable, identical TRUE and FALSE responses as
+`NOT_DETECTED / no_boolean_difference_literal_input`. No input or fixture label was
+changed to obtain that result. The live confusion matrix records one true positive
+and one true negative, while `known_limitations.records` is empty because the current
+actual run no longer reproduces the limitation.
+
+Results still depend on the initial value and must not be generalized to other benign
+values. A NOT_DETECTED result means only that these probes found no Boolean
+differential; an unsupported SQL context can make both probes ineffective on a
+vulnerable target. The existing fixed-app loopback check separately verifies the
+benign `Pets` response and contributes no entries to the confusion matrix. Confirmed
+vulnerability detection requires separate evidence.
 
 Run `uv run --locked pytest tests/test_sqli_candidate_reliability.py` to reproduce
 the report. Pytest writes `sqli-candidate-reliability.json` under its temporary test
@@ -443,10 +465,11 @@ directory. To retain it at a known location, pass `--basetemp` with a dedicated
 temporary directory. A future release gate should validate the schema, require the
 expected endpoint IDs by measurement mode, and interpret the explicit coverage marker.
 
-Expected fixed-loopback failures are recorded as `socket_bind`, `startup`,
-`transport`, or `unexpected_response`. The test writes the JSON before failing on
-an expected loopback failure or a replay non-decision. The failure names the mode
-and report path, so replay counts remain available when loopback is restricted.
+Expected loopback failures are recorded as `socket_bind`, `startup`, `shutdown`,
+`transport`, or `unexpected_response`. The test writes the JSON before failing on a
+loopback failure or a false negative, false positive, or non-decision. Diagnostics
+name the endpoint and observed verdict and reason, then direct investigation to the
+fixture label, response stability, or transport setup.
 
 The filename `sqli-candidate-reliability.json` is reserved for the real
 measurement. Failure simulations use `sqli-candidate-reliability.simulated-*.json`

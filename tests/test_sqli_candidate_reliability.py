@@ -10,7 +10,15 @@ from types import SimpleNamespace
 import pytest
 import test_sqli_http_e2e
 from test_sqli_analyzer import analyze, pair, response
-from test_sqli_http_e2e import check_parameterized_benign_response
+from test_sqli_http_e2e import (
+    LIVE_TWIN_ENDPOINTS,
+    SAFE_PETS_LIMITATION,
+    LiveEndpoint,
+    LoopbackShutdownError,
+    LoopbackStartupError,
+    check_parameterized_benign_response,
+    run_live_endpoint,
+)
 
 from vintar.checks.sqli.models import Verdict
 
@@ -50,6 +58,98 @@ def replay_report(records):
     }
 
 
+def live_observation(endpoint, result):
+    return {
+        "endpoint_id": endpoint.endpoint_id,
+        "expected_label": endpoint.expected_label,
+        "initial_value": endpoint.initial_category,
+        "verdict": result.verdict.value,
+        "reason_code": result.reason_code,
+        "classification": classify(
+            endpoint.expected_label, result.verdict, result.reason_code
+        ),
+        "request_count": result.request_count,
+        "failure_category": None,
+        "message": None,
+    }
+
+
+def live_transport_failure(endpoint, category, message):
+    return {
+        "endpoint_id": endpoint.endpoint_id,
+        "expected_label": endpoint.expected_label,
+        "initial_value": endpoint.initial_category,
+        "verdict": None,
+        "reason_code": None,
+        "classification": "non_decision",
+        "request_count": 0,
+        "failure_category": category,
+        "message": message,
+    }
+
+
+def live_report(records):
+    counts = Counter(row["classification"] for row in records)
+    return {
+        "records": sorted(records, key=lambda row: row["endpoint_id"]),
+        "counts": {
+            key: counts[key] for key in ("tp", "fn", "fp", "tn", "non_decision")
+        },
+    }
+
+
+def measure_live_endpoint(endpoint, runner=run_live_endpoint):
+    try:
+        result, port = runner(endpoint)
+    except OSError:
+        return live_transport_failure(
+            endpoint,
+            "socket_bind",
+            "Cannot bind the live loopback fixture. Check the loopback transport setup.",
+        )
+    except LoopbackStartupError as exc:
+        return live_transport_failure(endpoint, "startup", str(exc))
+    except LoopbackShutdownError as exc:
+        return live_transport_failure(endpoint, "shutdown", str(exc))
+    except AssertionError:
+        return live_transport_failure(
+            endpoint,
+            "unexpected_response",
+            "The live fixture response was inconsistent. Check response stability and transport setup.",
+        )
+
+    assert port > 0
+    return live_observation(endpoint, result)
+
+
+def measure_live_loopback(runner=run_live_endpoint):
+    records = [
+        measure_live_endpoint(endpoint, runner) for endpoint in LIVE_TWIN_ENDPOINTS
+    ]
+    live = live_report(records)
+    limitation = {
+        "records": [
+            {
+                key: record[key]
+                for key in (
+                    "endpoint_id",
+                    "expected_label",
+                    "initial_value",
+                    "verdict",
+                    "reason_code",
+                    "request_count",
+                    "failure_category",
+                    "message",
+                )
+            }
+            for record in live["records"]
+            if record["endpoint_id"] == LIVE_TWIN_ENDPOINTS[1].endpoint_id
+            and record["classification"] == "non_decision"
+        ]
+    }
+    return live, limitation
+
+
 def replay_failures(report):
     failures = []
     for row in report["records"]:
@@ -73,6 +173,61 @@ def replay_failures(report):
             )
 
     return failures
+
+
+def live_failures(report):
+    failures = []
+    for row in report["records"]:
+        endpoint = row["endpoint_id"]
+        signal = f"{row['verdict']}/{row['reason_code']}"
+        classification = row["classification"]
+        if row["failure_category"] is not None:
+            failures.append(
+                f"{endpoint} produced non-decision {signal} "
+                f"({row['failure_category']}). {row['message']}"
+            )
+        elif classification == "non_decision":
+            failures.append(
+                f"{endpoint} produced non-decision {signal}. The live check requires "
+                "a decision; check response stability or transport setup."
+            )
+        elif classification == "fn":
+            failures.append(
+                f"{endpoint} missed the expected Boolean candidate with {signal}. "
+                "Check the fixture label and response stability."
+            )
+        elif classification == "fp":
+            failures.append(
+                f"{endpoint} unexpectedly emitted a Boolean candidate with {signal}. "
+                "Check the fixture label and response stability."
+            )
+    return failures
+
+
+def known_limitation_failures(report):
+    if not report["records"]:
+        return []
+    [row] = report["records"]
+    if row["failure_category"] is not None:
+        return [
+            (
+                f"{row['endpoint_id']} with initial value Pets produced "
+                f"{row['verdict']}/{row['reason_code']} "
+                f"({row['failure_category']}). {row['message']}"
+            )
+        ]
+    if (
+        row["verdict"] == "inconclusive"
+        and row["reason_code"] == "unexpected_difference"
+    ):
+        return []
+    return [
+        (
+            f"{row['endpoint_id']} with initial value Pets produced "
+            f"{row['verdict']}/{row['reason_code']} instead of the documented known "
+            "non-decision. Check response stability and the parameterized fixture."
+        )
+    ]
 
 
 def assert_replay_results(report):
@@ -126,14 +281,20 @@ def test_failed_measurements_get_actionable_diagnostics(
 
 
 def run_measurement(
-    measurements, path, check_loopback=check_parameterized_benign_response
+    measurements,
+    path,
+    check_loopback=check_parameterized_benign_response,
+    check_live_loopback=measure_live_loopback,
 ):
     loopback = check_loopback()
+    live, limitations = check_live_loopback()
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "check": "sqli.boolean",
-        "live_positive_measurement": "not_covered",
+        "live_positive_measurement": "covered",
         "replay": measurements,
+        "live_loopback": live,
+        "known_limitations": limitations,
         "fixed_app_loopback": {"records": [loopback]},
     }
     path.write_text(
@@ -141,6 +302,11 @@ def run_measurement(
     )
 
     failures = [f"replay: {failure}" for failure in replay_failures(measurements)]
+    failures.extend(f"live_loopback: {failure}" for failure in live_failures(live))
+    failures.extend(
+        f"known_limitations: {failure}"
+        for failure in known_limitation_failures(limitations)
+    )
     if loopback["status"] == "failed":
         failures.append(
             f"fixed_loopback ({loopback['failure_category']}): {loopback['message']}"
@@ -151,32 +317,215 @@ def run_measurement(
 
 def test_candidate_report_is_sorted_and_counts_match_records(measurements, tmp_path):
     path = tmp_path / REAL_REPORT
-    run_measurement(measurements, path)
-    [record] = json.loads(path.read_text(encoding="utf-8"))["fixed_app_loopback"][
-        "records"
+    try:
+        run_measurement(measurements, path)
+    finally:
+        report = json.loads(path.read_text(encoding="utf-8"))
+        [record] = report["fixed_app_loopback"]["records"]
+        assert record["status"] == "passed", (
+            "The fixed route did not pass. Check the report's loopback record."
+        )
+        records = measurements["records"]
+        assert [row["endpoint_id"] for row in records] == sorted(
+            row["endpoint_id"] for row in records
+        ), "Replay records are out of order. Sort the report by endpoint ID."
+        assert sum(measurements["counts"].values()) == len(records), (
+            "Replay counts do not match the observations. Count each record once."
+        )
+        assert replay_report(list(reversed(records))) == measurements, (
+            "The report changed when observations were reversed. Sort records and count classifications independently of input order."
+        )
+        live = report["live_loopback"]
+        assert live["counts"] == {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 0,
+            "tn": 1,
+            "tp": 1,
+        }
+        assert sum(live["counts"].values()) == len(live["records"])
+        assert report["schema_version"] == 2
+        assert report["live_positive_measurement"] == "covered"
+        assert report["known_limitations"]["records"] == []
+        assert "counts" not in report["known_limitations"]
+
+
+def test_live_twins_share_declared_initial_value():
+    assert len({endpoint.initial_category for endpoint in LIVE_TWIN_ENDPOINTS}) == 1
+    assert {endpoint.expected_label for endpoint in LIVE_TWIN_ENDPOINTS} == {
+        "positive",
+        "negative",
+    }
+
+
+def test_live_endpoint_rejects_non_benign_initial_value():
+    with pytest.raises(
+        ValueError,
+        match="benign category declared in the fixture data; use Pets or Office",
+    ):
+        LiveEndpoint(
+            endpoint_id="invalid-baseline",
+            path="/safe",
+            expected_label="negative",
+            initial_category="Pets' OR '1'='1",
+        )
+
+
+def test_live_loopback_uses_fresh_server_for_each_case():
+    servers = []
+
+    def binder():
+        server = test_sqli_http_e2e._Server()
+        servers.append(server)
+        return server
+
+    for endpoint in LIVE_TWIN_ENDPOINTS:
+        _, port = run_live_endpoint(endpoint, binder)
+        assert port > 0
+
+    assert len(servers) == len(LIVE_TWIN_ENDPOINTS)
+    assert servers[0] is not servers[1]
+
+
+def test_safe_pets_is_not_detected_as_literal_input():
+    result, _ = run_live_endpoint(SAFE_PETS_LIMITATION)
+    assert result.verdict is Verdict.NOT_DETECTED
+    assert result.reason_code == "no_boolean_difference_literal_input"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "result", "classification", "remediation"),
+    [
+        (
+            LIVE_TWIN_ENDPOINTS[0],
+            SimpleNamespace(
+                verdict=Verdict.NOT_DETECTED,
+                reason_code="no_boolean_difference",
+                request_count=6,
+            ),
+            "fn",
+            "fixture label",
+        ),
+        (
+            LIVE_TWIN_ENDPOINTS[1],
+            SimpleNamespace(
+                verdict=Verdict.INCONCLUSIVE,
+                reason_code="boolean_candidate",
+                request_count=6,
+            ),
+            "fp",
+            "fixture label",
+        ),
+        (
+            LIVE_TWIN_ENDPOINTS[0],
+            SimpleNamespace(
+                verdict=Verdict.INCONCLUSIVE,
+                reason_code="unstable_response",
+                request_count=6,
+            ),
+            "non_decision",
+            "response stability",
+        ),
+    ],
+    ids=("false-negative", "false-positive", "non-decision"),
+)
+def test_live_failures_write_report_before_failing(
+    measurements, simulated_report, endpoint, result, classification, remediation
+):
+    passing_live, limitations = passing_live_measurement()
+    records = [
+        row
+        for row in passing_live["records"]
+        if row["endpoint_id"] != endpoint.endpoint_id
     ]
-    assert record["status"] == "passed", (
-        "The fixed route did not pass. Check the report's loopback record."
+    records.append(live_observation(endpoint, result))
+    live = live_report(records)
+    path = simulated_report(classification)
+
+    with pytest.raises(pytest.fail.Exception, match=endpoint.endpoint_id) as caught:
+        run_measurement(
+            measurements,
+            path,
+            lambda: test_sqli_http_e2e.fixed_loopback_record(None, "Fixture passed."),
+            lambda: (live, limitations),
+        )
+
+    report = json.loads(path.read_text(encoding="utf-8"))
+    assert report["live_loopback"]["counts"][classification] == 1
+    assert f"{result.verdict.value}/{result.reason_code}" in str(caught.value)
+    assert remediation in str(caught.value)
+
+
+def test_live_bind_failure_writes_report_before_failing(measurements, simulated_report):
+    endpoint = LIVE_TWIN_ENDPOINTS[0]
+    failure = live_transport_failure(
+        endpoint,
+        "socket_bind",
+        "Cannot bind the live loopback fixture. Check the loopback transport setup.",
     )
-    records = measurements["records"]
-    assert [row["endpoint_id"] for row in records] == sorted(
-        row["endpoint_id"] for row in records
-    ), "Replay records are out of order. Sort the report by endpoint ID."
-    assert sum(measurements["counts"].values()) == len(records), (
-        "Replay counts do not match the observations. Count each record once."
+    passing_live, limitations = passing_live_measurement()
+    records = [
+        row
+        for row in passing_live["records"]
+        if row["endpoint_id"] != endpoint.endpoint_id
+    ]
+    live = live_report([*records, failure])
+    path = simulated_report("live-bind")
+
+    with pytest.raises(pytest.fail.Exception, match=endpoint.endpoint_id) as caught:
+        run_measurement(
+            measurements,
+            path,
+            lambda: test_sqli_http_e2e.fixed_loopback_record(None, "Fixture passed."),
+            lambda: (live, limitations),
+        )
+
+    assert "None/None" in str(caught.value)
+    assert "transport setup" in str(caught.value)
+    report = json.loads(path.read_text(encoding="utf-8"))
+    assert report["live_loopback"]["counts"]["non_decision"] == 1
+
+
+def passing_live_measurement():
+    positive = SimpleNamespace(
+        verdict=Verdict.INCONCLUSIVE,
+        reason_code="boolean_candidate",
+        request_count=6,
     )
-    assert replay_report(list(reversed(records))) == measurements, (
-        "The report changed when observations were reversed. Sort records and count classifications independently of input order."
+    negative = SimpleNamespace(
+        verdict=Verdict.NOT_DETECTED,
+        reason_code="no_boolean_difference",
+        request_count=6,
     )
+    limitation = SimpleNamespace(
+        verdict=Verdict.INCONCLUSIVE,
+        reason_code="unexpected_difference",
+        request_count=6,
+    )
+    results = {
+        "sqlite-vulnerable": positive,
+        "sqlite-parameterized": negative,
+        "sqlite-parameterized-pets": limitation,
+    }
+
+    def runner(endpoint):
+        return results[endpoint.endpoint_id], 43210
+
+    return measure_live_loopback(runner)
 
 
 def assert_failed_report(measurements, path, check_loopback, category, remediation):
     with pytest.raises(pytest.fail.Exception, match="fixed_loopback") as caught:
-        run_measurement(measurements, path, check_loopback)
+        run_measurement(
+            measurements,
+            path,
+            check_loopback,
+            passing_live_measurement,
+        )
     assert str(path) in str(caught.value)
     report = json.loads(path.read_text(encoding="utf-8"))
     assert report["replay"]["counts"] == measurements["counts"]
-    assert report["live_positive_measurement"] == "not_covered"
+    assert report["live_positive_measurement"] == "covered"
     [record] = report["fixed_app_loopback"]["records"]
     assert record["mode"] == "fixed_loopback"
     assert record["status"] == "failed"
@@ -269,6 +618,7 @@ def test_non_decision_writes_report_before_failing(simulated_report):
             measurements,
             path,
             lambda: test_sqli_http_e2e.fixed_loopback_record(None, "Fixture passed."),
+            passing_live_measurement,
         )
     assert str(path) in str(caught.value)
     assert (

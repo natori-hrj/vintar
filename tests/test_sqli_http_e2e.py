@@ -14,6 +14,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import cast
@@ -21,6 +22,19 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+
+from vintar.checks.sqli.models import VerificationResult
+from vintar.checks.sqli.orchestrator import verify_boolean_sqli
+from vintar.core.budget import RequestBudget
+from vintar.core.executor import ExecutionContext
+from vintar.core.rate_limit import RateLimiter
+from vintar.core.request import (
+    InjectionLocation,
+    InjectionMode,
+    InjectionPoint,
+    RequestTemplate,
+)
+from vintar.core.scope import AllowedOrigin, ScopePolicy
 
 ROOT = Path(__file__).resolve().parents[1]
 _VALIDATOR_NAMESPACE = runpy.run_path(str(ROOT / "scripts" / "validate_ci_report.py"))
@@ -34,6 +48,8 @@ FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
 CONTROL = "__vintar_control_7f4a9c2e"
+FIXTURE_CATEGORIES = frozenset({"Office", "Pets"})
+LIVE_INITIAL_CATEGORY = "Pets"
 
 PLAN = (
     "B",
@@ -53,7 +69,7 @@ PLAN = (
 CASE = """version = 1
 id = "sqlite-http-e2e"
 type = "sqli.boolean"
-expected_verdict = "inconclusive"
+expected_verdict = "{expected_verdict}"
 
 [target]
 url = "http://placeholder.invalid:8000{path}"
@@ -78,6 +94,44 @@ max_requests = 6
 requests_per_second = 10.0
 timeout_seconds = 5.0
 """
+
+
+@dataclass(frozen=True, slots=True)
+class LiveEndpoint:
+    endpoint_id: str
+    path: str
+    expected_label: str
+    initial_category: str
+
+    def __post_init__(self) -> None:
+        if self.initial_category not in FIXTURE_CATEGORIES:
+            raise ValueError(
+                "initial_category must be a benign category declared in the fixture "
+                "data; use Pets or Office instead of SQL syntax."
+            )
+
+
+LIVE_TWIN_ENDPOINTS = (
+    LiveEndpoint(
+        endpoint_id="sqlite-vulnerable",
+        path="/vulnerable",
+        expected_label="positive",
+        initial_category=LIVE_INITIAL_CATEGORY,
+    ),
+    LiveEndpoint(
+        endpoint_id="sqlite-parameterized",
+        path="/safe",
+        expected_label="negative",
+        initial_category=LIVE_INITIAL_CATEGORY,
+    ),
+)
+
+SAFE_PETS_LIMITATION = LiveEndpoint(
+    endpoint_id="sqlite-parameterized-pets",
+    path="/safe",
+    expected_label="negative",
+    initial_category="Pets",
+)
 
 
 def _sql_result(category: str, *, safe: bool) -> bytes:
@@ -197,12 +251,22 @@ class LoopbackStartupError(RuntimeError):
     """The loopback server thread could not start."""
 
 
+class LoopbackShutdownError(RuntimeError):
+    """The loopback server thread could not stop."""
+
+
 @contextmanager
 def running_server(server):
     assert server.server_address[0] == "127.0.0.1"
 
+    started = threading.Event()
+
+    def serve() -> None:
+        started.set()
+        server.serve_forever()
+
     worker = threading.Thread(
-        target=server.serve_forever,
+        target=serve,
         daemon=True,
     )
     try:
@@ -212,6 +276,13 @@ def running_server(server):
         raise LoopbackStartupError(
             "The loopback worker could not start. Check thread availability on the runner."
         ) from exc
+
+    if not started.wait(timeout=5):
+        server.server_close()
+        worker.join(timeout=5)
+        raise LoopbackStartupError(
+            "The loopback worker did not signal startup. Check thread scheduling and transport setup."
+        )
 
     try:
         yield (
@@ -223,9 +294,53 @@ def running_server(server):
         server.shutdown()
         server.server_close()
         worker.join(timeout=5)
-        assert not worker.is_alive(), (
-            "The loopback worker did not stop. Check server shutdown and outstanding requests."
+        if worker.is_alive():
+            raise LoopbackShutdownError(
+                "The loopback worker did not stop. Check server shutdown and outstanding requests."
+            )
+
+
+def run_live_endpoint(
+    endpoint: LiveEndpoint,
+    binder: Callable[[], _Server] = _Server,
+) -> tuple[VerificationResult, int]:
+    """Run the production Boolean check against one fresh loopback server."""
+    server = binder()
+    port = server.server_port
+
+    with running_server(server) as (_, origin):
+        context = ExecutionContext(
+            scope=ScopePolicy(
+                allowed_origins=frozenset({AllowedOrigin("http", "127.0.0.1", port)})
+            ),
+            budget=RequestBudget(6),
+            timeout=5,
+            rate_limiter=RateLimiter(requests_per_second=100),
+            max_response_size=1_048_576,
         )
+        result = verify_boolean_sqli(
+            check_id=endpoint.endpoint_id,
+            template=RequestTemplate(
+                method="GET",
+                url=origin + endpoint.path,
+                params=(("category", endpoint.initial_category),),
+            ),
+            point=InjectionPoint(
+                location=InjectionLocation.QUERY,
+                name="category",
+                mode=InjectionMode.APPEND,
+            ),
+            true_payload=TRUE_1,
+            false_payload=FALSE_1,
+            context=context,
+        )
+
+        assert result.request_count == context.budget.used_requests
+        assert len(server.received) == result.request_count
+        assert not server.handler_failed
+        assert server.query_errors == 0
+
+    return result, port
 
 
 @pytest.fixture
@@ -320,22 +435,31 @@ def _cli_environment(origin: str) -> dict[str, str]:
 
 
 @pytest.mark.parametrize(
-    ("path", "reason", "similarity"),
+    ("path", "verdict", "reason", "similarity", "exit_code", "status"),
     [
         (
             "/vulnerable",
+            "inconclusive",
             "boolean_candidate",
             (1.0, 0.0, 0.0),
+            3,
+            "inconclusive",
         ),
         (
             "/safe",
-            "unexpected_difference",
+            "not_detected",
+            "no_boolean_difference_literal_input",
             (0.0, 0.0, 1.0),
+            0,
+            "pass",
         ),
         (
             "/mimic",
+            "inconclusive",
             "boolean_candidate",
             (1.0, 0.0, 0.0),
+            3,
+            "inconclusive",
         ),
     ],
 )
@@ -343,14 +467,17 @@ def test_real_http_vintar_cli(
     local_server,
     tmp_path,
     path,
+    verdict,
     reason,
     similarity,
+    exit_code,
+    status,
 ):
     server, origin = local_server
 
     case_path = tmp_path / "case.toml"
     case_path.write_text(
-        CASE.format(path=path),
+        CASE.format(path=path, expected_verdict=verdict),
         encoding="utf-8",
     )
 
@@ -379,7 +506,7 @@ def test_real_http_vintar_cli(
         timeout=30,
     )
 
-    assert result.returncode == 3, "Unexpected CLI exit code"
+    assert result.returncode == exit_code, "Unexpected CLI exit code"
     assert result.stderr == b"", "Unexpected CLI stderr"
 
     report = json.loads(result.stdout)
@@ -388,18 +515,18 @@ def test_real_http_vintar_cli(
     report_path.write_bytes(result.stdout)
     _validate(report_path, result.returncode)
 
-    assert report["status"] == "inconclusive"
-    assert report["exit_code"] == 3
+    assert report["status"] == status
+    assert report["exit_code"] == exit_code
     assert report["requests_used"] == 6
     assert report["complete"] is True
     assert report["executed_count"] == 1
 
     outcome = report["outcomes"][0]
 
-    assert outcome["expected_verdict"] == "inconclusive"
-    assert outcome["actual_verdict"] == "inconclusive"
+    assert outcome["expected_verdict"] == verdict
+    assert outcome["actual_verdict"] == verdict
     assert outcome["expectation_match"] is True
-    assert outcome["status"] == "inconclusive"
+    assert outcome["status"] == status
 
     verification = outcome["verification"]
 
