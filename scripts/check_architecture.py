@@ -56,7 +56,7 @@ def discovery_diagnostics(path, tree):
         DISCOVER_CLI_IMPORTS if path == Path("discover_cli.py") else DISCOVERY_IMPORTS
     )
     if path == Path("regression/discovery_drafts.py"):
-        allowed = DISCOVERY_IMPORTS | {"vintar.regression.discovery"}
+        allowed = DISCOVERY_IMPORTS | {"tempfile", "vintar.regression.discovery"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules = [alias.name for alias in node.names]

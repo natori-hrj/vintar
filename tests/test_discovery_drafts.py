@@ -1,7 +1,9 @@
 """Contract tests for offline review draft exports."""
 
 import json
+import os
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ import yaml
 from typer.testing import CliRunner
 
 from vintar.cli import app
+from vintar.regression import discovery_drafts
 from vintar.regression.cases import load_regression_case
 from vintar.regression.discovery import input_id, load_inventory
 from vintar.regression.discovery_drafts import (
@@ -231,16 +234,71 @@ def test_exclusive_creation_preserves_file_created_after_preflight(
     spec, review, drafts = spec_and_review(tmp_path)
     [name] = drafts
     destination = tmp_path / "drafts"
-    original_open = Path.open
+    original_link = os.link
 
-    def open_after_race(path, mode, *args, **kwargs):
-        if path == destination / name and mode == "xb":
-            with original_open(path, "xb") as stream:
-                stream.write(b"other writer")
-        return original_open(path, mode, *args, **kwargs)
+    def link_after_race(temporary, final):
+        assert temporary.parent == destination
+        assert temporary.read_bytes() == drafts[name]
+        final.write_bytes(b"other writer")
+        original_link(temporary, final)
 
-    monkeypatch.setattr(Path, "open", open_after_race)
+    monkeypatch.setattr(discovery_drafts.os, "link", link_after_race)
     with pytest.raises(DraftExportError, match="appeared during export"):
         write_drafts(destination, drafts, (spec, review))
-    with original_open(destination / name, "rb") as stream:
-        assert stream.read() == b"other writer"
+    assert (destination / name).read_bytes() == b"other writer"
+    assert sorted(path.name for path in destination.iterdir()) == [name]
+
+
+@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
+def test_partial_temp_write_is_cleaned_and_rerun_succeeds(
+    tmp_path, monkeypatch, failure
+):
+    spec, review, drafts = spec_and_review(tmp_path)
+    [name] = drafts
+    destination = tmp_path / "drafts"
+    real_tempfile = discovery_drafts.NamedTemporaryFile
+
+    @contextmanager
+    def failing_tempfile(**kwargs):
+        with real_tempfile(**kwargs) as stream:
+            real_write = stream.write
+
+            def partial_write(data):
+                real_write(data[: len(data) // 2])
+                stream.flush()
+                raise failure("simulated failure")
+
+            stream.write = partial_write
+            yield stream
+
+    with monkeypatch.context() as patch:
+        patch.setattr(discovery_drafts, "NamedTemporaryFile", failing_tempfile)
+        with pytest.raises(failure, match="simulated failure"):
+            write_drafts(destination, drafts, (spec, review))
+
+    assert list(destination.iterdir()) == []
+    write_drafts(destination, drafts, (spec, review))
+    assert (destination / name).read_bytes() == drafts[name]
+    assert sorted(path.name for path in destination.iterdir()) == [name]
+
+
+def test_non_utf8_spec_path_requires_rename_before_writing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    spec, review, _ = spec_and_review(tmp_path)
+    spec = spec.rename(tmp_path / os.fsdecode(b"spec-\xff.json"))
+    inventory = load_inventory(spec)
+    first = inventory.operations[0]
+    selected = frozenset({input_id(first, first.inputs[0])})
+    [expected_name] = selected
+    assert expected_name in review.read_text(encoding="utf-8")
+
+    with pytest.raises(DraftExportError, match="Rename the file") as caught:
+        draft_files(inventory, selected, Path(spec.name))
+    assert ascii(spec.name) in str(caught.value)
+
+    output = tmp_path / "drafts"
+    result = invoke(spec, review, output)
+    assert result.exit_code == 2 and result.stdout == ""
+    assert ascii(spec.name) in result.stderr
+    assert "Rename the file" in result.stderr
+    assert not output.exists()

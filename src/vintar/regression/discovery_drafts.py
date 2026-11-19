@@ -1,7 +1,9 @@
 """Serialize and write offline review drafts from typed inventory records."""
 
 import json
+import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from vintar.regression.discovery import Input, Inventory, Operation, input_id
 
@@ -58,6 +60,13 @@ def _draft(
 def draft_files(
     inventory: Inventory, selected: frozenset[str], source_file: Path
 ) -> dict[str, bytes]:
+    try:
+        source_file.as_posix().encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise DraftExportError(
+            f"Spec path {source_file.as_posix()!a} cannot be encoded as UTF-8. "
+            "Rename the file or its parent directories using valid UTF-8 names."
+        ) from exc
     drafts = {}
     for operation in inventory.operations:
         for item in operation.inputs:
@@ -110,10 +119,26 @@ def write_drafts(
     if pending:
         directory.mkdir(parents=True, exist_ok=True)
     for path, content in pending.items():
+        _publish(path, content)
+
+
+def _publish(path: Path, content: bytes) -> None:
+    temporary: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            dir=path.parent, prefix=".vintar-draft-", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            if stream.write(content) != len(content):
+                raise OSError("Incomplete draft write.")
+            stream.flush()
+            os.fsync(stream.fileno())
         try:
-            with path.open("xb") as stream:
-                stream.write(content)
+            os.link(temporary, path)
         except FileExistsError as exc:
             raise DraftExportError(
                 f"Draft path {path.name} appeared during export. Choose an empty directory or rerun after reviewing it."
             ) from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
