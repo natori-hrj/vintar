@@ -2,7 +2,10 @@
 
 import errno
 import json
+import socket
 from collections import Counter
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 import test_sqli_http_e2e
@@ -10,6 +13,8 @@ from test_sqli_analyzer import analyze, pair, response
 from test_sqli_http_e2e import check_parameterized_benign_response
 
 from vintar.checks.sqli.models import Verdict
+
+REAL_REPORT = "sqli-candidate-reliability.json"
 
 REPLAY = (
     ("replay-boolean-differential", "positive", pair(b"different")),
@@ -145,7 +150,7 @@ def run_measurement(
 
 
 def test_candidate_report_is_sorted_and_counts_match_records(measurements, tmp_path):
-    path = tmp_path / "sqli-candidate-reliability.json"
+    path = tmp_path / REAL_REPORT
     run_measurement(measurements, path)
     [record] = json.loads(path.read_text(encoding="utf-8"))["fixed_app_loopback"][
         "records"
@@ -165,8 +170,7 @@ def test_candidate_report_is_sorted_and_counts_match_records(measurements, tmp_p
     )
 
 
-def assert_failed_report(measurements, tmp_path, check_loopback, category, remediation):
-    path = tmp_path / "sqli-candidate-reliability.json"
+def assert_failed_report(measurements, path, check_loopback, category, remediation):
     with pytest.raises(pytest.fail.Exception, match="fixed_loopback") as caught:
         run_measurement(measurements, path, check_loopback)
     assert str(path) in str(caught.value)
@@ -181,40 +185,83 @@ def assert_failed_report(measurements, tmp_path, check_loopback, category, remed
     assert remediation in str(caught.value)
 
 
-def test_bind_denial_writes_report_before_failing(measurements, tmp_path):
+@pytest.fixture
+def simulated_report(tmp_path, monkeypatch):
+    def deny_network(*args, **kwargs):
+        pytest.fail(
+            "A simulated case attempted networking. Inject the relevant test component."
+        )
+
+    monkeypatch.setattr(socket, "socket", deny_network)
+    monkeypatch.setattr(socket, "getaddrinfo", deny_network)
+
+    def output(case):
+        return tmp_path / f"sqli-candidate-reliability.simulated-{case}.json"
+
+    yield output
+    assert not (tmp_path / REAL_REPORT).exists(), (
+        "A simulation wrote the real measurement filename. Use a simulated report path."
+    )
+
+
+def test_bind_denial_writes_report_before_failing(measurements, simulated_report):
     def deny_bind():
         raise PermissionError(errno.EPERM, "simulated restricted socket")
 
     assert_failed_report(
         measurements,
-        tmp_path,
+        simulated_report("socket-bind"),
         lambda: check_parameterized_benign_response(deny_bind),
         "socket_bind",
         "Check that the runner permits IPv4 loopback sockets",
     )
 
 
-def test_unexpected_safe_response_writes_report_before_failing(
-    measurements, tmp_path, monkeypatch
-):
-    def unexpected(category, *, safe):
-        assert category == "Pets" and safe
-        return b"unexpected rows"
+@pytest.fixture
+def simulated_binder():
+    def bind():
+        return SimpleNamespace(
+            server_address=("127.0.0.1", 0),
+            serve_forever=lambda: None,
+            server_close=lambda: None,
+        )
 
-    monkeypatch.setattr(test_sqli_http_e2e, "_sql_result", unexpected)
+    return bind
+
+
+@pytest.fixture
+def simulated_server(monkeypatch, simulated_binder):
+    @contextmanager
+    def start(server):
+        yield server, "http://127.0.0.1:1"
+
+    monkeypatch.setattr(test_sqli_http_e2e, "running_server", start)
+    return simulated_binder
+
+
+def test_unexpected_safe_response_writes_report_before_failing(
+    measurements, simulated_report, simulated_server, monkeypatch
+):
+    def unexpected(_client, url, *, params):
+        assert url.endswith("/safe") and params == {"category": "Pets"}
+        return test_sqli_http_e2e.httpx.Response(
+            status_code=200, content=b"unexpected rows"
+        )
+
+    monkeypatch.setattr(test_sqli_http_e2e.httpx.Client, "get", unexpected)
     assert_failed_report(
         measurements,
-        tmp_path,
-        check_parameterized_benign_response,
+        simulated_report("unexpected-response"),
+        lambda: check_parameterized_benign_response(simulated_server),
         "unexpected_response",
         "Check the seeded SQLite rows",
     )
 
 
-def test_non_decision_writes_report_before_failing(tmp_path):
+def test_non_decision_writes_report_before_failing(simulated_report):
     result = analyze(baseline=(response(b"A"), response(b"changed")))
     measurements = replay_report([observation("unstable-replay", "positive", result)])
-    path = tmp_path / "sqli-candidate-reliability.json"
+    path = simulated_report("non-decision")
     with pytest.raises(
         pytest.fail.Exception, match="replay: unstable-replay"
     ) as caught:
@@ -230,32 +277,34 @@ def test_non_decision_writes_report_before_failing(tmp_path):
     )
 
 
-@pytest.mark.parametrize(
-    ("method", "error", "category", "remediation"),
-    [
-        ("thread", RuntimeError, "startup", "Check thread availability"),
-        (
-            "request",
-            test_sqli_http_e2e.httpx.ConnectError,
-            "transport",
-            "Check loopback transport",
-        ),
-    ],
-)
-def test_other_expected_loopback_failures_are_recorded(
-    measurements, tmp_path, monkeypatch, method, error, category, remediation
+def test_simulated_startup_failure_is_recorded(
+    measurements, simulated_report, simulated_binder, monkeypatch
 ):
-    def fail(*args, **kwargs):
-        raise error("simulated loopback failure")
+    def fail(_thread):
+        raise RuntimeError("simulated worker startup failure")
 
-    if method == "thread":
-        monkeypatch.setattr(test_sqli_http_e2e.threading.Thread, "start", fail)
-    else:
-        monkeypatch.setattr(test_sqli_http_e2e.httpx.Client, "get", fail)
+    monkeypatch.setattr(test_sqli_http_e2e.threading.Thread, "start", fail)
     assert_failed_report(
         measurements,
-        tmp_path,
-        check_parameterized_benign_response,
-        category,
-        remediation,
+        simulated_report("startup"),
+        lambda: check_parameterized_benign_response(simulated_binder),
+        "startup",
+        "Check thread availability",
+    )
+
+
+def test_simulated_transport_failure_is_recorded(
+    measurements, simulated_report, simulated_server, monkeypatch
+):
+    def fail(_client, url, *, params):
+        assert url.endswith("/safe") and params == {"category": "Pets"}
+        raise test_sqli_http_e2e.httpx.ConnectError("simulated request failure")
+
+    monkeypatch.setattr(test_sqli_http_e2e.httpx.Client, "get", fail)
+    assert_failed_report(
+        measurements,
+        simulated_report("transport"),
+        lambda: check_parameterized_benign_response(simulated_server),
+        "transport",
+        "Check loopback transport",
     )

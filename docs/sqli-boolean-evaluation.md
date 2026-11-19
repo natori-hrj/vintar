@@ -447,3 +447,7 @@ Expected fixed-loopback failures are recorded as `socket_bind`, `startup`,
 `transport`, or `unexpected_response`. The test writes the JSON before failing on
 an expected loopback failure or a replay non-decision. The failure names the mode
 and report path, so replay counts remain available when loopback is restricted.
+
+The filename `sqli-candidate-reliability.json` is reserved for the real
+measurement. Failure simulations use `sqli-candidate-reliability.simulated-*.json`
+and run without sockets. Collect the exact real filename for CI artifacts.
