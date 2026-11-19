@@ -1,5 +1,6 @@
 """Contract tests for offline review draft exports."""
 
+import errno
 import json
 import os
 import tomllib
@@ -302,3 +303,34 @@ def test_non_utf8_spec_path_requires_rename_before_writing(tmp_path, monkeypatch
     assert ascii(spec.name) in result.stderr
     assert "Rename the file" in result.stderr
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "code",
+    [errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.EIO],
+    ids=["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "EIO"],
+)
+def test_link_error_cleans_temporary_file_and_exits_2(tmp_path, monkeypatch, code):
+    monkeypatch.chdir(tmp_path)
+    spec, review, expected = spec_and_review(tmp_path)
+    [name] = expected
+    directory = tmp_path / "drafts"
+
+    def fail_link(source, target):
+        assert source.read_bytes() == expected[name]
+        assert target == directory / name
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(discovery_drafts.os, "link", fail_link)
+    result = invoke(spec, review, directory)
+    assert result.exit_code == 2 and result.stdout == ""
+    assert list(directory.iterdir()) == []
+    if code == errno.EIO:
+        assert result.stderr == (
+            "Error: cannot write review drafts. Choose a writable output path.\n"
+        )
+    else:
+        assert "filesystem that supports hard links" in result.stderr
+        assert "ext4, APFS, or NTFS" in result.stderr
+        assert "exFAT or FAT32" in result.stderr
+        assert "Choose another --drafts-dir" in result.stderr

@@ -156,6 +156,8 @@ uv run --locked vintar discover \
 
 Drafts record declared inputs and decisions still needed. Keep them outside your verification case directory. `vintar verify` rejects them and requires reviewed Schema v1 cases. Reruns leave identical drafts in place. If a file conflicts, review it or select a new destination.
 
+Draft export requires a filesystem that supports hard links, such as ext4, APFS, or NTFS. Choose another `--drafts-dir` if your current destination is on exFAT or FAT32.
+
 ## Other CLI Commands
 
 - `vintar --help` lists commands, and `vintar version` prints the current project version.

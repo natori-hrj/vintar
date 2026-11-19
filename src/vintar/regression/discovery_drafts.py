@@ -1,5 +1,6 @@
 """Serialize and write offline review drafts from typed inventory records."""
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -138,6 +139,18 @@ def _publish(path: Path, content: bytes) -> None:
         except FileExistsError as exc:
             raise DraftExportError(
                 f"Draft path {path.name} appeared during export. Choose an empty directory or rerun after reviewing it."
+            ) from exc
+        except OSError as exc:
+            if exc.errno not in {
+                errno.EPERM,
+                errno.ENOTSUP,
+                errno.EOPNOTSUPP,
+                errno.EXDEV,
+            }:
+                raise
+            raise DraftExportError(
+                "The drafts directory must be on a filesystem that supports hard links, "
+                "such as ext4, APFS, or NTFS. Choose another --drafts-dir if it is on exFAT or FAT32."
             ) from exc
     finally:
         if temporary is not None:
