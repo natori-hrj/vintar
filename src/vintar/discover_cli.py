@@ -17,6 +17,11 @@ from vintar.regression.discovery import (
     load_inventory,
     load_selection,
 )
+from vintar.regression.discovery_drafts import (
+    DraftExportError,
+    draft_files,
+    write_drafts,
+)
 
 
 class OutputConflictError(ValueError):
@@ -79,15 +84,35 @@ def discover_command(
         Path, typer.Option("--spec", help="Local OpenAPI JSON or YAML file.")
     ],
     output: Annotated[
-        Path, typer.Option("--output", help="Destination for the JSON inventory.")
-    ],
+        Path | None,
+        typer.Option("--output", help="Destination for the JSON inventory."),
+    ] = None,
     selection: Annotated[
         Path | None,
         typer.Option("--selection", help="Reviewer-approved input IDs in TOML."),
     ] = None,
+    drafts_dir: Annotated[
+        Path | None,
+        typer.Option("--drafts-dir", help="Directory for offline review drafts."),
+    ] = None,
 ) -> None:
     """Inventory a local OpenAPI spec for review."""
     try:
+        if (output is None) == (drafts_dir is None):
+            raise DraftExportError("Choose exactly one of --output or --drafts-dir.")
+        source_file = None
+        if drafts_dir is not None:
+            if selection is None:
+                raise DraftExportError(
+                    "Draft export requires --selection. Supply a reviewed selection file."
+                )
+            resolved_spec = spec.resolve()
+            working_directory = Path.cwd()
+            if not resolved_spec.is_relative_to(working_directory):
+                raise DraftExportError(
+                    "Spec is outside the current working directory. Run from a directory that contains the spec."
+                )
+            source_file = resolved_spec.relative_to(working_directory)
         inventory = load_inventory(spec)
         selected = (
             load_selection(selection, inventory)
@@ -95,7 +120,22 @@ def discover_command(
             else frozenset()
         )
         inputs = (spec, selection) if selection is not None else (spec,)
-        _write_report(output, inputs, _report(inventory, selected))
+        if drafts_dir is not None and source_file is not None:
+            drafts = draft_files(inventory, selected, source_file)
+            write_drafts(drafts_dir, drafts, inputs)
+            typer.echo(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "report_type": "discovery_draft_summary",
+                        "drafts": sorted(drafts),
+                    },
+                    sort_keys=True,
+                )
+            )
+            return
+        if output is not None:
+            _write_report(output, inputs, _report(inventory, selected))
         typer.echo(
             json.dumps(
                 {
@@ -119,7 +159,7 @@ def discover_command(
             err=True,
         )
         raise typer.Exit(130) from exc
-    except (SelectionError, OutputConflictError) as exc:
+    except (SelectionError, OutputConflictError, DraftExportError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(2) from exc
     except DiscoveryError as exc:
@@ -129,8 +169,9 @@ def discover_command(
         )
         raise typer.Exit(2) from exc
     except (OSError, RuntimeError) as exc:
+        artifact = "review drafts" if drafts_dir is not None else "the discovery report"
         typer.echo(
-            "Error: cannot write the discovery report. Choose a writable output path.",
+            f"Error: cannot write {artifact}. Choose a writable output path.",
             err=True,
         )
         raise typer.Exit(2) from exc

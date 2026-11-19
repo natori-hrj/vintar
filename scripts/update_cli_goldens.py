@@ -44,6 +44,8 @@ SCENARIOS = {
     "verify/partial-inconclusive.json": Scenario(3, 1, rate_limited=True),
     "verify/authorization-required.json": Scenario(2, 0),
     "discover/success.json": Scenario(0, 0),
+    "discover/drafts.json": Scenario(0, 0),
+    "discover/drafts-conflict.json": Scenario(2, 0),
     "discover/stale-selection.json": Scenario(2, 0),
     "discover/invalid-selection.json": Scenario(2, 0),
     "discover/invalid-spec.json": Scenario(2, 0),
@@ -111,6 +113,17 @@ def capture_discovery(name, scenario, folder, args, env):
         "discover/output-spec-conflict.json": spec.name,
         "discover/output-selection-conflict.json": selection.name,
     }.get(name, "inventory.json")
+    drafting = name in {"discover/drafts.json", "discover/drafts-conflict.json"}
+    destination = folder / "drafts"
+    conflict = destination / "case-24a9c3cf0c3d01709121ac0d09079903.draft.toml"
+    if name == "discover/drafts-conflict.json":
+        destination.mkdir()
+        conflict.write_text("Existing review notes.\n", encoding="utf-8")
+    if args is None:
+        args = ["discover", "--spec", spec.name, "--selection", selection.name]
+        args.extend(
+            ["--drafts-dir", destination.name] if drafting else ["--output", output]
+        )
     before = (spec.read_bytes(), selection.read_bytes())
     with (
         chdir(folder),
@@ -121,21 +134,7 @@ def capture_discovery(name, scenario, folder, args, env):
             "socket.getaddrinfo", side_effect=AssertionError("Discovery resolved DNS.")
         ),
     ):
-        result = CliRunner().invoke(
-            app,
-            [
-                "discover",
-                "--spec",
-                spec.name,
-                "--selection",
-                selection.name,
-                "--output",
-                output,
-            ]
-            if args is None
-            else args,
-            env=env,
-        )
+        result = CliRunner().invoke(app, args, env=env)
     if (spec.read_bytes(), selection.read_bytes()) != before:
         raise ValueError("Discovery modified an input file.")
     if result.exit_code != scenario.exit_code:
@@ -143,6 +142,37 @@ def capture_discovery(name, scenario, folder, args, env):
             f"Expected exit code {scenario.exit_code}, got {result.exit_code}. "
             f"CLI stderr: {result.stderr.strip()}"
         )
+    if drafting:
+        if result.exit_code == 0:
+            if not result.stdout.endswith("\n") or result.stderr:
+                raise ValueError(
+                    "Expected a newline-terminated draft summary with empty stderr."
+                )
+            summary = json.loads(result.stdout)
+            drafts = {
+                path.name: path.read_text(encoding="utf-8")
+                for path in sorted(destination.iterdir())
+            }
+            if sorted(drafts) != summary["drafts"]:
+                raise ValueError("Draft summary differs from the files written.")
+        else:
+            if (
+                result.stdout
+                or not result.stderr
+                or sorted(destination.iterdir()) != [conflict]
+            ):
+                raise ValueError(
+                    "Expected only a diagnostic and the original conflicting file."
+                )
+            if conflict.read_text(encoding="utf-8") != "Existing review notes.\n":
+                raise ValueError("Discovery changed the conflicting draft.")
+            summary = drafts = None
+        return {
+            "exit_code": result.exit_code,
+            "stdout_json": summary,
+            "stderr": result.stderr,
+            "draft_files": drafts,
+        }
     report_path = folder / "inventory.json"
     if result.exit_code == 0:
         if (

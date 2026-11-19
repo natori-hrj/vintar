@@ -135,6 +135,29 @@ uv run --locked vintar discover \
 }
 ```
 
+### Export Review Drafts
+
+After reviewing `review.toml`, export one draft per approved input. Run from a directory that contains the spec so the draft can record a relative source path.
+
+<!-- cli-example: discover-drafts/command -->
+```bash
+uv run --locked vintar discover \
+  --spec openapi.json --selection review.toml --drafts-dir drafts
+```
+
+<!-- cli-example: discover-drafts/report -->
+```json
+{
+  "report_type": "discovery_draft_summary",
+  "schema_version": 1,
+  "drafts": ["case-24a9c3cf0c3d01709121ac0d09079903.draft.toml"]
+}
+```
+
+Drafts record declared inputs and decisions still needed. Keep them outside your verification case directory. `vintar verify` rejects them and requires reviewed Schema v1 cases. Reruns leave identical drafts in place. If a file conflicts, review it or select a new destination.
+
+Draft export requires a filesystem that supports hard links, such as ext4, APFS, or NTFS. Choose another `--drafts-dir` if your current destination is on exFAT or FAT32.
+
 ## Other CLI Commands
 
 - `vintar --help` lists commands, and `vintar version` prints the current project version.
@@ -167,7 +190,7 @@ uv run --locked vintar sqli verify \
 
 - The current Boolean analyzer reports a candidate as inconclusive. `not_detected` describes a single check result and provides no general security guarantee.
 - Time-based verification is experimental Python functionality. The CLI exposes Boolean verification.
-- Cases use schema v1 with placeholder origins. Automatic OpenAPI discovery is unavailable.
+- Cases use schema v1 with placeholder origins. OpenAPI discovery exports review drafts only.
 - The batch engine has per-request timeouts. The staging workflow supplies the job-level timeout.
 - Schema validation checks the report. Case definitions still require trusted review.
 

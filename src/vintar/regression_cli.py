@@ -20,6 +20,7 @@ from vintar.regression import (
     run_regression_batch,
 )
 from vintar.regression.binding import bind_runtime_target, parse_runtime_origin
+from vintar.regression.cases import ReviewDraftError
 
 _GENERIC_ERROR = "Error: regression verification could not be completed."
 _AUTH_ERROR = "Error: explicit testing authorization is required."
@@ -200,6 +201,8 @@ def verify_command(
 
     except KeyboardInterrupt:
         _abort(_CANCEL_ERROR, code=130)
+    except ReviewDraftError as exc:
+        _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
     except (OSError, ValueError):
         _abort(_GENERIC_ERROR, code=int(CIExitCode.ERROR))
     except Exception as exc:
