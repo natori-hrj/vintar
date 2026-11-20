@@ -143,8 +143,10 @@ def source_manifest_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
-def source_fragment_sha256(root: Path, record: dict[str, object]) -> tuple[str, str]:
-    """Hash one reviewed inclusive source line range."""
+def source_fragment_evidence(
+    root: Path, record: dict[str, object]
+) -> tuple[str, dict[str, object]]:
+    """Record one reviewed source reference and its observed fragment hash."""
     record_id = record.get("id")
     source_path = record.get("source_path")
     start = record.get("source_start_line")
@@ -173,7 +175,12 @@ def source_fragment_sha256(root: Path, record: dict[str, object]) -> tuple[str, 
             "A reviewed DSVW source range is outside the verified file. Check targets.toml against the pinned commit."
         )
     observed = hashlib.sha256(b"".join(lines[start - 1 : end])).hexdigest()
-    return record_id, observed
+    return record_id, {
+        "source_end_line": end,
+        "source_fragment_sha256": observed,
+        "source_path": source_path,
+        "source_start_line": start,
+    }
 
 
 def run_docker(arguments: list[str]) -> str:
@@ -229,8 +236,8 @@ def prepare(workspace: Path) -> Path:
     ) as temporary_source:
         source_root = extract_archive(archive, Path(temporary_source))
         manifest_digest = source_manifest_sha256(source_root)
-        fragment_digests = dict(
-            source_fragment_sha256(source_root, record) for record in records
+        source_evidence = dict(
+            source_fragment_evidence(source_root, record) for record in records
         )
         run_docker(
             [
@@ -256,7 +263,7 @@ def prepare(workspace: Path) -> Path:
             "image_id": image_id,
             "image_tag": image_tag,
             "schema_version": 1,
-            "source_fragment_sha256": fragment_digests,
+            "source_evidence": source_evidence,
             "source_manifest_sha256": manifest_digest,
         },
     )

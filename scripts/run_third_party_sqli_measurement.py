@@ -184,19 +184,30 @@ def validate_provenance(
     image_tag = required_text(state, "image_tag", "prepared target metadata")
     image_id = required_text(state, "image_id", "prepared target metadata")
     required_text(state, "source_manifest_sha256", "prepared target metadata")
-    fragment_digests = state.get("source_fragment_sha256")
-    if type(fragment_digests) is not dict:
+    source_evidence = state.get("source_evidence")
+    if type(source_evidence) is not dict:
         raise MeasurementError(
             "Prepared source evidence is missing. Rerun preparation so the verified archive supplies the build manifest and source fragments."
         )
     for record in records:
         record_id = required_text(record, "id", "record")
-        expected = required_text(record, "source_fragment_sha256", "record")
-        observed = fragment_digests.get(record_id)
-        if type(observed) is not str or observed != expected:
+        prepared = source_evidence.get(record_id)
+        if type(prepared) is not dict:
             raise MeasurementError(
-                "A prepared DSVW source fragment does not match its reviewed label. Rerun preparation from the verified archive or review the declaration."
+                f"Prepared source evidence for {record_id} differs at field record. The prepared evidence no longer matches the declaration. Rerun prepare; if the referenced lines changed, review and update source_fragment_sha256."
             )
+        for field in (
+            "source_path",
+            "source_start_line",
+            "source_end_line",
+            "source_fragment_sha256",
+        ):
+            if prepared.get(field) != record.get(field) or type(
+                prepared.get(field)
+            ) is not type(record.get(field)):
+                raise MeasurementError(
+                    f"Prepared source evidence for {record_id} differs at field {field}. The prepared evidence no longer matches the declaration. Rerun prepare; if the referenced lines changed, review and update source_fragment_sha256."
+                )
     observed_image_id = run_command(
         ["docker", "image", "inspect", "--format", "{{.Id}}", image_tag],
         timeout=30,

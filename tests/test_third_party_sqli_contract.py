@@ -7,7 +7,7 @@ import tarfile
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from test_sqli_candidate_reliability import classify as reliability_classify
@@ -288,6 +288,16 @@ def test_prepare_ignores_modified_stale_extraction(tmp_path, monkeypatch):
 
     assert observed["dockerfile"] == "FROM scratch\n"
     assert observed["manifest"] == state["source_manifest_sha256"]
+    assert state["source_evidence"] == {
+        "reviewed": {
+            "source_end_line": 1,
+            "source_fragment_sha256": (
+                "2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806"
+            ),
+            "source_path": "dsvw.py",
+            "source_start_line": 1,
+        }
+    }
     assert observed["context"] != stale
     assert not Path(observed["context"]).exists()
     assert (stale / "Dockerfile").read_text(encoding="utf-8") == (
@@ -363,3 +373,76 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
         "vintar-dsvw-0123456789ab-0-confirmation",
     ]
     assert stopped == started
+
+
+def prepared_provenance():
+    record = {
+        "id": "dsvw-record",
+        "source_end_line": 23,
+        "source_fragment_sha256": "a" * 64,
+        "source_path": "dsvw.py",
+        "source_start_line": 21,
+    }
+    state = {
+        "archive_sha256": "archive",
+        "commit": "commit",
+        "image_id": "sha256:image",
+        "image_tag": "image:tag",
+        "schema_version": 1,
+        "source_evidence": {
+            "dsvw-record": {key: value for key, value in record.items() if key != "id"}
+        },
+        "source_manifest_sha256": "b" * 64,
+    }
+    target = {"archive_sha256": "archive", "commit": "commit"}
+    return state, target, record
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [
+        ("source_path", "changed.py"),
+        ("source_start_line", 20),
+        ("source_end_line", 24),
+    ],
+)
+def test_changed_source_reference_is_rejected_before_docker(
+    field, changed, monkeypatch
+):
+    runner = load_runner()
+    state, target, record = prepared_provenance()
+    changed_record = {**record, field: changed}
+    docker_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        runner,
+        "run_command",
+        lambda command, **kwargs: docker_calls.append(command),
+    )
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"dsvw-record differs at field {field}.*Rerun prepare.*source_fragment_sha256",
+    ):
+        runner.validate_provenance(state, target, [changed_record])
+
+    assert docker_calls == []
+
+
+def test_unchanged_source_reference_passes_before_docker(monkeypatch):
+    runner = load_runner()
+    state, target, record = prepared_provenance()
+    docker_calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        docker_calls.append(command)
+        return SimpleNamespace(stdout="sha256:image\n")
+
+    monkeypatch.setattr(runner, "run_command", fake_run)
+
+    assert runner.validate_provenance(state, target, [record]) == (
+        "image:tag",
+        "sha256:image",
+    )
+    assert docker_calls == [
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "image:tag"]
+    ]
