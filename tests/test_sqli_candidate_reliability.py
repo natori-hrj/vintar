@@ -208,29 +208,25 @@ def live_failures(report):
 
 
 def known_limitation_failures(report):
-    if not report["records"]:
-        return []
-    [row] = report["records"]
-    if row["failure_category"] is not None:
-        return [
-            (
-                f"{row['endpoint_id']} with initial value Pets produced "
-                f"{row['verdict']}/{row['reason_code']} "
+    failures = []
+    for row in report["records"]:
+        if row["failure_category"] is not None:
+            failures.append(
+                f"{row['endpoint_id']} with initial value {row['initial_value']} "
+                f"produced {row['verdict']}/{row['reason_code']} "
                 f"({row['failure_category']}). {row['message']}"
             )
-        ]
-    if (
-        row["verdict"] == "inconclusive"
-        and row["reason_code"] == "unexpected_difference"
-    ):
-        return []
-    return [
-        (
-            f"{row['endpoint_id']} with initial value Pets produced "
-            f"{row['verdict']}/{row['reason_code']} instead of the documented known "
-            "non-decision. Check response stability and the parameterized fixture."
-        )
-    ]
+        elif not (
+            row["verdict"] == "inconclusive"
+            and row["reason_code"] == "unexpected_difference"
+        ):
+            failures.append(
+                f"{row['endpoint_id']} with initial value {row['initial_value']} "
+                f"produced {row['verdict']}/{row['reason_code']} instead of the "
+                "documented known non-decision. Check response stability and the "
+                "parameterized fixture."
+            )
+    return failures
 
 
 def assert_replay_results(report):
@@ -291,13 +287,15 @@ def run_measurement(
 ):
     loopback = check_loopback()
     live, limitations = check_live_loopback()
-    positive_covered = any(
-        row["expected_label"] == "positive"
-        and row["request_count"] > 0
+    positive_rows = [
+        row for row in live["records"] if row["expected_label"] == "positive"
+    ]
+    positive_covered = bool(positive_rows) and all(
+        row["request_count"] > 0
         and row["verdict"] is not None
         and row["failure_category"] is None
         and row["reason_code"] not in {"probe_failed", "rate_limited"}
-        for row in live["records"]
+        for row in positive_rows
     )
     report = {
         "schema_version": 2,
@@ -524,6 +522,102 @@ def test_unfinished_live_positive_writes_not_covered_report(
     assert str(path) in diagnostic
     report = json.loads(path.read_text(encoding="utf-8"))
     assert report["live_loopback"]["counts"]["non_decision"] == 2
+    assert report["live_positive_measurement"] == "not_covered"
+
+
+def test_multiple_negative_limitations_preserve_all_diagnostics(
+    measurements, simulated_report
+):
+    passing_live, _ = passing_live_measurement()
+    negative_endpoints = [
+        endpoint
+        for endpoint in LIVE_TWIN_ENDPOINTS
+        if endpoint.expected_label == "negative"
+    ]
+    negative_failures = [
+        live_transport_failure(
+            endpoint,
+            "transport",
+            "The negative fixture could not complete. Check the loopback transport setup.",
+        )
+        for endpoint in negative_endpoints
+    ]
+    records = [
+        row for row in passing_live["records"] if row["expected_label"] != "negative"
+    ]
+    live = live_report([*records, *negative_failures])
+    limitations = {
+        "records": [
+            {
+                key: row[key]
+                for key in (
+                    "endpoint_id",
+                    "expected_label",
+                    "initial_value",
+                    "preset",
+                    "verdict",
+                    "reason_code",
+                    "request_count",
+                    "failure_category",
+                    "message",
+                )
+            }
+            for row in negative_failures
+        ]
+    }
+    path = simulated_report("multiple-negative-limitations")
+
+    with pytest.raises(pytest.fail.Exception) as caught:
+        run_measurement(
+            measurements,
+            path,
+            lambda: test_sqli_http_e2e.fixed_loopback_record(None, "Fixture passed."),
+            lambda: (live, limitations),
+        )
+
+    diagnostic = str(caught.value)
+    for endpoint in negative_endpoints:
+        assert endpoint.endpoint_id in diagnostic
+        assert f"initial value {endpoint.initial_value}" in diagnostic
+    assert f"Measurement report: {path}" in diagnostic
+    report = json.loads(path.read_text(encoding="utf-8"))
+    assert len(report["known_limitations"]["records"]) == len(negative_endpoints)
+
+
+def test_partial_positive_failure_writes_not_covered_report(
+    measurements, simulated_report
+):
+    passing_live, limitations = passing_live_measurement()
+    failed_endpoint = next(
+        endpoint
+        for endpoint in LIVE_TWIN_ENDPOINTS
+        if endpoint.endpoint_id == "sqlite-numeric-vulnerable"
+    )
+    failure = live_transport_failure(
+        failed_endpoint,
+        "transport",
+        "The numeric fixture could not complete. Check the loopback transport setup.",
+    )
+    records = [
+        row
+        for row in passing_live["records"]
+        if row["endpoint_id"] != failed_endpoint.endpoint_id
+    ]
+    live = live_report([*records, failure])
+    path = simulated_report("partial-positive-failure")
+
+    with pytest.raises(pytest.fail.Exception) as caught:
+        run_measurement(
+            measurements,
+            path,
+            lambda: test_sqli_http_e2e.fixed_loopback_record(None, "Fixture passed."),
+            lambda: (live, limitations),
+        )
+
+    diagnostic = str(caught.value)
+    assert failed_endpoint.endpoint_id in diagnostic
+    assert f"Measurement report: {path}" in diagnostic
+    report = json.loads(path.read_text(encoding="utf-8"))
     assert report["live_positive_measurement"] == "not_covered"
 
 
