@@ -84,7 +84,11 @@ def draft_files(
 
 
 def write_drafts(
-    directory: Path, drafts: dict[str, bytes], inputs: tuple[Path, ...]
+    directory: Path,
+    drafts: dict[str, bytes],
+    inputs: tuple[Path, ...],
+    *,
+    option: str = "--drafts-dir",
 ) -> None:
     directory = directory.absolute()
     for parent in (*directory.parents, directory):
@@ -120,10 +124,10 @@ def write_drafts(
     if pending:
         directory.mkdir(parents=True, exist_ok=True)
     for path, content in pending.items():
-        _publish(path, content)
+        _publish(path, content, option)
 
 
-def _publish(path: Path, content: bytes) -> None:
+def _publish(path: Path, content: bytes, option: str) -> None:
     temporary: Path | None = None
     try:
         with NamedTemporaryFile(
@@ -150,7 +154,7 @@ def _publish(path: Path, content: bytes) -> None:
                 raise
             raise DraftExportError(
                 "The drafts directory must be on a filesystem that supports hard links, "
-                "such as ext4, APFS, or NTFS. Choose another --drafts-dir if it is on exFAT or FAT32."
+                f"such as ext4, APFS, or NTFS. Choose another {option} if it is on exFAT or FAT32."
             ) from exc
     finally:
         if temporary is not None:

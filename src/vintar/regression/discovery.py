@@ -849,8 +849,7 @@ def _read_json(data: bytes, source: Source) -> JSON:
     return _normalize(parsed, source, _DocumentBudget())
 
 
-def load_inventory(path: Path) -> Inventory:
-    """Inventory a local spec. YAML dates, yes/no, and other non-JSON scalars stay strings."""
+def _load_document(path: Path) -> _Discovery:
     source = Source(path)
     extension = path.suffix.lower()
     if extension not in {".json", ".yaml", ".yml"}:
@@ -872,7 +871,12 @@ def load_inventory(path: Path) -> Inventory:
         raise DiscoveryError(
             source.child("paths"), "OpenAPI 3.0 requires paths. Supply a paths object."
         )
-    inventory = _Discovery(root, source, version).inventory()
+    return _Discovery(root, source, version)
+
+
+def load_inventory(path: Path) -> Inventory:
+    """Inventory a local spec. YAML dates, yes/no, and other non-JSON scalars stay strings."""
+    inventory = _load_document(path).inventory()
     _inventory_inputs(inventory)
     return inventory
 

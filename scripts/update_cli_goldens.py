@@ -44,6 +44,8 @@ SCENARIOS = {
     "verify/partial-inconclusive.json": Scenario(3, 1, rate_limited=True),
     "verify/authorization-required.json": Scenario(2, 0),
     "discover/success.json": Scenario(0, 0),
+    "review-draft/success.json": Scenario(0, 0),
+    "review-draft/null-baseline.json": Scenario(2, 0),
     "discover/drafts.json": Scenario(0, 0),
     "discover/drafts-conflict.json": Scenario(2, 0),
     "discover/stale-selection.json": Scenario(2, 0),
@@ -195,6 +197,70 @@ def capture_discovery(name, scenario, folder, args, env):
     }
 
 
+def capture_review(name, scenario, folder, args, env):
+    export = capture_discovery(
+        "discover/drafts.json", Scenario(0, 0), folder, None, env
+    )
+    draft = next(iter(export["draft_files"]))
+    answers = folder / "answers.json"
+    if not answers.exists():
+        value = (
+            None if name == "review-draft/null-baseline.json" else "fixture-baseline"
+        )
+        answers.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "expected_verdict": "not_detected",
+                    "parameters": {"q": {"value": value}},
+                }
+            ),
+            encoding="utf-8",
+        )
+    if args is None:
+        args = [
+            "review-draft",
+            "--spec",
+            "openapi.json",
+            "--draft",
+            f"drafts/{draft}",
+            "--answers",
+            "answers.json",
+            "--output",
+            "review.json",
+        ]
+    with (
+        chdir(folder),
+        patch("socket.socket", side_effect=AssertionError("Review opened a socket.")),
+        patch("socket.getaddrinfo", side_effect=AssertionError("Review resolved DNS.")),
+    ):
+        result = CliRunner().invoke(app, args, env=env)
+    report = folder / "review.json"
+    if result.exit_code != scenario.exit_code:
+        raise ValueError(
+            f"Expected exit {scenario.exit_code}, got {result.exit_code}. Check the review inputs and flags. {result.stderr}"
+        )
+    if result.exit_code == 0:
+        if not result.stdout.endswith("\n") or result.stderr or not report.is_file():
+            raise ValueError(
+                "Expected a JSON summary and review report. Check the review output path."
+            )
+        summary = json.loads(result.stdout)
+        payload = json.loads(report.read_text(encoding="utf-8"))
+    else:
+        if result.stdout or not result.stderr or report.exists():
+            raise ValueError(
+                "Expected a review diagnostic and no output file. Check the error path."
+            )
+        summary = payload = None
+    return {
+        "exit_code": result.exit_code,
+        "stdout_json": summary,
+        "stderr": result.stderr,
+        "report_json": payload,
+    }
+
+
 def capture(
     name: str,
     scenario: Scenario,
@@ -203,10 +269,13 @@ def capture(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
 ) -> str:
-    if name.startswith("discover/"):
+    if name.startswith(("discover/", "review-draft/")):
+        offline_capture = (
+            capture_review if name.startswith("review-draft/") else capture_discovery
+        )
         return (
             json.dumps(
-                capture_discovery(name, scenario, folder, args, env),
+                offline_capture(name, scenario, folder, args, env),
                 ensure_ascii=False,
                 allow_nan=False,
                 indent=2,
