@@ -456,3 +456,29 @@ def test_two_hop_example_is_order_independent(
                 json.dumps(VALUE).encode("ascii")
             ).hexdigest(),
         }
+
+
+def test_percent_encoded_example_uses_shared_local_pointer_rules(
+    review_inputs, monkeypatch
+):
+    spec, _, config = review_inputs
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    document["components"] = {"examples": {"E": {"value": VALUE}}}
+    parameter = document["paths"]["/sample"]["get"]["parameters"][0]
+    parameter["examples"] = {
+        "unused": {"$ref": "examples.json#/E"},
+        "sample": {"$ref": "#%2Fcomponents%2Fexamples%2FE"},
+    }
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(discovery, "MAX_REFERENCE_WORK", 1)
+    pointer = "/components/examples/E/value"
+    answers(config, {"pointer": pointer})
+
+    output = Path("review.json")
+    result = run_review(review_inputs, output)
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(output.read_text(encoding="utf-8"))["parameters"]["q"] == {
+        "status": "resolved",
+        "source": {"file": spec.name, "pointer": pointer},
+        "value_sha256": hashlib.sha256(json.dumps(VALUE).encode("ascii")).hexdigest(),
+    }

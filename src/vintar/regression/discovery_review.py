@@ -4,7 +4,7 @@ import hashlib
 import json
 import tomllib
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 from vintar.regression.discovery import (
     JSON,
@@ -15,8 +15,10 @@ from vintar.regression.discovery import (
     _Discovery,
     _inventory_inputs,
     _load_document,
+    _local_pointer_fragment,
     _read,
     _read_json,
+    _string,
 )
 from vintar.regression.discovery_drafts import draft_files, write_drafts
 
@@ -68,28 +70,24 @@ def _candidate(
     if pointer in candidates:
         return pointer, candidates[pointer]
 
-    def is_selected(site: Source, reference: dict[str, JSON]) -> bool:
-        if pointer in {site.pointer, site.child("value").pointer}:
-            return True
-        target = reference.get("$ref")
-        return (
-            isinstance(target, str)
-            and target.startswith("#/")
-            and pointer == f"{unquote(target[1:])}/value"
-        )
-
-    for site, reference in sorted(
-        references, key=lambda entry: (not is_selected(*entry), entry[0].pointer)
-    ):
-        selected = is_selected(site, reference)
-        ref = reference["$ref"]
-        if not isinstance(ref, str) or not ref.startswith("#/"):
+    local_references = []
+    for site, reference in references:
+        selected = pointer in {site.pointer, site.child("value").pointer}
+        ref_source = site.child("$ref")
+        try:
+            fragment = _local_pointer_fragment(
+                _string(reference["$ref"], ref_source), ref_source
+            )
+        except DiscoveryError:
             if selected:
-                raise DiscoveryError(
-                    site.child("$ref"),
-                    "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
-                )
+                raise
             continue
+        selected = selected or pointer == f"{fragment}/value"
+        local_references.append((site, reference, selected))
+
+    for site, reference, selected in sorted(
+        local_references, key=lambda entry: (not entry[2], entry[0].pointer)
+    ):
         try:
             example, target, _ = document.resolve(reference, site)
         except ReferenceLimitError:

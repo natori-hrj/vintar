@@ -372,6 +372,36 @@ def _required(value: JSONMap, source: Source) -> bool:
     return required
 
 
+def _local_pointer_fragment(reference: str, source: Source) -> str:
+    """Decode and validate a same-document JSON Pointer fragment."""
+    if not reference.startswith("#"):
+        raise DiscoveryError(
+            source,
+            "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
+        )
+    if reference == "#":
+        return ""
+    if re.search(r"%(?![0-9a-fA-F]{2})", reference):
+        raise DiscoveryError(
+            source, "Invalid reference encoding. Use percent-encoded UTF-8."
+        )
+    try:
+        fragment = unquote(reference[1:], errors="strict")
+    except UnicodeError as exc:
+        raise DiscoveryError(
+            source, "Invalid reference encoding. Use a UTF-8 JSON Pointer."
+        ) from exc
+    if not fragment.startswith("/"):
+        raise DiscoveryError(
+            source,
+            "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
+        )
+    tokens = fragment[1:].split("/")
+    if any(re.search(r"~(?![01])", token) for token in tokens):
+        raise DiscoveryError(source, "Invalid JSON Pointer escape. Use ~0 or ~1.")
+    return fragment
+
+
 @dataclass
 class _Discovery:
     root: JSONMap
@@ -392,33 +422,12 @@ class _Discovery:
     def _pointer(self, reference: str, source: Source) -> tuple[Source, JSON]:
         if reference in self.pointers:
             return self.pointers[reference]
-        if not reference.startswith("#"):
-            raise DiscoveryError(
-                source,
-                "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
-            )
+        fragment = _local_pointer_fragment(reference, source)
         target = self.source
         value: JSON = self.root
-        if reference == "#":
+        if not fragment:
             return target, value
-        if re.search(r"%(?![0-9a-fA-F]{2})", reference):
-            raise DiscoveryError(
-                source, "Invalid reference encoding. Use percent-encoded UTF-8."
-            )
-        try:
-            fragment = unquote(reference[1:], errors="strict")
-        except UnicodeError as exc:
-            raise DiscoveryError(
-                source, "Invalid reference encoding. Use a UTF-8 JSON Pointer."
-            ) from exc
-        if not fragment.startswith("/"):
-            raise DiscoveryError(
-                source,
-                "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
-            )
         tokens = fragment[1:].split("/")
-        if any(re.search(r"~(?![01])", token) for token in tokens):
-            raise DiscoveryError(source, "Invalid JSON Pointer escape. Use ~0 or ~1.")
         for token in tokens:
             key = token.replace("~1", "/").replace("~0", "~")
             target = target.child(key)
