@@ -2,13 +2,14 @@
 
 import hashlib
 import json
+import socket
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from vintar.cli import app
-from vintar.regression import discovery
+from vintar.regression import discovery, discovery_review
 from vintar.regression.cases import ReviewDraftError, load_regression_case
 from vintar.regression.discovery import input_id, load_inventory
 from vintar.regression.discovery_drafts import draft_files
@@ -267,7 +268,10 @@ def test_review_resolves_example_references_at_canonical_pointer(
     }
     spec.write_text(json.dumps(document), encoding="utf-8")
     pointer = "/components/examples/E/value"
-    answers(config, {"pointer": pointer})
+    selection = (
+        f"{PARAMETER}/examples/sample" if not reference.startswith("#") else pointer
+    )
+    answers(config, {"pointer": selection})
     result = run_review(review_inputs, Path("review.json"))
     if error is not None:
         assert result.exit_code == 2 and result.stdout == ""
@@ -317,3 +321,81 @@ def test_candidate_reference_budget_is_independent_and_bounded(
     else:
         report = build_review(spec, draft, config)
         assert report["parameters"]["q"]["source"]["pointer"] == pointer
+
+
+@pytest.mark.parametrize(
+    ("reference", "remediation"),
+    [
+        ("examples.json#/E", "Bundle the spec"),
+        ("#/components/examples/Missing", "Point to an existing declaration"),
+        ("#/components/examples/Cycle", "Break the recursive reference chain"),
+    ],
+)
+def test_only_selected_bad_example_reference_rejects_review(
+    review_inputs, monkeypatch, reference, remediation
+):
+    spec, _, config = review_inputs
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    document["components"] = {
+        "examples": {
+            "Cycle": {"$ref": "#/components/examples/Cycle"},
+            "E": {"value": VALUE},
+        }
+    }
+    parameter = document["paths"]["/sample"]["get"]["parameters"][0]
+    parameter["examples"] = {
+        "unused": {"$ref": reference},
+        "valid": {"$ref": "#/components/examples/E"},
+    }
+    spec.write_text(json.dumps(document), encoding="utf-8")
+
+    def deny_network(*args, **kwargs):
+        pytest.fail(
+            "Review attempted an external read. Resolve only same-document references."
+        )
+
+    monkeypatch.setattr(socket, "socket", deny_network)
+    monkeypatch.setattr(socket, "getaddrinfo", deny_network)
+    read = discovery_review._read
+
+    def read_input(path):
+        assert path in review_inputs, (
+            "Review attempted to read an external example file."
+        )
+        return read(path)
+
+    monkeypatch.setattr(discovery_review, "_read", read_input)
+    monkeypatch.setattr(discovery, "_read", read_input)
+    for label, decision, provenance in (
+        (
+            "default",
+            {"pointer": f"{SCHEMA}/default"},
+            {"file": spec.name, "pointer": f"{SCHEMA}/default"},
+        ),
+        (
+            "local",
+            {"pointer": "/components/examples/E/value"},
+            {"file": spec.name, "pointer": "/components/examples/E/value"},
+        ),
+        ("explicit", {"value": VALUE}, "reviewer"),
+    ):
+        answers(config, decision)
+        output = Path(f"{label}.json")
+        result = run_review(review_inputs, output)
+        assert result.exit_code == 0, result.stderr
+        report = json.loads(output.read_text(encoding="utf-8"))
+        assert report["parameters"]["q"] == {
+            "status": "resolved",
+            "source": provenance,
+            "value_sha256": hashlib.sha256(
+                json.dumps(VALUE).encode("ascii")
+            ).hexdigest(),
+        }
+        assert report["parameters"]["extra"] == {"status": "omitted"}
+
+    answers(config, {"pointer": f"{PARAMETER}/examples/unused/value"})
+    result = run_review(review_inputs, Path("rejected.json"))
+    assert result.exit_code == 2 and result.stdout == ""
+    assert remediation in result.stderr
+    assert reference not in result.stderr
+    assert not Path("rejected.json").exists()

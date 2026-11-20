@@ -4,7 +4,7 @@ import hashlib
 import json
 import tomllib
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from vintar.regression.discovery import (
     JSON,
@@ -24,12 +24,15 @@ class DraftReviewError(ValueError):
     """A redacted, actionable review diagnostic."""
 
 
-def _candidates(document: _Discovery, item: Input) -> dict[str, JSON]:
+def _candidate(
+    document: _Discovery, item: Input, pointer: str
+) -> tuple[str, JSON] | None:
     definition, value = document._pointer(
         f"#{quote(item.definition.pointer, safe='/~')}", item.definition
     )
     parameter, definition, trail = document.resolve(value, definition)
     candidates: dict[str, JSON] = {}
+    references: list[tuple[Source, dict[str, JSON]]] = []
 
     def add_examples(node: dict[str, JSON], source: Source) -> None:
         if "example" in node:
@@ -40,8 +43,9 @@ def _candidates(document: _Discovery, item: Input) -> dict[str, JSON]:
                 site = source.child("examples").child(name)
                 if not isinstance(example, dict):
                     continue
-                example, site, _ = document.resolve(example, site)
-                if "value" in example and "externalValue" not in example:
+                if "$ref" in example:
+                    references.append((site, example))
+                elif "value" in example and "externalValue" not in example:
                     candidates[site.child("value").pointer] = example["value"]
 
     add_examples(parameter, definition)
@@ -60,7 +64,39 @@ def _candidates(document: _Discovery, item: Input) -> dict[str, JSON]:
             choices = schema.get("enum")
             if isinstance(choices, list) and len(choices) == 1:
                 candidates[site.child("enum").child(0).pointer] = choices[0]
-    return candidates
+    if pointer in candidates:
+        return pointer, candidates[pointer]
+
+    def is_selected(site: Source, reference: dict[str, JSON]) -> bool:
+        if pointer in {site.pointer, site.child("value").pointer}:
+            return True
+        target = reference.get("$ref")
+        return (
+            isinstance(target, str)
+            and target.startswith("#")
+            and pointer == f"{unquote(target[1:])}/value"
+        )
+
+    for site, reference in sorted(
+        references, key=lambda entry: not is_selected(*entry)
+    ):
+        selected = is_selected(site, reference)
+        try:
+            example, target, _ = document.resolve(reference, site)
+        except DiscoveryError:
+            if selected:
+                raise
+            continue
+        canonical = target.child("value").pointer
+        if pointer not in {site.pointer, site.child("value").pointer, canonical}:
+            continue
+        if "value" not in example or "externalValue" in example:
+            raise DiscoveryError(
+                target,
+                "The selected example has no usable local value. Inline a scalar value or provide a value in --answers.",
+            )
+        return canonical, example["value"]
+    return None
 
 
 def _decision(
@@ -84,17 +120,21 @@ def _decision(
     elif keys in ({"pointer"}, {"pointer", "value_sha256"}):
         pointer = answer["pointer"]
         try:
-            candidates = _candidates(document, item)
+            candidate = (
+                _candidate(document, item, pointer)
+                if isinstance(pointer, str)
+                else None
+            )
         except DiscoveryError as exc:
             raise DraftReviewError(
                 f"{prefix} Cannot resolve baseline candidates. {exc.reason}"
             ) from exc
-        if not isinstance(pointer, str) or pointer not in candidates:
+        if candidate is None:
             raise DraftReviewError(
                 f"{prefix} pointer is not a supported explicit local baseline candidate. "
                 "Supply a pointer to a declared example, default, or single-value enum, or provide a value."
             )
-        value = candidates[pointer]
+        pointer, value = candidate
         source = {"file": document.source.file.as_posix(), "pointer": pointer}
     else:
         raise DraftReviewError(
