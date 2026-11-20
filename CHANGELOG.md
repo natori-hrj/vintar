@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Serialize query spaces as RFC 3986 `%20` and literal plus signs as `%2B`, so
+  reviewed SQLi probes reach both percent-only and form-style query decoders intact.
+
 ## [0.2.0] - 2026-11-20
 
 - Add a local loopback Boolean SQLi precision corpus with separate true-positive,
