@@ -1,7 +1,6 @@
 """Run the reviewed DSVW OpenAPI-to-verify measurement locally."""
 
 import argparse
-import hashlib
 import json
 import os
 import select
@@ -12,6 +11,7 @@ import sys
 import tempfile
 import threading
 import tomllib
+import uuid
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -114,16 +114,6 @@ def classify(expected: str, verdict: str, reason: str) -> str:
     return "non_decision"
 
 
-def sha256_fragment(path: Path, start_line: int, end_line: int) -> str:
-    """Hash an inclusive UTF-8 source line range with original line endings."""
-    lines = path.read_bytes().splitlines(keepends=True)
-    if start_line < 1 or end_line < start_line or end_line > len(lines):
-        raise MeasurementError(
-            "A reviewed source line range is outside the pinned DSVW source. Check targets.toml against the pinned commit."
-        )
-    return hashlib.sha256(b"".join(lines[start_line - 1 : end_line])).hexdigest()
-
-
 def load_document(path: Path) -> dict[str, object]:
     """Load one JSON object with a redacted failure."""
     try:
@@ -145,16 +135,6 @@ def required_text(mapping: dict[str, object], key: str, source: str) -> str:
     if type(value) is not str or not value:
         raise MeasurementError(
             f"The {source} has an invalid {key}. Supply the reviewed nonempty value instead."
-        )
-    return value
-
-
-def required_int(mapping: dict[str, object], key: str) -> int:
-    """Read one strict positive declaration integer."""
-    value = mapping.get(key)
-    if type(value) is not int or value < 1:
-        raise MeasurementError(
-            f"The target declaration has an invalid {key}. Supply a positive line number in targets.toml."
         )
     return value
 
@@ -203,22 +183,19 @@ def validate_provenance(
         )
     image_tag = required_text(state, "image_tag", "prepared target metadata")
     image_id = required_text(state, "image_id", "prepared target metadata")
-    source_root = Path(required_text(state, "source_root", "prepared target metadata"))
+    required_text(state, "source_manifest_sha256", "prepared target metadata")
+    fragment_digests = state.get("source_fragment_sha256")
+    if type(fragment_digests) is not dict:
+        raise MeasurementError(
+            "Prepared source evidence is missing. Rerun preparation so the verified archive supplies the build manifest and source fragments."
+        )
     for record in records:
-        source = source_root / required_text(record, "source_path", "record")
-        try:
-            observed = sha256_fragment(
-                source,
-                required_int(record, "source_start_line"),
-                required_int(record, "source_end_line"),
-            )
-        except OSError as exc:
+        record_id = required_text(record, "id", "record")
+        expected = required_text(record, "source_fragment_sha256", "record")
+        observed = fragment_digests.get(record_id)
+        if type(observed) is not str or observed != expected:
             raise MeasurementError(
-                "Reviewed DSVW source evidence is missing. Rerun preparation with the pinned archive."
-            ) from exc
-        if observed != record.get("source_fragment_sha256"):
-            raise MeasurementError(
-                "A DSVW source fragment SHA-256 does not match its reviewed label. Use the pinned archive or review a declaration update."
+                "A prepared DSVW source fragment does not match its reviewed label. Rerun preparation from the verified archive or review the declaration."
             )
     observed_image_id = run_command(
         ["docker", "image", "inspect", "--format", "{{.Id}}", image_tag],
@@ -329,6 +306,26 @@ def compose(
         diagnostic=diagnostic,
         environment=compose_environment(image_tag),
     )
+
+
+def new_run_id() -> str:
+    """Return a short lowercase identifier unique to one measurement invocation."""
+    return uuid.uuid4().hex[:12]
+
+
+def compose_project_name(run_id: str, case_index: int, mode: str) -> str:
+    """Build one bounded Compose namespace for a case in a specific run."""
+    if (
+        len(run_id) != 12
+        or any(character not in "0123456789abcdef" for character in run_id)
+        or type(case_index) is not int
+        or case_index < 0
+        or mode not in {"six", "confirmation"}
+    ):
+        raise MeasurementError(
+            "The measurement project identity is invalid. Use the generated run ID, nonnegative case index, and supported probe mode instead."
+        )
+    return f"vintar-dsvw-{run_id}-{case_index}-{mode}"
 
 
 def start_target(image_tag: str, project: str) -> str:
@@ -683,10 +680,11 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
     state = load_document(workspace / STATE_NAME)
     image_tag, image_id = validate_provenance(state, target, declarations)
     records: list[dict[str, object]] = []
+    run_id = new_run_id()
     run_root = Path(tempfile.mkdtemp(prefix="vintar-dsvw-run-", dir=workspace))
     for index, declaration in enumerate(declarations):
         for mode in ("six", "confirmation"):
-            project = f"vintar-dsvw-{index}-{mode}"
+            project = compose_project_name(run_id, index, mode)
             case_folder = run_root / project
             case_folder.mkdir()
             attempted_start = False

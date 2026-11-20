@@ -3,7 +3,9 @@
 import importlib.util
 import json
 import re
+import tarfile
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 
@@ -16,18 +18,25 @@ ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
 TARGETS = THIRD_PARTY / "targets.toml"
 RUNNER = ROOT / "scripts" / "run_third_party_sqli_measurement.py"
+PREPARER = ROOT / "scripts" / "prepare_third_party_sqli.py"
 
 
-def load_runner() -> ModuleType:
-    """Load the standalone runner without executing its command-line entry point."""
-    specification = importlib.util.spec_from_file_location(
-        "third_party_sqli_measurement", RUNNER
-    )
+def load_script(path: Path, name: str) -> ModuleType:
+    """Load a standalone script without executing its command-line entry point."""
+    specification = importlib.util.spec_from_file_location(name, path)
     assert specification is not None
     assert specification.loader is not None
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module
+
+
+def load_runner() -> ModuleType:
+    return load_script(RUNNER, "third_party_sqli_measurement")
+
+
+def load_preparer() -> ModuleType:
+    return load_script(PREPARER, "third_party_sqli_preparation")
 
 
 def declarations() -> dict[str, object]:
@@ -219,3 +228,138 @@ def test_compose_is_internal_loopback_only_and_never_pulls():
     assert "PEX_ROOT: /tmp/pex" in compose
     assert "/tmp:size=128m" in compose
     assert "0.0.0.0" not in compose
+
+
+def test_prepare_ignores_modified_stale_extraction(tmp_path, monkeypatch):
+    preparer = load_preparer()
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    archive_source = tmp_path / "archive-source" / f"DSVW-{commit}"
+    archive_source.mkdir(parents=True)
+    (archive_source / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (archive_source / "dsvw.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    archive = workspace / f"dsvw-{commit}.tar.gz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        bundle.add(archive_source, arcname=archive_source.name)
+
+    stale = workspace / "source" / archive_source.name
+    stale.mkdir(parents=True)
+    (stale / "Dockerfile").write_text("MODIFIED STALE FILE\n", encoding="utf-8")
+    archive_digest = preparer.sha256_file(archive)
+    monkeypatch.setattr(
+        preparer,
+        "load_target",
+        lambda: {
+            "archive_sha256": archive_digest,
+            "archive_url": "https://invalid.example/archive",
+            "commit": commit,
+        },
+    )
+    monkeypatch.setattr(
+        preparer,
+        "load_records",
+        lambda: [
+            {
+                "id": "reviewed",
+                "source_path": "dsvw.py",
+                "source_start_line": 1,
+                "source_end_line": 1,
+            }
+        ],
+    )
+    observed: dict[str, object] = {}
+
+    def fake_docker(arguments):
+        if arguments[0] == "build":
+            context = Path(arguments[-1])
+            observed["context"] = context
+            observed["dockerfile"] = (context / "Dockerfile").read_text(
+                encoding="utf-8"
+            )
+            observed["manifest"] = preparer.source_manifest_sha256(context)
+            return ""
+        return "sha256:prepared-image"
+
+    monkeypatch.setattr(preparer, "run_docker", fake_docker)
+    state_path = preparer.prepare(workspace)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert observed["dockerfile"] == "FROM scratch\n"
+    assert observed["manifest"] == state["source_manifest_sha256"]
+    assert observed["context"] != stale
+    assert not Path(observed["context"]).exists()
+    assert (stale / "Dockerfile").read_text(encoding="utf-8") == (
+        "MODIFIED STALE FILE\n"
+    )
+
+
+def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_path):
+    runner = load_runner()
+    first = runner.compose_project_name(runner.new_run_id(), 0, "six")
+    second = runner.compose_project_name(runner.new_run_id(), 0, "six")
+    assert first != second
+    assert re.fullmatch(r"vintar-dsvw-[0-9a-f]{12}-0-six", first)
+    assert len(first) < 64
+
+    monkeypatch.setattr(
+        runner,
+        "load_declarations",
+        lambda: (
+            {
+                "archive_sha256": "archive",
+                "commit": "commit",
+                "license": "Unlicense",
+                "name": "DSVW",
+            },
+            [{"id": "case"}],
+        ),
+    )
+    monkeypatch.setattr(runner, "load_document", lambda path: {})
+    monkeypatch.setattr(
+        runner, "validate_provenance", lambda state, target, records: ("image", "id")
+    )
+    monkeypatch.setattr(runner, "new_run_id", lambda: "0123456789ab")
+    started: list[str] = []
+    stopped: list[str] = []
+
+    def fake_start(image_tag, project):
+        started.append(project)
+        return "172.20.0.2"
+
+    @contextmanager
+    def fake_bridge(upstream):
+        yield "http://127.0.0.1:12345"
+
+    def fake_result(folder, origin, declaration, mode):
+        return {
+            "actual_verdict": "inconclusive",
+            "classification": "non_decision",
+            "confirmation": {"status": "not_eligible"},
+            "endpoint_id": "case",
+            "expected_label": "negative",
+            "expected_verdict": "not_detected",
+            "mode": "six_probe" if mode == "six" else "confirmation",
+            "reason_code": "unexpected_difference",
+            "request_count": 6,
+        }
+
+    monkeypatch.setattr(runner, "start_target", fake_start)
+    monkeypatch.setattr(
+        runner, "stop_target", lambda image, project: stopped.append(project)
+    )
+    monkeypatch.setattr(runner, "loopback_bridge", fake_bridge)
+    monkeypatch.setattr(runner, "run_pipeline_case", fake_result)
+    monkeypatch.setattr(runner, "write_report", lambda path, report: None)
+    monkeypatch.setattr(runner, "check_documented_summary", lambda report: None)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner.measure(workspace, tmp_path / "report.json")
+
+    assert started == [
+        "vintar-dsvw-0123456789ab-0-six",
+        "vintar-dsvw-0123456789ab-0-confirmation",
+    ]
+    assert stopped == started
