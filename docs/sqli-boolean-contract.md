@@ -157,19 +157,20 @@ It uses six logical probe categories:
 - FALSE_1
 - TRUE_2
 - FALSE_2
-- CONTROL
+- BASELINE_PRESERVING_CONTROL
 
 Each logical category is sampled twice.
 
 The request order is:
 
 ```text
-BASELINE, TRUE_1, FALSE_1, CONTROL, TRUE_2, FALSE_2,
-BASELINE, FALSE_2, TRUE_2, CONTROL, FALSE_1, TRUE_1
+BASELINE, TRUE_1, FALSE_1, BASELINE_PRESERVING_CONTROL, TRUE_2, FALSE_2,
+BASELINE, FALSE_2, TRUE_2, BASELINE_PRESERVING_CONTROL, FALSE_1, TRUE_1
 ```
 
-The runner generates a fresh random control value for each
-complete execution and reuses it within that execution.
+The runner receives a reviewed baseline-preserving third predicate and reuses it
+within the execution. It checks reproducibility of the response relation; it does
+not establish SQL semantics or prove SQL execution.
 
 All possible confirmation requests are validated before the
 initial HTTP request is sent.
@@ -181,11 +182,17 @@ evaluates the expected relation.
 
 The expected candidate relation is:
 
-- BASELINE matches TRUE_1 and TRUE_2
-- FALSE_1 matches FALSE_2 and CONTROL
+- BASELINE matches TRUE_1, TRUE_2, and BASELINE_PRESERVING_CONTROL
+- FALSE_1 matches FALSE_2
 - BASELINE differs from FALSE_1
 
 A matching pattern is not evidence of actual SQL execution.
+
+A stable relation mismatch is blocking and remains INCONCLUSIVE. Confirmation never
+turns an eligible candidate into NOT_DETECTED or VULNERABLE. Exact-string branches
+such as `simple_branch` and `pagination-branch` are removed by the second predicate
+pair. Structural response mimics such as `full_mimic` and `waf-200` can reproduce the
+complete relation and remain documented known limitations.
 
 ## Cross-Phase Consistency
 
@@ -214,7 +221,7 @@ A mismatch changes the result to:
 
 A matching assessment preserves CANDIDATE.
 
-NOT_CONFIRMED, SKIPPED, and existing INCONCLUSIVE results do not
+SKIPPED and existing INCONCLUSIVE results do not
 enter the guard.
 
 The guard's MATCH result does not establish that SQL executed.
@@ -227,7 +234,7 @@ The runner emits these normal status and reason-code combinations:
 | --- | --- |
 | SKIPPED | `initial_not_eligible` |
 | CANDIDATE | `confirmation_pattern_matched` |
-| NOT_CONFIRMED | `confirmation_pattern_not_matched` |
+| INCONCLUSIVE | `candidate_confirmation_mismatch` |
 | INCONCLUSIVE | `confirmation_budget_unavailable` |
 | INCONCLUSIVE | `confirmation_preflight_failed` |
 | INCONCLUSIVE | `confirmation_budget_exceeded` |
@@ -257,7 +264,7 @@ CANDIDATE is not equivalent to VULNERABLE.
 A non-SQL implementation or middleware can reproduce the same
 pattern.
 
-### NOT_CONFIRMED
+### Candidate confirmation mismatch
 
 The additional confirmation completed with stable observations,
 but the required candidate relation was not satisfied.
@@ -266,7 +273,8 @@ Interpretation:
 
 The specific experimental hypothesis was not reproduced.
 
-This does not establish that the target is secure.
+The outcome is INCONCLUSIVE with `candidate_confirmation_mismatch`. It does not
+establish that the target is secure and never becomes NOT_DETECTED.
 
 ### INCONCLUSIVE
 

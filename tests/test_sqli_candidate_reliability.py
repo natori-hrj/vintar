@@ -11,15 +11,18 @@ import pytest
 import test_sqli_http_e2e
 from test_sqli_analyzer import analyze, pair, response
 from test_sqli_http_e2e import (
+    KNOWN_LIMITATION_ENDPOINTS,
     LIVE_TWIN_ENDPOINTS,
     SAFE_PETS_LIMITATION,
     LiveEndpoint,
     LoopbackShutdownError,
     LoopbackStartupError,
     check_parameterized_benign_response,
+    run_confirmed_live_endpoint,
     run_live_endpoint,
 )
 
+from vintar.checks.sqli.confirmation_runner import ConfirmationStatus
 from vintar.checks.sqli.models import Verdict
 
 REAL_REPORT = "sqli-candidate-reliability.json"
@@ -124,31 +127,81 @@ def measure_live_endpoint(endpoint, runner=run_live_endpoint):
     return live_observation(endpoint, result)
 
 
-def measure_live_loopback(runner=run_live_endpoint):
+def known_limitation_observation(limitation, outcome):
+    return {
+        "limitation_id": limitation.limitation_id,
+        "endpoint_id": limitation.endpoint.endpoint_id,
+        "expected_label": limitation.endpoint.expected_label,
+        "initial_value": limitation.endpoint.initial_value,
+        "preset": limitation.endpoint.preset_name,
+        "initial_verdict": outcome.initial.verdict.value,
+        "initial_reason_code": outcome.initial.reason_code,
+        "confirmation_status": outcome.status.value,
+        "reason_code": outcome.reason_code,
+        "classification": "fp",
+        "request_count": outcome.request_count,
+        "failure_category": None,
+        "message": None,
+    }
+
+
+def measure_known_limitation(limitation, runner=run_confirmed_live_endpoint):
+    try:
+        outcome, port = runner(limitation.endpoint)
+    except OSError:
+        return {
+            **known_limitation_observation(
+                limitation,
+                SimpleNamespace(
+                    initial=SimpleNamespace(
+                        verdict=Verdict.INCONCLUSIVE, reason_code=None
+                    ),
+                    status=ConfirmationStatus.INCONCLUSIVE,
+                    reason_code=None,
+                    request_count=0,
+                ),
+            ),
+            "classification": "non_decision",
+            "failure_category": "socket_bind",
+            "message": "Cannot bind the known-limitation fixture. Check the loopback transport setup.",
+        }
+    except (LoopbackStartupError, LoopbackShutdownError) as exc:
+        return {
+            **known_limitation_observation(
+                limitation,
+                SimpleNamespace(
+                    initial=SimpleNamespace(
+                        verdict=Verdict.INCONCLUSIVE, reason_code=None
+                    ),
+                    status=ConfirmationStatus.INCONCLUSIVE,
+                    reason_code=None,
+                    request_count=0,
+                ),
+            ),
+            "classification": "non_decision",
+            "failure_category": "transport",
+            "message": str(exc),
+        }
+    assert port > 0
+    return known_limitation_observation(limitation, outcome)
+
+
+def measure_live_loopback(
+    runner=run_live_endpoint,
+    limitation_runner=run_confirmed_live_endpoint,
+):
     records = [
         measure_live_endpoint(endpoint, runner) for endpoint in LIVE_TWIN_ENDPOINTS
     ]
     live = live_report(records)
     limitation = {
-        "records": [
-            {
-                key: record[key]
-                for key in (
-                    "endpoint_id",
-                    "expected_label",
-                    "initial_value",
-                    "preset",
-                    "verdict",
-                    "reason_code",
-                    "request_count",
-                    "failure_category",
-                    "message",
-                )
-            }
-            for record in live["records"]
-            if record["expected_label"] == "negative"
-            and record["classification"] == "non_decision"
-        ]
+        "records": sorted(
+            [
+                measure_known_limitation(item, limitation_runner)
+                for item in KNOWN_LIMITATION_ENDPOINTS
+            ],
+            key=lambda row: row["limitation_id"],
+        )
     }
     return live, limitation
 
@@ -209,22 +262,53 @@ def live_failures(report):
 
 def known_limitation_failures(report):
     failures = []
+    expected = {item.limitation_id: item for item in KNOWN_LIMITATION_ENDPOINTS}
+    rows_by_id = {}
     for row in report["records"]:
+        limitation_id = row["limitation_id"]
+        if limitation_id in rows_by_id:
+            failures.append(
+                f"Duplicate known limitation {limitation_id}. Check the tests-side "
+                "declaration and measurement assembly."
+            )
+        rows_by_id[limitation_id] = row
+
+    missing = sorted(set(expected) - set(rows_by_id))
+    new = sorted(set(rows_by_id) - set(expected))
+    if missing:
+        failures.append(
+            f"Missing known limitations: {', '.join(missing)}. Run every declared "
+            "loopback limitation fixture."
+        )
+    if new:
+        failures.append(
+            f"Undeclared known limitations: {', '.join(new)}. Add an immutable "
+            "tests-side declaration and documentation before accepting them."
+        )
+
+    for limitation_id in sorted(set(expected) & set(rows_by_id)):
+        declaration = expected[limitation_id]
+        row = rows_by_id[limitation_id]
         if row["failure_category"] is not None:
             failures.append(
-                f"{row['endpoint_id']} with initial value {row['initial_value']} "
-                f"produced {row['verdict']}/{row['reason_code']} "
-                f"({row['failure_category']}). {row['message']}"
+                f"{limitation_id} with initial value {row['initial_value']} "
+                f"did not complete ({row['failure_category']}). {row['message']}"
             )
         elif not (
-            row["verdict"] == "inconclusive"
-            and row["reason_code"] == "unexpected_difference"
+            row["endpoint_id"] == declaration.endpoint.endpoint_id
+            and row["expected_label"] == "negative"
+            and row["initial_verdict"] == "inconclusive"
+            and row["initial_reason_code"] == "boolean_candidate"
+            and row["confirmation_status"]
+            == declaration.expected_confirmation_status.value
+            and row["reason_code"] == declaration.expected_reason_code
+            and row["classification"] == "fp"
+            and row["request_count"] == 18
         ):
             failures.append(
-                f"{row['endpoint_id']} with initial value {row['initial_value']} "
-                f"produced {row['verdict']}/{row['reason_code']} instead of the "
-                "documented known non-decision. Check response stability and the "
-                "parameterized fixture."
+                f"{limitation_id} no longer matches its declared structural false "
+                "candidate behavior. Check the fixture label, response relation, "
+                "confirmation predicates, and transport setup."
             )
     return failures
 
@@ -353,8 +437,50 @@ def test_candidate_report_is_sorted_and_counts_match_records(measurements, tmp_p
     assert sum(live["counts"].values()) == len(live["records"])
     assert report["schema_version"] == 2
     assert report["live_positive_measurement"] == "covered"
-    assert report["known_limitations"]["records"] == []
+    limitation_records = report["known_limitations"]["records"]
+    assert [row["limitation_id"] for row in limitation_records] == [
+        "structural-full-mimic",
+        "structural-waf-200",
+    ]
+    assert all(row["classification"] == "fp" for row in limitation_records)
+    assert all(row["request_count"] == 18 for row in limitation_records)
     assert "counts" not in report["known_limitations"]
+
+
+def test_known_limitation_ids_match_evaluation_document():
+    documentation = (
+        test_sqli_http_e2e.ROOT / "docs" / "sqli-boolean-evaluation.md"
+    ).read_text(encoding="utf-8")
+    for limitation in KNOWN_LIMITATION_ENDPOINTS:
+        marker = f"`{limitation.limitation_id}`"
+        assert documentation.count(marker) == 1
+
+
+@pytest.mark.parametrize(
+    ("mutation", "diagnostic"),
+    [
+        ("missing", "Missing known limitations"),
+        ("duplicate", "Duplicate known limitation"),
+        ("new", "Undeclared known limitations"),
+        ("resolved", "no longer matches"),
+    ],
+)
+def test_known_limitation_registry_drift_fails(mutation, diagnostic):
+    _, limitations = passing_live_measurement()
+    records = [dict(row) for row in limitations["records"]]
+    if mutation == "missing":
+        records.pop()
+    elif mutation == "duplicate":
+        records.append(dict(records[0]))
+    elif mutation == "new":
+        records.append({**records[0], "limitation_id": "undeclared"})
+    else:
+        records[0]["confirmation_status"] = "inconclusive"
+        records[0]["reason_code"] = "candidate_confirmation_mismatch"
+        records[0]["classification"] = "non_decision"
+
+    failures = known_limitation_failures({"records": records})
+    assert any(diagnostic in failure for failure in failures)
 
 
 def test_live_twins_share_declared_values_within_each_sql_context():
@@ -525,44 +651,19 @@ def test_unfinished_live_positive_writes_not_covered_report(
     assert report["live_positive_measurement"] == "not_covered"
 
 
-def test_multiple_negative_limitations_preserve_all_diagnostics(
+def test_multiple_known_limitation_failures_preserve_all_diagnostics(
     measurements, simulated_report
 ):
-    passing_live, _ = passing_live_measurement()
-    negative_endpoints = [
-        endpoint
-        for endpoint in LIVE_TWIN_ENDPOINTS
-        if endpoint.expected_label == "negative"
-    ]
-    negative_failures = [
-        live_transport_failure(
-            endpoint,
-            "transport",
-            "The negative fixture could not complete. Check the loopback transport setup.",
-        )
-        for endpoint in negative_endpoints
-    ]
-    records = [
-        row for row in passing_live["records"] if row["expected_label"] != "negative"
-    ]
-    live = live_report([*records, *negative_failures])
+    live, passing_limitations = passing_live_measurement()
     limitations = {
         "records": [
             {
-                key: row[key]
-                for key in (
-                    "endpoint_id",
-                    "expected_label",
-                    "initial_value",
-                    "preset",
-                    "verdict",
-                    "reason_code",
-                    "request_count",
-                    "failure_category",
-                    "message",
-                )
+                **row,
+                "request_count": 0,
+                "failure_category": "transport",
+                "message": "The known limitation could not complete. Check the loopback transport setup.",
             }
-            for row in negative_failures
+            for row in passing_limitations["records"]
         ]
     }
     path = simulated_report("multiple-negative-limitations")
@@ -576,12 +677,14 @@ def test_multiple_negative_limitations_preserve_all_diagnostics(
         )
 
     diagnostic = str(caught.value)
-    for endpoint in negative_endpoints:
-        assert endpoint.endpoint_id in diagnostic
-        assert f"initial value {endpoint.initial_value}" in diagnostic
+    for limitation in KNOWN_LIMITATION_ENDPOINTS:
+        assert limitation.limitation_id in diagnostic
+        assert f"initial value {limitation.endpoint.initial_value}" in diagnostic
     assert f"Measurement report: {path}" in diagnostic
     report = json.loads(path.read_text(encoding="utf-8"))
-    assert len(report["known_limitations"]["records"]) == len(negative_endpoints)
+    assert len(report["known_limitations"]["records"]) == len(
+        KNOWN_LIMITATION_ENDPOINTS
+    )
 
 
 def test_partial_positive_failure_writes_not_covered_report(
@@ -642,7 +745,22 @@ def passing_live_measurement():
     def runner(endpoint):
         return results[endpoint.endpoint_id], 43210
 
-    return measure_live_loopback(runner)
+    def limitation_runner(endpoint):
+        initial = SimpleNamespace(
+            verdict=Verdict.INCONCLUSIVE,
+            reason_code="boolean_candidate",
+        )
+        return (
+            SimpleNamespace(
+                initial=initial,
+                status=ConfirmationStatus.CANDIDATE,
+                reason_code="confirmation_pattern_matched",
+                request_count=18,
+            ),
+            43210,
+        )
+
+    return measure_live_loopback(runner, limitation_runner)
 
 
 def assert_failed_report(measurements, path, check_loopback, category, remediation):

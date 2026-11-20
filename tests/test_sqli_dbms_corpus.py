@@ -48,6 +48,7 @@ TRUE_1 = "' AND 1=1-- "
 FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
+BASELINE_PRESERVING_CONTROL = "' AND 7=7-- "
 
 ENGINES = ("postgres", "mysql")
 MODES = ("vulnerable", "safe", "simple", "mimic")
@@ -64,7 +65,7 @@ TABLE_NAME = "vintar_corpus_products_55_4_2"
 EXPECTED = {
     "vulnerable": (ConfirmationStatus.CANDIDATE, 18),
     "safe": (ConfirmationStatus.SKIPPED, 6),
-    "simple": (ConfirmationStatus.NOT_CONFIRMED, 18),
+    "simple": (ConfirmationStatus.INCONCLUSIVE, 18),
     "mimic": (ConfirmationStatus.CANDIDATE, 18),
 }
 
@@ -289,12 +290,11 @@ def create_app(
 
         false_1 = category == "Pets" + FALSE_1
         false_2 = category == "Pets" + FALSE_2
-        control = category.startswith("Pets__vintar_control_")
 
         if mode == "simple":
             body = b"B" if false_1 else b"A"
         else:
-            body = b"B" if false_1 or false_2 or control else b"A"
+            body = b"B" if false_1 or false_2 else b"A"
 
         return Response(
             body,
@@ -426,6 +426,7 @@ def run_confirmation(
         false_1=FALSE_1,
         true_2=TRUE_2,
         false_2=FALSE_2,
+        baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
         context=context,
     )
 
@@ -612,18 +613,18 @@ def test_dbms_corpus_metrics(fastapi_origin):
 
     assert true_candidates == 2
     assert false_candidates == 2
-    assert evaluable_benign == 4
+    assert evaluable_benign == 2
 
     assert true_candidates / len(vulnerable_cases) == 1.0
     assert false_candidates / len(benign_cases) == 2 / 6
-    assert false_candidates / evaluable_benign == 2 / 4
+    assert false_candidates / evaluable_benign == 1.0
 
-    assert sum(status in decisive for status in results.values()) == 6
+    assert sum(status in decisive for status in results.values()) == 4
 
-    # Four candidate cases, two not-confirmed, two skipped.
+    # Four candidates, two confirmation mismatches, and two skipped cases.
     assert Counter(results.values()) == {
         ConfirmationStatus.CANDIDATE: 4,
-        ConfirmationStatus.NOT_CONFIRMED: 2,
+        ConfirmationStatus.INCONCLUSIVE: 2,
         ConfirmationStatus.SKIPPED: 2,
     }
 
@@ -636,8 +637,8 @@ def test_dbms_corpus_metrics(fastapi_origin):
     decidable = sum(status in decisive for status in results.values())
 
     assert skipped / len(results) == 2 / 8
-    assert inconclusive / len(results) == 0.0
-    assert decidable / len(results) == 6 / 8
+    assert inconclusive / len(results) == 2 / 8
+    assert decidable / len(results) == 4 / 8
 
     for engine in ENGINES:
         engine_counts = [

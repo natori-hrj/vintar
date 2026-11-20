@@ -41,6 +41,7 @@ TRUE_1 = "' AND 1=1-- "
 FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
+BASELINE_PRESERVING_CONTROL = "' AND 7=7-- "
 
 INITIAL_ORDER = ("B", "T1", "F1", "B", "F1", "T1")
 CONFIRMATION_ORDER = (
@@ -198,20 +199,14 @@ def create_app(state: FixtureState) -> FastAPI:
 
         false_1 = category == "Pets" + FALSE_1
         false_2 = category == "Pets" + FALSE_2
-        control = category.startswith("Pets__vintar_control_")
-
         if mode == "simple":
             body = b"B" if false_1 else b"A"
 
         elif mode == "mimic":
-            body = b"B" if false_1 or false_2 or control else b"A"
+            body = b"B" if false_1 or false_2 else b"A"
 
         elif mode == "waf":
-            body = (
-                b"request-blocked"
-                if false_1 or false_2 or control
-                else b"products-found"
-            )
+            body = b"request-blocked" if false_1 or false_2 else b"products-found"
 
         elif mode == "auth":
             # Initial six requests remain a valid candidate.
@@ -344,6 +339,7 @@ def run_confirmation(
         false_1=FALSE_1,
         true_2=TRUE_2,
         false_2=FALSE_2,
+        baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
         context=context,
     )
 
@@ -355,7 +351,7 @@ def run_confirmation(
     [
         ("vulnerable", ConfirmationStatus.CANDIDATE, 18, 18),
         ("safe", ConfirmationStatus.SKIPPED, 6, 6),
-        ("simple", ConfirmationStatus.NOT_CONFIRMED, 18, 0),
+        ("simple", ConfirmationStatus.INCONCLUSIVE, 18, 0),
         ("mimic", ConfirmationStatus.CANDIDATE, 18, 0),
         ("waf", ConfirmationStatus.CANDIDATE, 18, 0),
         ("auth", ConfirmationStatus.INCONCLUSIVE, 7, 0),
@@ -388,10 +384,6 @@ def test_fastapi_sqlite_corpus(
         assert outcome.reason_code == "confirmation_pattern_matched"
         assert outcome.evidence is not None
 
-    if expected is ConfirmationStatus.NOT_CONFIRMED:
-        assert outcome.reason_code == "confirmation_pattern_not_matched"
-        assert outcome.evidence is not None
-
     if expected is ConfirmationStatus.SKIPPED:
         assert outcome.confirmation_requests == 0
         assert outcome.evidence is None
@@ -399,7 +391,11 @@ def test_fastapi_sqlite_corpus(
         assert outcome.initial.reason_code == "no_boolean_difference_literal_input"
 
     if expected is ConfirmationStatus.INCONCLUSIVE:
-        assert outcome.evidence is None
+        if mode == "simple":
+            assert outcome.reason_code == "candidate_confirmation_mismatch"
+            assert outcome.evidence is not None
+        else:
+            assert outcome.evidence is None
 
     if mode == "auth":
         assert outcome.reason_code == "confirmation_non_success_status"
@@ -440,7 +436,7 @@ def test_fastapi_decodes_injected_query_parameters(
     ]
 
     control_values = [
-        value for value in values if value.startswith("Pets__vintar_control_")
+        value for value in values if value == "Pets" + BASELINE_PRESERVING_CONTROL
     ]
 
     assert len(control_values) == 2
@@ -569,8 +565,8 @@ def test_fastapi_corpus_metrics_are_explicit(
         mode for mode in benign_modes if results[mode] in decisive_statuses
     }
     conditional_false_positive_rate = false_candidates / len(evaluable_benign)
-    assert evaluable_benign == {"simple", "mimic", "waf"}
-    assert conditional_false_positive_rate == 2 / 3
+    assert evaluable_benign == {"mimic", "waf"}
+    assert conditional_false_positive_rate == 1.0
 
     inconclusive = sum(
         status is ConfirmationStatus.INCONCLUSIVE for status in results.values()
@@ -578,7 +574,7 @@ def test_fastapi_corpus_metrics_are_explicit(
 
     skipped = sum(status is ConfirmationStatus.SKIPPED for status in results.values())
 
-    assert inconclusive == 2
+    assert inconclusive == 3
     assert skipped == 1
 
     decidable = sum(status in decisive_statuses for status in results.values())
@@ -586,7 +582,7 @@ def test_fastapi_corpus_metrics_are_explicit(
     inconclusive_rate = inconclusive / len(MODES)
     non_decision_rate = (inconclusive + skipped) / len(MODES)
 
-    assert decidable == 4
-    assert decidable_coverage == 4 / 7
-    assert inconclusive_rate == 2 / 7
-    assert non_decision_rate == 3 / 7
+    assert decidable == 3
+    assert decidable_coverage == 3 / 7
+    assert inconclusive_rate == 3 / 7
+    assert non_decision_rate == 4 / 7

@@ -32,7 +32,7 @@ TRUE_1 = "' AND 1=1-- "
 FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
-CONTROL = "__vintar_control_7f4a9c2e"
+BASELINE_PRESERVING_CONTROL = "' AND 7=7-- "
 
 PLAN_12 = (
     "B",
@@ -84,7 +84,7 @@ def payloads() -> dict[str, str]:
         "F1": "Pets" + FALSE_1,
         "T2": "Pets" + TRUE_2,
         "F2": "Pets" + FALSE_2,
-        "C": "Pets" + CONTROL,
+        "C": "Pets" + BASELINE_PRESERVING_CONTROL,
     }
 
 
@@ -157,7 +157,6 @@ class CorpusHandler:
             blocked_values = {
                 self.values["F1"],
                 self.values["F2"],
-                self.values["C"],
             }
             blocked = value in blocked_values
 
@@ -274,7 +273,7 @@ def classify_twelve(
         responses[kind][0] for kind in ("B", "T1", "F1", "T2", "F2", "C")
     )
 
-    if b == t1 == t2 and f1 == f2 == control and b != f1:
+    if b == t1 == t2 == control and f1 == f2 and b != f1:
         return "candidate"
 
     return "not_confirmed"

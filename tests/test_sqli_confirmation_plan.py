@@ -35,7 +35,7 @@ TRUE_1 = "' AND 1=1-- "
 FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
-CONTROL = "__vintar_control_7f4a9c2e"
+BASELINE_PRESERVING_CONTROL = "' AND 7=7-- "
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def payloads() -> ConfirmationPayloads:
         false_1=FALSE_1,
         true_2=TRUE_2,
         false_2=FALSE_2,
-        control=CONTROL,
+        baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
     )
 
 
@@ -182,13 +182,13 @@ def test_each_probe_is_sent_twice_in_the_expected_order(
         "Pets",
         "Pets" + TRUE_1,
         "Pets" + FALSE_1,
-        "Pets" + CONTROL,
+        "Pets" + BASELINE_PRESERVING_CONTROL,
         "Pets" + TRUE_2,
         "Pets" + FALSE_2,
         "Pets",
         "Pets" + FALSE_2,
         "Pets" + TRUE_2,
-        "Pets" + CONTROL,
+        "Pets" + BASELINE_PRESERVING_CONTROL,
         "Pets" + FALSE_1,
         "Pets" + TRUE_1,
     )
@@ -445,33 +445,35 @@ def test_invalid_boolean_payload_is_rejected(invalid):
             false_1=FALSE_1,
             true_2=TRUE_2,
             false_2=FALSE_2,
-            control=CONTROL,
+            baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
         )
 
 
 @pytest.mark.parametrize(
-    "control",
+    "baseline_preserving_control",
     [
         None,
         True,
         1,
         "",
-        "__vintar_control_",
-        "__vintar_control_short",
-        "control-with-hyphens",
-        "' OR 1=1-- ",
-        "__vintar_control_\n",
-        "__vintar_control_" + "a" * 128,
+        "\x00",
+        "\n",
+        "\u0085",
+        "\u202e",
+        "\ud800",
+        "x" * 513,
     ],
 )
-def test_invalid_control_is_rejected(control):
+def test_invalid_baseline_preserving_control_is_rejected(
+    baseline_preserving_control,
+):
     with pytest.raises((TypeError, ValueError)):
         ConfirmationPayloads(
             true_1=TRUE_1,
             false_1=FALSE_1,
             true_2=TRUE_2,
             false_2=FALSE_2,
-            control=control,
+            baseline_preserving_control=baseline_preserving_control,
         )
 
 
@@ -482,7 +484,7 @@ def test_duplicate_boolean_payloads_are_rejected():
             false_1=TRUE_1,
             true_2=TRUE_2,
             false_2=FALSE_2,
-            control=CONTROL,
+            baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
         )
 
 
@@ -557,7 +559,7 @@ def test_sensitive_request_values_are_not_in_repr(
     for value in (payloads, plan, *plan.steps):
         output = repr(value)
         assert "test-secret" not in output
-        assert CONTROL not in output
+        assert BASELINE_PRESERVING_CONTROL not in output
         assert TRUE_1 not in output
         assert FALSE_1 not in output
 

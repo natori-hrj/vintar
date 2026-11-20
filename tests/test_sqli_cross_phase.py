@@ -109,7 +109,7 @@ def make_confirmation(
     false_1: bytes = b"B",
     true_2: bytes = b"A",
     false_2: bytes = b"B",
-    control: bytes = b"B",
+    baseline_preserving_control: bytes = b"A",
     overrides: dict[
         ConfirmationKind,
         tuple[int, int],
@@ -123,7 +123,7 @@ def make_confirmation(
         ConfirmationKind.FALSE_1: false_1,
         ConfirmationKind.TRUE_2: true_2,
         ConfirmationKind.FALSE_2: false_2,
-        ConfirmationKind.CONTROL: control,
+        ConfirmationKind.BASELINE_PRESERVING_CONTROL: baseline_preserving_control,
     }
 
     observations = tuple(
@@ -149,16 +149,17 @@ def make_confirmation(
     false_1_signature = signature(pairs[ConfirmationKind.FALSE_1][0])
     true_2_signature = signature(pairs[ConfirmationKind.TRUE_2][0])
     false_2_signature = signature(pairs[ConfirmationKind.FALSE_2][0])
-    control_signature = signature(pairs[ConfirmationKind.CONTROL][0])
+    control_signature = signature(
+        pairs[ConfirmationKind.BASELINE_PRESERVING_CONTROL][0]
+    )
 
     return ConfirmationEvidence(
         observations=observations,
         baseline_matches_true=(
             baseline_signature == true_1_signature == true_2_signature
         ),
-        false_matches_control=(
-            false_1_signature == false_2_signature == control_signature
-        ),
+        baseline_matches_control=(baseline_signature == control_signature),
+        false_pair_matches=(false_1_signature == false_2_signature),
         baseline_differs_from_false=(baseline_signature != false_1_signature),
     )
 
@@ -187,7 +188,7 @@ def test_cache_generation_rollover():
             false_1=b"B-generation2",
             true_2=b"A-generation2",
             false_2=b"B-generation2",
-            control=b"B-generation2",
+            baseline_preserving_control=b"A-generation2",
         ),
     )
 
@@ -250,7 +251,7 @@ def test_individual_mismatch(changed, expected):
         false_1=values["false_1"],
         true_2=b"A",
         false_2=b"B",
-        control=b"B",
+        baseline_preserving_control=b"A",
     )
 
     result = assess_cross_phase_consistency(
@@ -334,7 +335,8 @@ def test_confirmation_evidence_rejects_invalid_order_and_instability():
         ConfirmationEvidence(
             observations=evidence.observations[::-1],
             baseline_matches_true=evidence.baseline_matches_true,
-            false_matches_control=evidence.false_matches_control,
+            baseline_matches_control=evidence.baseline_matches_control,
+            false_pair_matches=evidence.false_pair_matches,
             baseline_differs_from_false=evidence.baseline_differs_from_false,
         )
 
@@ -350,7 +352,8 @@ def test_confirmation_evidence_rejects_invalid_order_and_instability():
         ConfirmationEvidence(
             observations=tuple(observations),
             baseline_matches_true=evidence.baseline_matches_true,
-            false_matches_control=evidence.false_matches_control,
+            baseline_matches_control=evidence.baseline_matches_control,
+            false_pair_matches=evidence.false_pair_matches,
             baseline_differs_from_false=evidence.baseline_differs_from_false,
         )
 
@@ -387,7 +390,8 @@ def test_rejects_model_subclasses():
     derived_confirmation = DerivedConfirmationEvidence(
         observations=confirmation.observations,
         baseline_matches_true=confirmation.baseline_matches_true,
-        false_matches_control=confirmation.false_matches_control,
+        baseline_matches_control=confirmation.baseline_matches_control,
+        false_pair_matches=confirmation.false_pair_matches,
         baseline_differs_from_false=(confirmation.baseline_differs_from_false),
     )
 

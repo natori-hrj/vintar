@@ -30,16 +30,13 @@ CONFIRMATION_REQUESTS = 12
 TOTAL_REQUESTS = INITIAL_REQUESTS + CONFIRMATION_REQUESTS
 
 MAX_PAYLOAD_LENGTH = 512
-MAX_CONTROL_LENGTH = 128
-CONTROL_PREFIX = "__vintar_control_"
-MIN_CONTROL_SUFFIX_LENGTH = 8
 
 
 class ConfirmationKind(StrEnum):
     BASELINE = "baseline"
     TRUE_1 = "true_1"
     FALSE_1 = "false_1"
-    CONTROL = "control"
+    BASELINE_PRESERVING_CONTROL = "baseline_preserving_control"
     TRUE_2 = "true_2"
     FALSE_2 = "false_2"
 
@@ -48,13 +45,13 @@ CONFIRMATION_ORDER = (
     ConfirmationKind.BASELINE,
     ConfirmationKind.TRUE_1,
     ConfirmationKind.FALSE_1,
-    ConfirmationKind.CONTROL,
+    ConfirmationKind.BASELINE_PRESERVING_CONTROL,
     ConfirmationKind.TRUE_2,
     ConfirmationKind.FALSE_2,
     ConfirmationKind.BASELINE,
     ConfirmationKind.FALSE_2,
     ConfirmationKind.TRUE_2,
-    ConfirmationKind.CONTROL,
+    ConfirmationKind.BASELINE_PRESERVING_CONTROL,
     ConfirmationKind.FALSE_1,
     ConfirmationKind.TRUE_1,
 )
@@ -66,16 +63,16 @@ class ConfirmationPayloads:
 
     Values are raw strings. Encoding belongs to the HTTP transport.
 
-    The control is supplied by the caller. A future execution layer
-    should generate a fresh control once per run, then reuse it for
-    both control probes.
+    The baseline-preserving third predicate is supplied by the caller and
+    reused for both repetitions. It checks reproducibility of the response
+    relation, not SQL semantics.
     """
 
     true_1: str = field(repr=False)
     false_1: str = field(repr=False)
     true_2: str = field(repr=False)
     false_2: str = field(repr=False)
-    control: str = field(repr=False)
+    baseline_preserving_control: str = field(repr=False)
 
     def __post_init__(self) -> None:
         boolean_values = (
@@ -96,24 +93,19 @@ class ConfirmationPayloads:
         if len(set(boolean_values)) != 4:
             raise ValueError("Confirmation payloads must be distinct.")
 
-        if type(self.control) is not str:
-            raise TypeError("Invalid confirmation control.")
-
-        if not 0 < len(self.control) <= MAX_CONTROL_LENGTH:
-            raise ValueError("Invalid confirmation control.")
-
-        if not self.control.startswith(CONTROL_PREFIX):
-            raise ValueError("Invalid confirmation control.")
-
-        if not all(ch.isascii() and (ch.isalnum() or ch == "_") for ch in self.control):
-            raise ValueError("Invalid confirmation control.")
-
-        suffix = self.control[len(CONTROL_PREFIX) :]
-        if len(suffix) < MIN_CONTROL_SUFFIX_LENGTH:
-            raise ValueError("Invalid confirmation control.")
-
-        if self.control in boolean_values:
-            raise ValueError("Confirmation control must be distinct.")
+        if type(self.baseline_preserving_control) is not str:
+            raise TypeError("Invalid baseline-preserving confirmation predicate.")
+        if not 0 < len(self.baseline_preserving_control) <= MAX_PAYLOAD_LENGTH:
+            raise ValueError("Invalid baseline-preserving confirmation predicate.")
+        if any(
+            unicodedata.category(ch).startswith("C")
+            for ch in self.baseline_preserving_control
+        ):
+            raise ValueError("Invalid baseline-preserving confirmation predicate.")
+        if self.baseline_preserving_control in boolean_values:
+            raise ValueError(
+                "The baseline-preserving confirmation predicate must be distinct."
+            )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -184,8 +176,10 @@ class ConfirmationPlan:
                 ConfirmationKind.FALSE_2: inject(
                     baseline, self.point, self.payloads.false_2
                 ),
-                ConfirmationKind.CONTROL: inject(
-                    baseline, self.point, self.payloads.control
+                ConfirmationKind.BASELINE_PRESERVING_CONTROL: inject(
+                    baseline,
+                    self.point,
+                    self.payloads.baseline_preserving_control,
                 ),
             }
 
@@ -319,7 +313,9 @@ def prepare_confirmation_plan(
             ConfirmationKind.FALSE_1: inject(template, point, payloads.false_1),
             ConfirmationKind.TRUE_2: inject(template, point, payloads.true_2),
             ConfirmationKind.FALSE_2: inject(template, point, payloads.false_2),
-            ConfirmationKind.CONTROL: inject(template, point, payloads.control),
+            ConfirmationKind.BASELINE_PRESERVING_CONTROL: inject(
+                template, point, payloads.baseline_preserving_control
+            ),
         }
 
         # All distinct logical probes must result in distinct requests.

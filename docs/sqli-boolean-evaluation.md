@@ -457,8 +457,38 @@ stable, identical TRUE and FALSE responses as
 `NOT_DETECTED / no_boolean_difference_literal_input`. No input or fixture label was
 changed to obtain that result. The expanded live confusion matrix records two true
 positives and two true negatives, with no false positives, false negatives, or
-non-decisions. `known_limitations.records` is empty because the current actual run no
-longer reproduces the limitation.
+non-decisions.
+
+The confirmation measurement uses a reviewed second predicate pair and a
+baseline-preserving third predicate. The third predicate checks reproducibility of
+the response relation, not SQL semantics. Real string and numeric SQLite vulnerable
+twins retain `boolean_candidate` after 18 total requests. Exact-string branches such
+as `simple_branch` and `pagination-branch` become INCONCLUSIVE with
+`candidate_confirmation_mismatch`; they do not become NOT_DETECTED. Synthetic
+positive response-relation cases are reported separately from real SQLite fixtures,
+and their confirmation mismatch is not counted as a real vulnerable false negative.
+
+The deterministic precision measurements are:
+
+| Six-probe response-relation corpus | TP | TN | FP | FN | non-decision |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Before confirmation | 3 | 2 | 2 | 0 | 4 |
+
+The three TPs in that table are synthetic positive response relations, not SQL-backed
+vulnerabilities. After confirmation, the eight negative fixtures record two TNs, one
+remaining FP (`waf-200`), and five non-decisions. The three synthetic positives all
+produce `candidate_confirmation_mismatch` and are reported as three synthetic
+demotions, not as real vulnerable FNs. Separately, both real SQLite vulnerable twins
+retain `boolean_candidate`; both parameterized twins retain their initial
+NOT_DETECTED results and do not enter confirmation.
+
+Two no-SQL structural false candidates reproduce the complete confirmation relation
+and are registered from actual loopback runs outside the matched-twin confusion
+matrix: `structural-full-mimic` and `structural-waf-200`. Their records must remain
+present exactly once with `confirmation_pattern_matched` and 18 requests. A missing,
+duplicate, newly introduced, or unexpectedly resolved record fails after the JSON
+report is saved. Registration documents a known limitation; it does not suppress the
+candidate or turn it into a pass.
 
 Results still depend on the initial value and must not be generalized to other benign
 values. A NOT_DETECTED result means only that these probes found no Boolean

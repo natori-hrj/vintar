@@ -28,6 +28,7 @@ TRUE_1 = "' AND 1=1-- "
 FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
+BASELINE_PRESERVING_CONTROL = "' AND 7=7-- "
 
 
 def make_context(
@@ -72,6 +73,7 @@ def run_check(
         false_1=FALSE_1,
         true_2=TRUE_2,
         false_2=FALSE_2,
+        baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
         context=context,
         transport=httpx.MockTransport(handler),
     )
@@ -143,16 +145,16 @@ def test_vulnerable_sqlite_runs_eighteen_requests():
         "Pets",
         "Pets" + TRUE_1,
         "Pets" + FALSE_1,
-        received[9],
+        "Pets" + BASELINE_PRESERVING_CONTROL,
         "Pets" + TRUE_2,
         "Pets" + FALSE_2,
     ]
-    assert received[9].startswith("Pets__vintar_control_")
-    assert received[15] == received[9]
+    assert received[15] == "Pets" + BASELINE_PRESERVING_CONTROL
 
     assert result.evidence is not None
     assert result.evidence.baseline_matches_true
-    assert result.evidence.false_matches_control
+    assert result.evidence.baseline_matches_control
+    assert result.evidence.false_pair_matches
     assert result.evidence.baseline_differs_from_false
     assert len(result.evidence.observations) == 12
 
@@ -212,7 +214,7 @@ def test_non_sql_filter_can_still_mimic_confirmation():
         blocked = category in {
             "Pets" + FALSE_1,
             "Pets" + FALSE_2,
-        } or category.startswith("Pets__vintar_control_")
+        }
 
         return httpx.Response(
             200,
@@ -244,8 +246,8 @@ def test_simple_non_sql_branch_is_not_confirmed():
     result, context = run_check(handler)
 
     assert result.initial.reason_code == "boolean_candidate"
-    assert result.status is ConfirmationStatus.NOT_CONFIRMED
-    assert result.reason_code == "confirmation_pattern_not_matched"
+    assert result.status is ConfirmationStatus.INCONCLUSIVE
+    assert result.reason_code == "candidate_confirmation_mismatch"
     assert result.total_requests == 18
     assert result.confirmation_requests == 12
     assert result.evidence is not None
@@ -442,7 +444,7 @@ def test_result_repr_does_not_expose_payloads():
         blocked = category in {
             "Pets" + FALSE_1,
             "Pets" + FALSE_2,
-        } or category.startswith("Pets__vintar_control_")
+        }
 
         return httpx.Response(200, content=b"B" if blocked else b"A")
 
@@ -455,7 +457,7 @@ def test_result_repr_does_not_expose_payloads():
 
     assert TRUE_1 not in output
     assert FALSE_1 not in output
-    assert "__vintar_control_" not in output
+    assert BASELINE_PRESERVING_CONTROL not in output
     assert "Authorization" not in output
     assert "test-secret" not in output
     assert "cookie-secret" not in output
@@ -468,7 +470,7 @@ def test_result_models_reject_inconsistent_direct_construction():
         blocked = category in {
             "Pets" + FALSE_1,
             "Pets" + FALSE_2,
-        } or category.startswith("Pets__vintar_control_")
+        }
         return httpx.Response(
             200,
             content=b"B" if blocked else b"A",
@@ -496,7 +498,7 @@ def test_result_models_reject_inconsistent_direct_construction():
     with pytest.raises(ValueError, match="candidate"):
         replace(
             result,
-            reason_code="confirmation_pattern_not_matched",
+            reason_code="candidate_confirmation_mismatch",
         )
     with pytest.raises(ValueError, match="Incomplete"):
         replace(result, evidence=None)
@@ -529,17 +531,10 @@ def test_result_models_reject_inconsistent_direct_construction():
         )
 
 
-def test_control_is_unique_per_run_and_reused_within_run(
-    monkeypatch,
-):
-    tokens = iter(("a" * 32, "b" * 32))
-    monkeypatch.setattr(
-        "vintar.checks.sqli.confirmation_runner.secrets.token_hex",
-        lambda size: next(tokens),
-    )
+def test_baseline_preserving_control_is_fixed_and_reused():
     controls = []
 
-    for expected_token in ("a" * 32, "b" * 32):
+    for _ in range(2):
         received = []
 
         def handler(request, received=received):
@@ -548,7 +543,7 @@ def test_control_is_unique_per_run_and_reused_within_run(
             blocked = category in {
                 "Pets" + FALSE_1,
                 "Pets" + FALSE_2,
-            } or category.startswith("Pets__vintar_control_")
+            }
             return httpx.Response(
                 200,
                 content=b"B" if blocked else b"A",
@@ -557,18 +552,12 @@ def test_control_is_unique_per_run_and_reused_within_run(
         result, _ = run_check(handler)
         assert result.status is ConfirmationStatus.CANDIDATE
         run_controls = [
-            value for value in received if value.startswith("Pets__vintar_control_")
+            value for value in received if value == "Pets" + BASELINE_PRESERVING_CONTROL
         ]
-        assert (
-            run_controls
-            == [
-                "Pets__vintar_control_" + expected_token,
-            ]
-            * 2
-        )
+        assert run_controls == ["Pets" + BASELINE_PRESERVING_CONTROL] * 2
         controls.append(run_controls[0])
 
-    assert controls[0] != controls[1]
+    assert controls[0] == controls[1]
 
 
 @pytest.mark.parametrize(
@@ -601,7 +590,7 @@ def test_duplicate_parameter_occurrence_for_both_modes(mode):
         blocked = value in {
             prefix + FALSE_1,
             prefix + FALSE_2,
-        } or value.startswith(prefix + "__vintar_control_")
+        }
         return httpx.Response(
             200,
             content=b"B" if blocked else b"A",
