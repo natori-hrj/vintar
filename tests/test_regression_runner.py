@@ -64,6 +64,21 @@ def make_case(expected: str = "not_detected"):
     return parse_regression_case(source)
 
 
+def make_confirmed_case():
+    source = (
+        CASE_SOURCE.replace(
+            'expected_verdict = "not_detected"',
+            'expected_verdict = "inconclusive"',
+        )
+        .replace(
+            'false_payload = "false-probe"',
+            'false_payload = "false-probe"\n\n[probes.confirmation]\ntrue_payload = "true-two"\nfalse_payload = "false-two"\nbaseline_preserving_control = "control"',
+        )
+        .replace("max_requests = 6", "max_requests = 18")
+    )
+    return parse_regression_case(source)
+
+
 def make_case_for_origin(url: str, origin: str):
     source = CASE_SOURCE.replace(
         'url = "http://localhost:8000/products"',
@@ -182,6 +197,46 @@ def test_trusted_budget_cannot_be_bypassed():
         )
 
     assert calls == []
+
+
+def test_configured_confirmation_preserves_boolean_candidate_contract():
+    case = make_confirmed_case()
+    false_values = {"Petsfalse-probe", "Petsfalse-two"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params["category"]
+        return httpx.Response(200, text="none" if value in false_values else "all")
+
+    outcome = run_regression_case(
+        case,
+        policy=make_policy(max_requests=18),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert outcome.final_verdict is Verdict.INCONCLUSIVE
+    assert outcome.final_reason_code == "boolean_candidate"
+    assert outcome.request_count == 18
+    assert outcome.confirmation is not None
+    assert outcome.confirmation.reason_code == "confirmation_pattern_matched"
+    assert outcome.status is RegressionStatus.INCONCLUSIVE
+
+
+def test_confirmation_mismatch_is_final_inconclusive_reason():
+    case = make_confirmed_case()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params["category"]
+        return httpx.Response(200, text="none" if value == "Petsfalse-probe" else "all")
+
+    outcome = run_regression_case(
+        case,
+        policy=make_policy(max_requests=18),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert outcome.final_verdict is Verdict.INCONCLUSIVE
+    assert outcome.final_reason_code == "candidate_confirmation_mismatch"
+    assert outcome.request_count == 18
 
 
 def test_six_probes_run_through_existing_engine():

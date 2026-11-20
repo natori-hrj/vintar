@@ -186,6 +186,8 @@ def test_materializes_loadable_case_and_is_idempotent(tmp_path, monkeypatch):
         "case_id": case.case_id,
         "report_type": "regression_case_materialization_summary",
         "schema_version": 1,
+        "confirmation": "not configured",
+        "max_requests": 6,
     }
     assert case.template.url == ORIGIN + "/fixture-route"
     assert case.template.params == (("q", "baseline-value-sentinel"),)
@@ -321,6 +323,9 @@ def test_named_probe_preset_expands_to_schema_v1_payloads(
         inputs,
         f'[probes]\nselection = "preset"\npreset = "{name}"',
     )
+    inputs["config"].write_text(
+        inputs["config"].read_text().replace("max_requests = 6", "max_requests = 18")
+    )
 
     result = invoke(inputs)
 
@@ -331,7 +336,58 @@ def test_named_probe_preset_expands_to_schema_v1_payloads(
     assert parsed["probes"] == {
         "true_payload": true_payload,
         "false_payload": false_payload,
+        "confirmation": {
+            "true_payload": true_payload.replace("1=1", "2<3"),
+            "false_payload": false_payload.replace("1=2", "2>3"),
+            "baseline_preserving_control": true_payload.replace("1=1", "7=7"),
+        },
     }
+    assert case.confirmation is not None
+    assert case.max_requests == 18
+
+
+def test_explicit_confirmation_is_materialized_without_inference(tmp_path, monkeypatch):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    replace_probes(
+        inputs,
+        '[probes]\nselection = "explicit"\n'
+        'true_payload = "true-one"\nfalse_payload = "false-one"\n\n'
+        '[probes.confirmation]\ntrue_payload = "true-two"\n'
+        'false_payload = "false-two"\n'
+        'baseline_preserving_control = "control"',
+    )
+    inputs["config"].write_text(
+        inputs["config"].read_text().replace("max_requests = 6", "max_requests = 18")
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 0 and result.stderr == ""
+    case = load_regression_case(inputs["output"])
+    assert case.confirmation is not None
+    assert case.confirmation.true_payload == "true-two"
+    assert json.loads(result.stdout)["confirmation"] == "configured"
+
+
+@pytest.mark.parametrize(
+    "probes",
+    [
+        '[probes]\nselection = "explicit"\ntrue_payload = "a"\nfalse_payload = "b"\n\n[probes.confirmation]\ntrue_payload = "c"\nfalse_payload = "d"',
+        '[probes]\nselection = "explicit"\ntrue_payload = "a"\nfalse_payload = "b"\n\n[probes.confirmation]\ntrue_payload = "a"\nfalse_payload = "d"\nbaseline_preserving_control = "e"',
+        '[probes]\nselection = "preset"\npreset = "numeric"\ntrue_payload = "mixed"',
+    ],
+)
+def test_invalid_confirmation_configs_are_actionable_and_redacted(
+    tmp_path, monkeypatch, probes
+):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    replace_probes(inputs, probes)
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2
+    assert "confirmation" in result.stderr.lower() or "probes config" in result.stderr
+    assert 'true_payload = "a"' not in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -427,6 +483,9 @@ def test_preset_selection_is_not_inferred_from_openapi_integer_type(
     replace_probes(
         inputs,
         '[probes]\nselection = "preset"\npreset = "string-quoted"',
+    )
+    inputs["config"].write_text(
+        inputs["config"].read_text().replace("max_requests = 6", "max_requests = 18")
     )
 
     result = invoke(inputs)

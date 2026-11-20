@@ -3,6 +3,7 @@
 import json
 from enum import IntEnum
 
+from vintar.checks.sqli.confirmation_runner import ConfirmationStatus
 from vintar.checks.sqli.models import VerificationResult
 from vintar.checks.sqli.report import verification_report_dict
 from vintar.regression.batch import RegressionBatchResult
@@ -10,6 +11,24 @@ from vintar.regression.runner import RegressionOutcome, RegressionStatus
 
 BATCH_REPORT_SCHEMA_VERSION = 1
 BATCH_REPORT_TYPE = "regression_batch"
+_CONFIRMATION_REASON_CODES = frozenset(
+    {
+        "initial_not_eligible",
+        "confirmation_pattern_matched",
+        "candidate_confirmation_mismatch",
+        "confirmation_budget_unavailable",
+        "confirmation_preflight_failed",
+        "confirmation_budget_exceeded",
+        "confirmation_rate_limit_interrupted",
+        "confirmation_timeout",
+        "confirmation_request_failed",
+        "confirmation_rate_limited",
+        "confirmation_truncated",
+        "confirmation_non_success_status",
+        "confirmation_unstable",
+        "confirmation_cross_phase_mismatch",
+    }
+)
 
 
 class CIExitCode(IntEnum):
@@ -80,14 +99,40 @@ def regression_batch_report_dict(
     outcomes: list[dict[str, object]] = []
 
     for outcome in result.outcomes:
+        confirmation = outcome.confirmation
+        if confirmation is None:
+            confirmation_report: dict[str, object] = {
+                "configured": False,
+                "status": "not_configured",
+                "reason_code": None,
+                "request_count": 0,
+            }
+        else:
+            if confirmation.status is ConfirmationStatus.SKIPPED:
+                status = "not_eligible"
+            elif confirmation.status is ConfirmationStatus.CANDIDATE:
+                status = "matched"
+            elif confirmation.reason_code == "candidate_confirmation_mismatch":
+                status = "mismatch"
+            else:
+                status = "operational"
+            confirmation_report = {
+                "configured": True,
+                "status": status,
+                "reason_code": confirmation.reason_code,
+                "request_count": confirmation.confirmation_requests,
+            }
         outcomes.append(
             {
                 "case_id": outcome.case_id,
                 "expected_verdict": outcome.expected_verdict.value,
-                "actual_verdict": outcome.verification.verdict.value,
+                "actual_verdict": outcome.final_verdict.value,
+                "actual_reason_code": outcome.final_reason_code,
+                "request_count": outcome.request_count,
                 "expectation_match": outcome.expectation_match,
                 "status": outcome.status.value,
                 "verification": verification_report_dict(outcome.verification),
+                "confirmation": confirmation_report,
             }
         )
 

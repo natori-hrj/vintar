@@ -4,6 +4,8 @@
   "stderr": "",
   "stdout_json": {
     "case_id": "case-24a9c3cf0c3d01709121ac0d09079903",
+    "confirmation": "not configured",
+    "max_requests": 6,
     "report_type": "regression_case_materialization_summary",
     "schema_version": 1
   }

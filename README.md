@@ -266,6 +266,8 @@ uv run --locked vintar materialize-case \
 ```json
 {
   "case_id": "case-24a9c3cf0c3d01709121ac0d09079903",
+  "confirmation": "not configured",
+  "max_requests": 6,
   "report_type": "regression_case_materialization_summary",
   "schema_version": 1
 }
@@ -284,9 +286,16 @@ preset = "string-quoted"
 ```
 
 The supported presets are `string-quoted` and `numeric`. Materialization expands
-the selected pair into the Schema v1 case. The reviewer must explicitly choose a
+the selected initial pair and its reviewed second pair plus baseline-preserving
+third predicate into the Schema v1 case; preset cases therefore use
+`max_requests = 18`. The reviewer must explicitly choose a
 preset for the downstream SQL context. An OpenAPI integer type alone cannot
 establish that context.
+
+With `selection = "explicit"`, the reviewer may either omit confirmation and use
+`max_requests = 6`, or explicitly supply all three confirmation fields and use
+`max_requests = 18`. Explicit payloads are never matched to or completed from a
+preset.
 
 ## Other CLI Commands
 

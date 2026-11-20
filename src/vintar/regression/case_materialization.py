@@ -10,6 +10,8 @@ from tempfile import NamedTemporaryFile
 
 from vintar.checks.sqli.presets import (
     BOOLEAN_PROBE_PRESET_NAMES,
+    BooleanConfirmationPreset,
+    get_boolean_confirmation_preset,
     get_boolean_probe_preset,
 )
 from vintar.regression.cases import load_regression_case
@@ -31,6 +33,8 @@ class MaterializedCase:
 
     content: bytes
     case_id: str
+    confirmation_configured: bool
+    max_requests: int
 
 
 def _table(value: object, keys: set[str], message: str) -> dict[str, object]:
@@ -142,7 +146,30 @@ def _load_review(path: Path) -> dict[str, JSON]:
     return parsed
 
 
-def _probe_payloads(value: object) -> tuple[str, str]:
+def _confirmation_payloads(value: object) -> BooleanConfirmationPreset:
+    table = _table(
+        value,
+        {"true_payload", "false_payload", "baseline_preserving_control"},
+        "Invalid explicit confirmation config. Supply exactly true_payload, false_payload, and baseline_preserving_control, or omit the block.",
+    )
+    try:
+        return BooleanConfirmationPreset(
+            true_payload=_text(table["true_payload"], "confirmation TRUE payload"),
+            false_payload=_text(table["false_payload"], "confirmation FALSE payload"),
+            baseline_preserving_control=_text(
+                table["baseline_preserving_control"],
+                "baseline-preserving confirmation predicate",
+            ),
+        )
+    except ValueError as exc:
+        raise CaseMaterializationError(
+            "Invalid confirmation payloads. Supply three distinct nonempty values that also differ from the initial probe pair."
+        ) from exc
+
+
+def _probe_payloads(
+    value: object,
+) -> tuple[str, str, BooleanConfirmationPreset | None]:
     message = (
         'Invalid probes config. Use selection = "explicit" with only true_payload '
         'and false_payload, or selection = "preset" with only preset.'
@@ -154,9 +181,12 @@ def _probe_payloads(value: object) -> tuple[str, str]:
             'Invalid probe selection. Use selection = "explicit" or selection = "preset".'
         )
     if selection == "explicit":
-        if probes.keys() != {"selection", "true_payload", "false_payload"}:
+        if probes.keys() not in (
+            {"selection", "true_payload", "false_payload"},
+            {"selection", "true_payload", "false_payload", "confirmation"},
+        ):
             raise CaseMaterializationError(
-                'Invalid explicit probes config. Use only selection = "explicit", true_payload, and false_payload.'
+                "Invalid explicit probes config. Supply true_payload and false_payload, with an optional complete confirmation table."
             )
         true_payload = _text(probes["true_payload"], "TRUE payload")
         false_payload = _text(probes["false_payload"], "FALSE payload")
@@ -164,7 +194,28 @@ def _probe_payloads(value: object) -> tuple[str, str]:
             raise CaseMaterializationError(
                 "Probe payloads are identical. Supply distinct true_payload and false_payload values in --config."
             )
-        return true_payload, false_payload
+        confirmation = (
+            _confirmation_payloads(probes["confirmation"])
+            if "confirmation" in probes
+            else None
+        )
+        if (
+            confirmation is not None
+            and len(
+                {
+                    true_payload,
+                    false_payload,
+                    confirmation.true_payload,
+                    confirmation.false_payload,
+                    confirmation.baseline_preserving_control,
+                }
+            )
+            != 5
+        ):
+            raise CaseMaterializationError(
+                "Initial and confirmation payloads overlap. Supply five distinct nonempty payloads in --config."
+            )
+        return true_payload, false_payload, confirmation
 
     if probes.keys() != {"selection", "preset"}:
         raise CaseMaterializationError(
@@ -177,7 +228,8 @@ def _probe_payloads(value: object) -> tuple[str, str]:
         raise CaseMaterializationError(
             f"Invalid probe preset. Use one of: {valid}."
         ) from exc
-    return preset.true_payload, preset.false_payload
+    confirmation = get_boolean_confirmation_preset(probes["preset"])
+    return preset.true_payload, preset.false_payload, confirmation
 
 
 def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
@@ -202,7 +254,7 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
         {"location", "name", "occurrence", "mode"},
         "Invalid injection config. Supply location, name, occurrence, and mode.",
     )
-    true_payload, false_payload = _probe_payloads(config["probes"])
+    true_payload, false_payload, confirmation = _probe_payloads(config["probes"])
     limits = _table(
         config["limits"],
         {"max_requests", "requests_per_second", "timeout_seconds"},
@@ -244,9 +296,10 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
     url = _text(target["url"], "target URL")
     allowed_origin = _text(target["allowed_origin"], "allowed origin")
     max_requests = limits["max_requests"]
-    if type(max_requests) is not int or max_requests != 6:
+    expected_requests = 18 if confirmation is not None else 6
+    if type(max_requests) is not int or max_requests != expected_requests:
         raise CaseMaterializationError(
-            "Invalid request limit. Set max_requests = 6 for the Schema v1 Boolean check."
+            f"Invalid request limit. Set max_requests = {expected_requests} for this confirmation configuration."
         )
     requests_per_second = _number(limits["requests_per_second"], "requests_per_second")
     timeout_seconds = _number(limits["timeout_seconds"], "timeout_seconds")
@@ -289,9 +342,26 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
             "[probes]",
             f"true_payload = {_toml_string(true_payload)}",
             f"false_payload = {_toml_string(false_payload)}",
+        )
+    )
+    if confirmation is not None:
+        lines.extend(
+            (
+                "",
+                "[probes.confirmation]",
+                f"true_payload = {_toml_string(confirmation.true_payload)}",
+                f"false_payload = {_toml_string(confirmation.false_payload)}",
+                (
+                    "baseline_preserving_control = "
+                    f"{_toml_string(confirmation.baseline_preserving_control)}"
+                ),
+            )
+        )
+    lines.extend(
+        (
             "",
             "[limits]",
-            "max_requests = 6",
+            f"max_requests = {expected_requests}",
             f"requests_per_second = {json.dumps(requests_per_second, allow_nan=False)}",
             f"timeout_seconds = {json.dumps(timeout_seconds, allow_nan=False)}",
         )
@@ -318,8 +388,15 @@ def materialize_case(
         raise CaseMaterializationError(
             "The review report no longer matches the current spec, draft, or answers. Rerun review-draft and supply its current --review output."
         )
-    content = _render(material, _load_config(config))
-    return MaterializedCase(content=content, case_id=material.case_id)
+    loaded_config = _load_config(config)
+    content = _render(material, loaded_config)
+    _, _, confirmation = _probe_payloads(loaded_config["probes"])
+    return MaterializedCase(
+        content=content,
+        case_id=material.case_id,
+        confirmation_configured=confirmation is not None,
+        max_requests=18 if confirmation is not None else 6,
+    )
 
 
 def _check_destination(output: Path, inputs: tuple[Path, ...]) -> Path:

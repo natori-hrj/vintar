@@ -204,6 +204,7 @@ def test_schema_location_is_independent_of_working_directory(tmp_path, monkeypat
 def test_nested_request_accounting_is_validated(tmp_path):
     report = make_report()
     report["outcomes"][0]["verification"]["request_count"] = 1
+    report["outcomes"][0]["request_count"] = 1
     report["requests_used"] = 1
     path = write_report(tmp_path, report)
 
@@ -246,6 +247,7 @@ def test_conclusive_verification_requires_observations_and_evidence(tmp_path):
         verdict="not_detected",
         reason_code="no_boolean_difference",
     )
+    outcome["actual_reason_code"] = "no_boolean_difference"
     path = write_report(tmp_path, report)
 
     with pytest.raises(ValueError, match="lacks observations"):

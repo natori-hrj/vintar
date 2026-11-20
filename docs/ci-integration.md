@@ -70,6 +70,14 @@ decisions with `review-draft`, and produce reviewed Schema v1 TOML files with
 access to materialized cases because they contain raw reviewed values.
 See the [README workflow](../README.md#discover-inputs-for-review).
 
+Schema v1 cases without `[probes.confirmation]` retain the six-request behavior.
+Cases with the optional confirmation block reserve eighteen requests, although a
+non-candidate initial result stops after six. The JSON report always states whether
+confirmation was `not_configured`, `not_eligible`, `matched`, `mismatch`, or ended
+for an operational reason. A matched confirmation retains the established final
+reason code `boolean_candidate`; mismatch and operational reasons remain
+INCONCLUSIVE and block the gate with exit code 3.
+
 ## Execution
 
 Go to:

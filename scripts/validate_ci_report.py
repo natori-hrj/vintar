@@ -142,14 +142,9 @@ def _validate(path: Path, exit_code: int) -> None:
         if counts[status] != actual:
             raise ValueError("Inconsistent status count.")
 
-    used = sum(item["verification"]["request_count"] for item in outcomes)
+    used = sum(item["request_count"] for item in outcomes)
     if report["requests_used"] != used:
         raise ValueError("Inconsistent request accounting.")
-
-    if any(
-        item["verification"]["verdict"] != item["actual_verdict"] for item in outcomes
-    ):
-        raise ValueError("Inconsistent verification verdict.")
 
     if any(
         item["expectation_match"]
@@ -164,6 +159,29 @@ def _validate(path: Path, exit_code: int) -> None:
         verification = item["verification"]
         observations = verification["observations"]
         failures = verification["failures"]
+        confirmation = item["confirmation"]
+
+        if item["request_count"] != (
+            verification["request_count"] + confirmation["request_count"]
+        ):
+            raise ValueError("Inconsistent confirmation request accounting.")
+        if confirmation["configured"] != (confirmation["status"] != "not_configured"):
+            raise ValueError("Inconsistent confirmation configuration.")
+        if confirmation["status"] in {"not_configured", "not_eligible"}:
+            if item["actual_verdict"] != verification["verdict"]:
+                raise ValueError("Inconsistent unconfirmed verdict.")
+            if item["actual_reason_code"] != verification["reason_code"]:
+                raise ValueError("Inconsistent unconfirmed reason.")
+        elif confirmation["status"] == "matched":
+            if (
+                item["actual_verdict"] != "inconclusive"
+                or item["actual_reason_code"] != "boolean_candidate"
+            ):
+                raise ValueError("Inconsistent matched confirmation reason.")
+        elif item["actual_verdict"] != "inconclusive":
+            raise ValueError("Confirmation must remain inconclusive.")
+        elif item["actual_reason_code"] != confirmation["reason_code"]:
+            raise ValueError("Inconsistent confirmation reason.")
 
         if verification["request_count"] != len(observations) + len(failures):
             raise ValueError("Inconsistent verification request count.")

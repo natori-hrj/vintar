@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 
 from vintar.checks.sqli.models import Verdict
+from vintar.checks.sqli.presets import BooleanConfirmationPreset
 from vintar.core.injector import inject
 from vintar.core.request import (
     InjectionLocation,
@@ -53,6 +54,7 @@ class RegressionCase:
     max_response_size: int
     requests_per_second: float
     timeout_seconds: float
+    confirmation: BooleanConfirmationPreset | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != CASE_VERSION:
@@ -78,8 +80,19 @@ class RegressionCase:
         if true_payload == false_payload:
             raise ValueError("Probe payloads must differ.")
 
-        if type(self.max_requests) is not int or self.max_requests != 6:
-            raise ValueError("Boolean SQLi cases require exactly six requests.")
+        if (
+            self.confirmation is not None
+            and type(self.confirmation) is not BooleanConfirmationPreset
+        ):
+            raise TypeError("Invalid Boolean confirmation configuration.")
+        expected_requests = 18 if self.confirmation is not None else 6
+        if type(self.max_requests) is not int or self.max_requests != expected_requests:
+            message = (
+                "Boolean SQLi cases require exactly eighteen requests when confirmation is configured."
+                if self.confirmation is not None
+                else "Boolean SQLi cases require exactly six requests."
+            )
+            raise ValueError(message)
         if (
             type(self.max_response_size) is not int
             or self.max_response_size != CASE_MAX_RESPONSE_SIZE
@@ -96,22 +109,27 @@ class RegressionCase:
             self.point,
             true_payload,
             false_payload,
+            self.confirmation,
             self.scope,
         )
 
 
 def _table(value: object, keys: set[str]) -> dict[str, object]:
+    table = _mapping_table(value)
+
+    if table.keys() != keys:
+        raise ValueError("Invalid regression case schema.")
+    return table
+
+
+def _mapping_table(value: object) -> dict[str, object]:
     if type(value) is not dict:
         raise ValueError("Invalid regression case schema.")
-
     table: dict[str, object] = {}
     for key, item in value.items():
         if type(key) is not str:
             raise ValueError("Invalid regression case schema.")
         table[key] = item
-
-    if table.keys() != keys:
-        raise ValueError("Invalid regression case schema.")
     return table
 
 
@@ -185,19 +203,30 @@ def _validate_plan(
     point: InjectionPoint,
     true_payload: str,
     false_payload: str,
+    confirmation: BooleanConfirmationPreset | None,
     scope: ScopePolicy,
 ) -> None:
     """Validate the baseline and both distinct probe templates without I/O."""
     validate_template(template)
     validate_scope(template.url, scope)
 
-    true_template = inject(template, point, true_payload)
-    false_template = inject(template, point, false_payload)
+    payloads = [true_payload, false_payload]
+    if confirmation is not None:
+        payloads.extend(
+            (
+                confirmation.true_payload,
+                confirmation.false_payload,
+                confirmation.baseline_preserving_control,
+            )
+        )
+    if len(set(payloads)) != len(payloads):
+        raise ValueError("Initial and confirmation payloads must all differ.")
 
-    if true_template == template or false_template == template:
-        raise ValueError("A probe matches the baseline.")
+    planned_templates = tuple(inject(template, point, payload) for payload in payloads)
+    if len({template, *planned_templates}) != len(planned_templates) + 1:
+        raise ValueError("A probe matches another planned request or the baseline.")
 
-    for planned in (true_template, false_template):
+    for planned in planned_templates:
         validate_template(planned)
         validate_scope(planned.url, scope)
 
@@ -288,10 +317,12 @@ def parse_regression_case(source: str) -> RegressionCase:
             {"location", "name", "occurrence", "mode"},
         )
 
-        probes = _table(
-            root["probes"],
+        probes = _mapping_table(root["probes"])
+        if probes.keys() not in (
             {"true_payload", "false_payload"},
-        )
+            {"true_payload", "false_payload", "confirmation"},
+        ):
+            raise ValueError("Invalid regression case schema.")
 
         limits = _table(
             root["limits"],
@@ -302,13 +333,9 @@ def parse_regression_case(source: str) -> RegressionCase:
             },
         )
 
-        # Boolean SQLi verification currently requires six probes.
         max_requests = limits["max_requests"]
         if type(max_requests) is not int:
             raise ValueError("Invalid request budget.")
-
-        if max_requests != 6:
-            raise ValueError("This check requires exactly six requests.")
 
         rps = _positive_number(
             limits["requests_per_second"],
@@ -399,6 +426,30 @@ def parse_regression_case(source: str) -> RegressionCase:
         if true_payload == false_payload:
             raise ValueError("Probe payloads must differ.")
 
+        confirmation: BooleanConfirmationPreset | None = None
+        if "confirmation" in probes:
+            confirmation_table = _table(
+                probes["confirmation"],
+                {"true_payload", "false_payload", "baseline_preserving_control"},
+            )
+            confirmation = BooleanConfirmationPreset(
+                true_payload=_string(
+                    confirmation_table["true_payload"], max_length=512
+                ),
+                false_payload=_string(
+                    confirmation_table["false_payload"], max_length=512
+                ),
+                baseline_preserving_control=_string(
+                    confirmation_table["baseline_preserving_control"], max_length=512
+                ),
+            )
+
+        expected_requests = 18 if confirmation is not None else 6
+        if max_requests != expected_requests:
+            raise ValueError(
+                f"This confirmation configuration requires exactly {expected_requests} requests."
+            )
+
         return RegressionCase(
             schema_version=CASE_VERSION,
             case_id=case_id,
@@ -407,6 +458,7 @@ def parse_regression_case(source: str) -> RegressionCase:
             point=point,
             true_payload=true_payload,
             false_payload=false_payload,
+            confirmation=confirmation,
             expected_verdict=expected_verdict,
             scope=scope,
             max_requests=max_requests,

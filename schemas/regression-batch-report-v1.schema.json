@@ -180,9 +180,12 @@
         "case_id",
         "expected_verdict",
         "actual_verdict",
+        "actual_reason_code",
+        "request_count",
         "expectation_match",
         "status",
-        "verification"
+        "verification",
+        "confirmation"
       ],
       "properties": {
         "case_id": {
@@ -194,6 +197,12 @@
         "actual_verdict": {
           "$ref": "#/$defs/verdict"
         },
+        "actual_reason_code": {
+          "$ref": "#/$defs/final_reason"
+        },
+        "request_count": {
+          "$ref": "#/$defs/count"
+        },
         "expectation_match": {
           "type": "boolean"
         },
@@ -202,7 +211,81 @@
         },
         "verification": {
           "$ref": "#/$defs/verification"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
         }
+      }
+    },
+    "final_reason": {
+      "enum": [
+        "boolean_candidate",
+        "boolean_differential",
+        "budget_unavailable",
+        "candidate_confirmation_mismatch",
+        "confirmation_budget_exceeded",
+        "confirmation_budget_unavailable",
+        "confirmation_cross_phase_mismatch",
+        "confirmation_non_success_status",
+        "confirmation_preflight_failed",
+        "confirmation_rate_limit_interrupted",
+        "confirmation_rate_limited",
+        "confirmation_request_failed",
+        "confirmation_timeout",
+        "confirmation_truncated",
+        "confirmation_unstable",
+        "connection_error",
+        "insufficient_evidence",
+        "no_boolean_difference",
+        "no_boolean_difference_literal_input",
+        "non_success_status",
+        "possible_dynamic_response",
+        "probe_failed",
+        "rate_limited",
+        "truncated_response",
+        "unexpected_difference",
+        "unstable_response"
+      ]
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configured", "status", "reason_code", "request_count"],
+      "properties": {
+        "configured": { "type": "boolean" },
+        "status": {
+          "enum": [
+            "not_configured",
+            "not_eligible",
+            "matched",
+            "mismatch",
+            "operational"
+          ]
+        },
+        "reason_code": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "enum": [
+                "initial_not_eligible",
+                "confirmation_pattern_matched",
+                "candidate_confirmation_mismatch",
+                "confirmation_budget_unavailable",
+                "confirmation_preflight_failed",
+                "confirmation_budget_exceeded",
+                "confirmation_rate_limit_interrupted",
+                "confirmation_timeout",
+                "confirmation_request_failed",
+                "confirmation_rate_limited",
+                "confirmation_truncated",
+                "confirmation_non_success_status",
+                "confirmation_unstable",
+                "confirmation_cross_phase_mismatch"
+              ]
+            }
+          ]
+        },
+        "request_count": { "$ref": "#/$defs/count" }
       }
     },
     "verification": {

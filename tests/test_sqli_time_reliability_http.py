@@ -18,11 +18,20 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
-from vintar.checks.sqli.time_analyzer import TimeAnalysisStatus
-from vintar.checks.sqli.time_plan import TimePayloads
+from vintar.checks.sqli.time_analyzer import (
+    TimeAnalysisStatus,
+    TimeObservation,
+    TimeProbeOutcome,
+    analyze_time_probes,
+)
+from vintar.checks.sqli.time_plan import (
+    TIME_PROBE_ORDER,
+    TimePayloads,
+    prepare_time_plan,
+)
 from vintar.checks.sqli.time_quality import (
     GroundTruth,
-    sample_from_report,
+    QualitySample,
     summarize_quality,
 )
 from vintar.checks.sqli.time_runner import verify_time_based_sqli
@@ -90,6 +99,18 @@ EXPECTED = {
         9,
     ),
 }
+
+
+class ReliabilityServer(uvicorn.Server):
+    """Expose event-based startup synchronization for the loopback fixture."""
+
+    def __init__(self, config: uvicorn.Config, ready: threading.Event) -> None:
+        super().__init__(config)
+        self._ready = ready
+
+    async def startup(self, sockets=None) -> None:
+        await super().startup(sockets=sockets)
+        self._ready.set()
 
 
 @dataclass(repr=False)
@@ -259,7 +280,9 @@ def reliability_server():
             listener.bind(("127.0.0.1", 0))
             listener.listen(128)
         except OSError:
-            pytest.skip("Loopback socket unavailable.")
+            pytest.fail(
+                "Cannot bind the timing reliability fixture to loopback. Check that the runner permits ephemeral IPv4 loopback sockets."
+            )
 
         port = listener.getsockname()[1]
 
@@ -273,7 +296,8 @@ def reliability_server():
             server_header=False,
         )
 
-        server = uvicorn.Server(config)
+        ready = threading.Event()
+        server = ReliabilityServer(config, ready)
 
         worker = threading.Thread(
             target=server.run,
@@ -283,14 +307,9 @@ def reliability_server():
         worker.start()
 
         try:
-            deadline = time.monotonic() + 5.0
-
-            while (
-                not server.started and worker.is_alive() and time.monotonic() < deadline
-            ):
-                time.sleep(0.01)
-
-            assert server.started
+            assert ready.wait(timeout=5.0), (
+                "The timing reliability fixture did not start. Check thread scheduling and loopback transport setup."
+            )
             assert worker.is_alive()
 
             yield state, f"http://127.0.0.1:{port}"
@@ -371,58 +390,120 @@ def expected_probe_values() -> tuple[str, ...]:
 
 
 @pytest.fixture(scope="module")
-def measured_runs(reliability_server):
+def loopback_runs(reliability_server):
     state, origin = reliability_server
-    samples = []
+    runs = []
+    for mode, _ in CASES:
+        state.reset()
+        report = run_case(origin, mode)
+        received, sql_calls, delay_calls = state.snapshot()
+        expected_count = EXPECTED[mode][2]
+        assert report.budget_used == expected_count
+        assert report.transport_attempts == expected_count
+        assert received == expected_count
+        assert state.received_values() == expected_probe_values()[:expected_count]
+        assert [item.status_code for item in report.analysis.observations[:-1]] == [
+            200
+        ] * max(0, expected_count - 1)
+        assert not report.deadline_exceeded
+        if mode == "vulnerable":
+            assert (sql_calls, delay_calls) == (9, 6)
+            assert state.delay_value_count(DELAY_SECONDS) == 3
+            assert state.delay_value_count(0.0) == 3
+        elif mode == "safe":
+            assert (sql_calls, delay_calls) == (9, 0)
+        else:
+            assert (sql_calls, delay_calls) == (0, 0)
+        runs.append((mode, report))
+    return tuple(runs)
 
-    for iteration in range(REPETITIONS):
-        scheduled_cases = CASES if iteration == 0 else tuple(reversed(CASES))
 
-        for mode, truth in scheduled_cases:
-            state.reset()
-            report = run_case(origin, mode)
-            received, sql_calls, delay_calls = state.snapshot()
-
-            expected_status, expected_reason, expected_count = EXPECTED[mode]
-
-            assert report.analysis.status is expected_status, (
-                mode,
-                iteration,
-                report.analysis.reason_code,
+def deterministic_analysis(mode: str):
+    context = ExecutionContext(
+        scope=ScopePolicy(
+            allowed_origins=frozenset({AllowedOrigin("http", "127.0.0.1", 18084)})
+        ),
+        budget=RequestBudget(9),
+        timeout=3.0,
+        rate_limiter=RateLimiter(requests_per_second=100.0),
+    )
+    plan = prepare_time_plan(
+        template=RequestTemplate(
+            method="GET",
+            url="http://127.0.0.1:18084/reliability",
+            params=(("category", "Pets"),),
+        ),
+        point=InjectionPoint(
+            location=InjectionLocation.QUERY,
+            name="category",
+            mode=InjectionMode.APPEND,
+        ),
+        payloads=TimePayloads(delay=DELAY_PAYLOAD, control=CONTROL_PAYLOAD),
+        expected_delay_seconds=EXPECTED_DELAY_SECONDS,
+        context=context,
+    )
+    count = EXPECTED[mode][2]
+    groups = {
+        "baseline": iter((0.10, 0.11, 0.12)),
+        "control": iter((0.10, 0.11, 0.12)),
+        "delay": iter((0.45, 0.46, 0.47)),
+    }
+    if mode == "safe":
+        groups["delay"] = iter((0.10, 0.11, 0.12))
+    elif mode in {"cache", "load"}:
+        groups["baseline"] = iter((0.10, 0.11, 0.30))
+    observations = []
+    for sequence, kind in enumerate(TIME_PROBE_ORDER[:count], start=1):
+        status = 200
+        if sequence == count and mode == "auth":
+            status = 401
+        elif sequence == count and mode == "waf":
+            status = 403
+        observations.append(
+            TimeObservation(
+                kind=kind,
+                sequence=sequence,
+                outcome=TimeProbeOutcome.COMPLETED,
+                elapsed_seconds=next(groups[kind.value]),
+                status_code=status,
             )
-            assert report.analysis.reason_code == expected_reason
-            assert report.budget_used == expected_count
-            assert report.transport_attempts == expected_count
-            assert report.analysis.request_count == expected_count
-            assert received == expected_count
-            assert state.received_values() == expected_probe_values()[:expected_count]
-            assert not report.deadline_exceeded
+        )
+    return analyze_time_probes(plan=plan, observations=tuple(observations))
 
-            if mode == "vulnerable":
-                assert sql_calls == 9
-                assert delay_calls == 6
-                assert state.delay_value_count(DELAY_SECONDS) == 3
-                assert state.delay_value_count(0.0) == 3
-            elif mode == "safe":
-                assert sql_calls == 9
-                assert delay_calls == 0
-                assert state.delay_value_count(DELAY_SECONDS) == 0
-                assert state.delay_value_count(0.0) == 0
-            else:
-                assert sql_calls == 0
-                assert delay_calls == 0
 
+@pytest.fixture(scope="module")
+def measured_runs():
+    samples = []
+    for iteration in range(REPETITIONS):
+        for mode, truth in CASES:
+            analysis = deterministic_analysis(mode)
+            expected_status, expected_reason, expected_count = EXPECTED[mode]
+            assert (analysis.status, analysis.reason_code, analysis.request_count) == (
+                expected_status,
+                expected_reason,
+                expected_count,
+            )
             samples.append(
-                sample_from_report(
+                QualitySample(
                     case_id=mode,
                     iteration=iteration,
                     ground_truth=truth,
-                    report=report,
-                    server_received=received,
+                    status=analysis.status,
+                    reason_code=analysis.reason_code,
+                    budget_used=expected_count,
+                    transport_attempts=expected_count,
+                    server_received=expected_count,
+                    observation_count=expected_count,
+                    elapsed_seconds=sum(
+                        item.elapsed_seconds or 0.0 for item in analysis.observations
+                    ),
                 )
             )
-
     return tuple(samples)
+
+
+def test_loopback_transport_order_statuses_db_calls_and_budget(loopback_runs):
+    assert [mode for mode, _ in loopback_runs] == [mode for mode, _ in CASES]
 
 
 def test_repeated_http_classifications(measured_runs):
