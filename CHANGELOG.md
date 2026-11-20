@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-20
+
+- Describe Vintar in CLI help as a tool for security regression tests in CI pipelines.
+- Clarify the supported scope in the README and CI integration guide.
+
 ## [0.1.0] - 2026-11-20
 
 - Run authorized Boolean SQL injection regression checks on GET query parameters with Schema v1 TOML cases, JSON reports, and CI exit codes.

@@ -4,9 +4,9 @@
 This document describes the initial, manually triggered Vintar
 security verification workflow.
 
-## v0.1.0 Scope
+## Supported Scope
 
-Vintar v0.1.0 supports Boolean-based SQL injection regression checks for
+Vintar supports Boolean-based SQL injection regression checks for
 `GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
 materialization run offline. The workflow is
 `discover → review-draft → materialize-case → verify`. Reviewers explicitly

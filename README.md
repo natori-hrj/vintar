@@ -2,9 +2,9 @@
 
 Vintar is a Python tool for running authorized web security regression checks in CI. It runs reviewed cases against a configured target and reports the batch result as JSON and a process exit code.
 
-## v0.1.0 Scope
+## Supported Scope
 
-Vintar v0.1.0 supports Boolean-based SQL injection regression checks for
+Vintar supports Boolean-based SQL injection regression checks for
 `GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
 materialization run offline. The workflow is
 `discover → review-draft → materialize-case → verify`. Reviewers explicitly
