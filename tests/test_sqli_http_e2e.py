@@ -409,6 +409,8 @@ def check_parameterized_benign_response(
                 )
     except LoopbackStartupError as exc:
         return fixed_loopback_record("startup", str(exc))
+    except LoopbackShutdownError as exc:
+        return fixed_loopback_record("shutdown", str(exc))
 
     return fixed_loopback_record(
         None, "The parameterized endpoint returned the expected benign response."

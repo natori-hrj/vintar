@@ -288,10 +288,18 @@ def run_measurement(
 ):
     loopback = check_loopback()
     live, limitations = check_live_loopback()
+    positive_covered = any(
+        row["expected_label"] == "positive"
+        and row["request_count"] > 0
+        and row["verdict"] is not None
+        and row["failure_category"] is None
+        and row["reason_code"] not in {"probe_failed", "rate_limited"}
+        for row in live["records"]
+    )
     report = {
         "schema_version": 2,
         "check": "sqli.boolean",
-        "live_positive_measurement": "covered",
+        "live_positive_measurement": "covered" if positive_covered else "not_covered",
         "replay": measurements,
         "live_loopback": live,
         "known_limitations": limitations,
@@ -317,37 +325,35 @@ def run_measurement(
 
 def test_candidate_report_is_sorted_and_counts_match_records(measurements, tmp_path):
     path = tmp_path / REAL_REPORT
-    try:
-        run_measurement(measurements, path)
-    finally:
-        report = json.loads(path.read_text(encoding="utf-8"))
-        [record] = report["fixed_app_loopback"]["records"]
-        assert record["status"] == "passed", (
-            "The fixed route did not pass. Check the report's loopback record."
-        )
-        records = measurements["records"]
-        assert [row["endpoint_id"] for row in records] == sorted(
-            row["endpoint_id"] for row in records
-        ), "Replay records are out of order. Sort the report by endpoint ID."
-        assert sum(measurements["counts"].values()) == len(records), (
-            "Replay counts do not match the observations. Count each record once."
-        )
-        assert replay_report(list(reversed(records))) == measurements, (
-            "The report changed when observations were reversed. Sort records and count classifications independently of input order."
-        )
-        live = report["live_loopback"]
-        assert live["counts"] == {
-            "fn": 0,
-            "fp": 0,
-            "non_decision": 0,
-            "tn": 1,
-            "tp": 1,
-        }
-        assert sum(live["counts"].values()) == len(live["records"])
-        assert report["schema_version"] == 2
-        assert report["live_positive_measurement"] == "covered"
-        assert report["known_limitations"]["records"] == []
-        assert "counts" not in report["known_limitations"]
+    run_measurement(measurements, path)
+    report = json.loads(path.read_text(encoding="utf-8"))
+    [record] = report["fixed_app_loopback"]["records"]
+    assert record["status"] == "passed", (
+        "The fixed route did not pass. Check the report's loopback record."
+    )
+    records = measurements["records"]
+    assert [row["endpoint_id"] for row in records] == sorted(
+        row["endpoint_id"] for row in records
+    ), "Replay records are out of order. Sort the report by endpoint ID."
+    assert sum(measurements["counts"].values()) == len(records), (
+        "Replay counts do not match the observations. Count each record once."
+    )
+    assert replay_report(list(reversed(records))) == measurements, (
+        "The report changed when observations were reversed. Sort records and count classifications independently of input order."
+    )
+    live = report["live_loopback"]
+    assert live["counts"] == {
+        "fn": 0,
+        "fp": 0,
+        "non_decision": 0,
+        "tn": 1,
+        "tp": 1,
+    }
+    assert sum(live["counts"].values()) == len(live["records"])
+    assert report["schema_version"] == 2
+    assert report["live_positive_measurement"] == "covered"
+    assert report["known_limitations"]["records"] == []
+    assert "counts" not in report["known_limitations"]
 
 
 def test_live_twins_share_declared_initial_value():
@@ -456,13 +462,29 @@ def test_live_failures_write_report_before_failing(
     assert remediation in str(caught.value)
 
 
-def test_live_bind_failure_writes_report_before_failing(measurements, simulated_report):
+@pytest.mark.parametrize(
+    "category",
+    ["socket_bind", "startup", "transport", "shutdown", "probe_failed", "rate_limited"],
+)
+def test_unfinished_live_positive_writes_not_covered_report(
+    measurements, simulated_report, category
+):
     endpoint = LIVE_TWIN_ENDPOINTS[0]
-    failure = live_transport_failure(
-        endpoint,
-        "socket_bind",
-        "Cannot bind the live loopback fixture. Check the loopback transport setup.",
-    )
+    if category in {"probe_failed", "rate_limited"}:
+        failure = live_observation(
+            endpoint,
+            SimpleNamespace(
+                verdict=Verdict.INCONCLUSIVE,
+                reason_code=category,
+                request_count=1,
+            ),
+        )
+    else:
+        failure = live_transport_failure(
+            endpoint,
+            category,
+            "The live fixture could not complete the check. Check the loopback transport setup.",
+        )
     passing_live, limitations = passing_live_measurement()
     records = [
         row
@@ -470,9 +492,9 @@ def test_live_bind_failure_writes_report_before_failing(measurements, simulated_
         if row["endpoint_id"] != endpoint.endpoint_id
     ]
     live = live_report([*records, failure])
-    path = simulated_report("live-bind")
+    path = simulated_report(f"live-{category}")
 
-    with pytest.raises(pytest.fail.Exception, match=endpoint.endpoint_id) as caught:
+    with pytest.raises(pytest.fail.Exception, match="live_loopback:") as caught:
         run_measurement(
             measurements,
             path,
@@ -480,10 +502,14 @@ def test_live_bind_failure_writes_report_before_failing(measurements, simulated_
             lambda: (live, limitations),
         )
 
-    assert "None/None" in str(caught.value)
-    assert "transport setup" in str(caught.value)
+    diagnostic = str(caught.value)
+    assert endpoint.endpoint_id in diagnostic
+    assert category in diagnostic
+    assert "transport setup" in diagnostic
+    assert str(path) in diagnostic
     report = json.loads(path.read_text(encoding="utf-8"))
     assert report["live_loopback"]["counts"]["non_decision"] == 1
+    assert report["live_positive_measurement"] == "not_covered"
 
 
 def passing_live_measurement():
@@ -523,6 +549,7 @@ def assert_failed_report(measurements, path, check_loopback, category, remediati
             passing_live_measurement,
         )
     assert str(path) in str(caught.value)
+    assert f"fixed_loopback ({category})" in str(caught.value)
     report = json.loads(path.read_text(encoding="utf-8"))
     assert report["replay"]["counts"] == measurements["counts"]
     assert report["live_positive_measurement"] == "covered"
@@ -657,4 +684,32 @@ def test_simulated_transport_failure_is_recorded(
         lambda: check_parameterized_benign_response(simulated_server),
         "transport",
         "Check loopback transport",
+    )
+
+
+def test_simulated_fixed_shutdown_failure_preserves_report(
+    measurements, simulated_report, simulated_binder, monkeypatch
+):
+    @contextmanager
+    def fail_on_shutdown(server):
+        server.received = [("/safe", "Pets", "category=Pets")]
+        server.query_errors = 0
+        server.handler_failed = False
+        yield server, "http://127.0.0.1:1"
+        raise LoopbackShutdownError(
+            "The loopback worker did not stop. Check server shutdown and outstanding requests."
+        )
+
+    def benign_response(_client, _url, *, params):
+        assert params == {"category": "Pets"}
+        return test_sqli_http_e2e.httpx.Response(200, content=b"Cat toy\nDog toy")
+
+    monkeypatch.setattr(test_sqli_http_e2e, "running_server", fail_on_shutdown)
+    monkeypatch.setattr(test_sqli_http_e2e.httpx.Client, "get", benign_response)
+    assert_failed_report(
+        measurements,
+        simulated_report("fixed-shutdown"),
+        lambda: check_parameterized_benign_response(simulated_binder),
+        "shutdown",
+        "The loopback worker did not stop. Check server shutdown and outstanding requests.",
     )
