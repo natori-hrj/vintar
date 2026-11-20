@@ -399,6 +399,17 @@ class LoopbackShutdownError(RuntimeError):
 class LoopbackFixtureCheckError(RuntimeError):
     """The loopback fixture state disagreed with the completed check."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        outcome: ConfirmationOutcome,
+        observed_values: dict[str, int | bool],
+    ) -> None:
+        super().__init__(message)
+        self.outcome = outcome
+        self.observed_values = dict(observed_values)
+
 
 @contextmanager
 def running_server(server):
@@ -530,30 +541,58 @@ def run_confirmed_live_endpoint(
             context=context,
         )
 
+        observed_values = {
+            "client_request_count": outcome.request_count,
+            "budget_used_requests": context.budget.used_requests,
+            "server_total_requests": server.total_requests,
+            "server_accepted_requests": len(server.received),
+            "handler_failed": server.handler_failed,
+            "actual_query_errors": server.query_errors,
+            "expected_query_errors": endpoint.expected_query_errors,
+        }
+
         if outcome.request_count != context.budget.used_requests:
             raise LoopbackFixtureCheckError(
-                "Confirmation request accounting disagreed with the shared budget. "
-                "Check the confirmation runner and ExecutionContext accounting."
+                "Confirmation request accounting disagreed: client sent "
+                f"{outcome.request_count}, but the shared budget recorded "
+                f"{context.budget.used_requests}. "
+                "Check the confirmation runner and ExecutionContext accounting.",
+                outcome=outcome,
+                observed_values=observed_values,
             )
         if server.total_requests != outcome.request_count:
             raise LoopbackFixtureCheckError(
-                "The loopback server observed a different total request count. "
-                "Check transport setup and confirmation request accounting."
+                "The loopback request counts disagreed: client sent "
+                f"{outcome.request_count}, but the server observed "
+                f"{server.total_requests}. "
+                "Check transport setup and confirmation request accounting.",
+                outcome=outcome,
+                observed_values=observed_values,
             )
         if len(server.received) != outcome.request_count:
             raise LoopbackFixtureCheckError(
-                "The loopback handler recorded a different accepted request count. "
-                "Check endpoint routing and query validation."
+                "The loopback accepted-request counts disagreed: client sent "
+                f"{outcome.request_count}, but the handler accepted "
+                f"{len(server.received)}. "
+                "Check endpoint routing and query validation.",
+                outcome=outcome,
+                observed_values=observed_values,
             )
         if server.handler_failed:
             raise LoopbackFixtureCheckError(
                 "The loopback handler failed while serving confirmation probes. "
-                "Check the fixture implementation and handler state."
+                "Check the fixture implementation and handler state.",
+                outcome=outcome,
+                observed_values=observed_values,
             )
         if server.query_errors != endpoint.expected_query_errors:
             raise LoopbackFixtureCheckError(
-                "The loopback fixture observed an unexpected SQL error count. "
-                "Check the declared fixture expectation and probe context."
+                "The loopback SQL error count disagreed: expected "
+                f"{endpoint.expected_query_errors}, but observed "
+                f"{server.query_errors}. "
+                "Check the declared fixture expectation and probe context.",
+                outcome=outcome,
+                observed_values=observed_values,
             )
 
     return outcome, port
@@ -989,6 +1028,46 @@ def test_structural_known_limitations_survive_confirmation(limitation):
     assert outcome.status is limitation.expected_confirmation_status
     assert outcome.reason_code == limitation.expected_reason_code
     assert outcome.request_count == 18
+
+
+def test_confirmed_fixture_count_mismatch_preserves_outcome_and_both_counts():
+    endpoint = KNOWN_LIMITATION_ENDPOINTS[0].endpoint
+
+    def pre_counted_server():
+        server = _Server()
+        server.total_requests = 1
+        return server
+
+    with pytest.raises(LoopbackFixtureCheckError, match="client sent 18") as caught:
+        run_confirmed_live_endpoint(endpoint, pre_counted_server)
+
+    assert caught.value.outcome.request_count == 18
+    assert caught.value.outcome.initial.reason_code == "boolean_candidate"
+    assert caught.value.observed_values["client_request_count"] == 18
+    assert caught.value.observed_values["server_total_requests"] == 19
+    assert "server observed 19" in str(caught.value)
+
+
+def test_confirmed_fixture_sql_error_mismatch_preserves_completed_outcome():
+    endpoint = LiveEndpoint(
+        endpoint_id="structural-waf-200-error-mismatch",
+        path="/waf-200",
+        expected_label="negative",
+        parameter_name="category",
+        initial_value="Pets",
+        preset_name="string-quoted",
+        expected_query_errors=1,
+    )
+
+    with pytest.raises(LoopbackFixtureCheckError, match="expected 1") as caught:
+        run_confirmed_live_endpoint(endpoint)
+
+    assert caught.value.outcome.request_count == 18
+    assert caught.value.outcome.initial.reason_code == "boolean_candidate"
+    assert caught.value.observed_values["client_request_count"] == 18
+    assert caught.value.observed_values["server_total_requests"] == 18
+    assert caught.value.observed_values["actual_query_errors"] == 0
+    assert caught.value.observed_values["expected_query_errors"] == 1
 
 
 def test_unexpected_requests_are_counted_before_validation():

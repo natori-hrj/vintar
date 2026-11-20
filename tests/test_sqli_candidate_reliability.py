@@ -200,19 +200,11 @@ def measure_known_limitation(limitation, runner=run_confirmed_live_endpoint):
         }
     except LoopbackFixtureCheckError as exc:
         return {
-            **known_limitation_observation(
-                limitation,
-                SimpleNamespace(
-                    initial=SimpleNamespace(
-                        verdict=Verdict.INCONCLUSIVE, reason_code=None
-                    ),
-                    status=ConfirmationStatus.INCONCLUSIVE,
-                    reason_code=None,
-                    request_count=0,
-                ),
-            ),
+            **known_limitation_observation(limitation, exc.outcome),
+            "classification": "non_decision",
             "failure_category": "unexpected_response",
             "message": str(exc),
+            "fixture_observations": exc.observed_values,
         }
     assert port > 0
     return known_limitation_observation(limitation, outcome)
@@ -564,11 +556,30 @@ def test_known_limitation_count_mismatch_writes_diagnostic_report(
 ):
     live, limitations = passing_live_measurement()
     declaration = KNOWN_LIMITATION_ENDPOINTS[0]
+    outcome = SimpleNamespace(
+        initial=SimpleNamespace(
+            verdict=Verdict.INCONCLUSIVE,
+            reason_code="boolean_candidate",
+        ),
+        status=ConfirmationStatus.CANDIDATE,
+        reason_code="confirmation_pattern_matched",
+        request_count=18,
+    )
 
     def mismatched_count(_endpoint):
         raise LoopbackFixtureCheckError(
-            "The loopback server observed a different total request count. "
-            "Check transport setup and confirmation request accounting."
+            "The loopback request counts disagreed: client sent 18, but the server "
+            "observed 17. Check transport setup and confirmation request accounting.",
+            outcome=outcome,
+            observed_values={
+                "client_request_count": 18,
+                "budget_used_requests": 18,
+                "server_total_requests": 17,
+                "server_accepted_requests": 17,
+                "handler_failed": False,
+                "actual_query_errors": 0,
+                "expected_query_errors": 0,
+            },
         )
 
     failure = measure_known_limitation(declaration, mismatched_count)
@@ -578,7 +589,7 @@ def test_known_limitation_count_mismatch_writes_diagnostic_report(
     ]
     path = simulated_report("known-limitation-count-mismatch")
 
-    with pytest.raises(pytest.fail.Exception, match="different total request count"):
+    with pytest.raises(pytest.fail.Exception, match="client sent 18") as caught:
         run_measurement(
             measurements,
             path,
@@ -594,11 +605,84 @@ def test_known_limitation_count_mismatch_writes_diagnostic_report(
     )
     assert saved["failure_category"] == "unexpected_response"
     assert saved["classification"] == "non_decision"
-    assert saved["request_count"] == 0
+    assert saved["request_count"] == 18
+    assert saved["initial_reason_code"] == "boolean_candidate"
+    assert saved["confirmation_status"] == "candidate"
+    assert saved["reason_code"] == "confirmation_pattern_matched"
+    assert saved["fixture_observations"]["client_request_count"] == 18
+    assert saved["fixture_observations"]["server_total_requests"] == 17
+    assert "server observed 17" in str(caught.value)
     assert len(report["live_loopback"]["records"]) == len(LIVE_TWIN_ENDPOINTS)
     assert len(report["known_limitations"]["records"]) == len(
         KNOWN_LIMITATION_ENDPOINTS
     )
+
+
+def test_known_limitation_sql_error_mismatch_preserves_completed_outcome(
+    measurements, simulated_report
+):
+    live, limitations = passing_live_measurement()
+    declaration = KNOWN_LIMITATION_ENDPOINTS[1]
+    outcome = SimpleNamespace(
+        initial=SimpleNamespace(
+            verdict=Verdict.INCONCLUSIVE,
+            reason_code="boolean_candidate",
+        ),
+        status=ConfirmationStatus.CANDIDATE,
+        reason_code="confirmation_pattern_matched",
+        request_count=18,
+    )
+
+    def mismatched_sql_errors(_endpoint):
+        raise LoopbackFixtureCheckError(
+            "The loopback SQL error count disagreed: expected 0, but observed 1. "
+            "Check the declared fixture expectation and probe context.",
+            outcome=outcome,
+            observed_values={
+                "client_request_count": 18,
+                "budget_used_requests": 18,
+                "server_total_requests": 18,
+                "server_accepted_requests": 18,
+                "handler_failed": False,
+                "actual_query_errors": 1,
+                "expected_query_errors": 0,
+            },
+        )
+
+    failure = measure_known_limitation(declaration, mismatched_sql_errors)
+    limitations["records"] = [
+        failure if row["limitation_id"] == declaration.limitation_id else row
+        for row in limitations["records"]
+    ]
+    path = simulated_report("known-limitation-sql-error-mismatch")
+
+    with pytest.raises(pytest.fail.Exception, match="observed 1"):
+        run_measurement(
+            measurements,
+            path,
+            lambda: test_sqli_http_e2e.fixed_loopback_record(None, "Fixture passed."),
+            lambda: (live, limitations),
+        )
+
+    report = json.loads(path.read_text(encoding="utf-8"))
+    saved = next(
+        row
+        for row in report["known_limitations"]["records"]
+        if row["limitation_id"] == declaration.limitation_id
+    )
+    assert saved["request_count"] == 18
+    assert saved["initial_reason_code"] == "boolean_candidate"
+    assert saved["confirmation_status"] == "candidate"
+    assert saved["classification"] == "non_decision"
+    assert saved["fixture_observations"] == {
+        "client_request_count": 18,
+        "budget_used_requests": 18,
+        "server_total_requests": 18,
+        "server_accepted_requests": 18,
+        "handler_failed": False,
+        "actual_query_errors": 1,
+        "expected_query_errors": 0,
+    }
 
 
 def test_live_twins_share_declared_values_within_each_sql_context():
