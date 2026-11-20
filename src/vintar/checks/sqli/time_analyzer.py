@@ -9,6 +9,10 @@ import statistics
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from vintar.checks.sqli.time_contract import (
+    TIME_RESULT_RULES,
+    TimeAnalysisStatus,
+)
 from vintar.checks.sqli.time_plan import (
     MAX_DELAY_SECONDS,
     MIN_DELAY_SECONDS,
@@ -18,6 +22,8 @@ from vintar.checks.sqli.time_plan import (
     TimeProbeKind,
 )
 
+__all__ = ["TimeAnalysisStatus"]
+
 
 class TimeProbeOutcome(StrEnum):
     COMPLETED = "completed"
@@ -26,37 +32,17 @@ class TimeProbeOutcome(StrEnum):
     INTERRUPTED = "interrupted"
 
 
-class TimeAnalysisStatus(StrEnum):
-    CANDIDATE = "candidate"
-    NOT_CONFIRMED = "not_confirmed"
-    INCONCLUSIVE = "inconclusive"
-
-
 REASONS = {
-    TimeAnalysisStatus.CANDIDATE: frozenset({"timing_pattern_matched"}),
-    TimeAnalysisStatus.NOT_CONFIRMED: frozenset({"timing_pattern_not_matched"}),
-    TimeAnalysisStatus.INCONCLUSIVE: frozenset(
-        {
-            "incomplete_probes",
-            "probe_timeout",
-            "probe_failed",
-            "probe_interrupted",
-            "rate_limited",
-            "non_success_status",
-            "truncated_response",
-            "unstable_timing",
-            "ambiguous_timing",
-        }
-    ),
+    status: frozenset(
+        reason
+        for reason, rule in TIME_RESULT_RULES.items()
+        if rule.analysis_status is status
+    )
+    for status in TimeAnalysisStatus
 }
 
 _EVIDENCE_REASONS = frozenset(
-    {
-        "timing_pattern_matched",
-        "timing_pattern_not_matched",
-        "unstable_timing",
-        "ambiguous_timing",
-    }
+    reason for reason, rule in TIME_RESULT_RULES.items() if rule.requires_evidence
 )
 _MAX_MEASUREMENT_SECONDS = 1_000_000
 _COMPARISON_TOLERANCE = 1e-12
@@ -263,8 +249,15 @@ class TimeAnalysis:
         if type(self.reason_code) is not str:
             raise TypeError("Invalid timing analysis reason.")
 
-        if self.reason_code not in REASONS[self.status]:
-            raise ValueError("Inconsistent timing analysis reason.")
+        rule = TIME_RESULT_RULES.get(self.reason_code)
+        if rule is None:
+            raise ValueError(
+                "Unsupported timing analysis reason. Use a reason declared in TIME_RESULT_RULES."
+            )
+        if self.status is not rule.analysis_status:
+            raise ValueError(
+                "Timing analysis status does not match its reason. Use the status declared in TIME_RESULT_RULES."
+            )
 
         expected_delay = self.expected_delay_seconds
         if type(expected_delay) is not int and type(expected_delay) is not float:
@@ -282,6 +275,20 @@ class TimeAnalysis:
 
         if self.evidence is not None and type(self.evidence) is not TimeEvidence:
             raise TypeError("Invalid timing evidence.")
+
+        request_count = len(self.observations)
+        if not rule.minimum_requests <= request_count <= rule.maximum_requests:
+            raise ValueError(
+                "Timing observation count does not match its reason. Use the bounded request range declared in TIME_RESULT_RULES."
+            )
+        if rule.requires_complete_nine and request_count != TIME_REQUESTS:
+            raise ValueError(
+                "This timing reason requires all nine probes. Supply a complete nine-observation series instead."
+            )
+        if rule.requires_evidence != (self.evidence is not None):
+            raise ValueError(
+                "Incomplete timing classification evidence. Supply evidence only for complete evidence-based classifications."
+            )
 
         terminal_reason, completed = _validate_observation_series(self.observations)
 
