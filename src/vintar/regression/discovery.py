@@ -61,6 +61,7 @@ class DiscoveryError(ValueError):
 
     def __init__(self, source: Source, reason: str) -> None:
         self.source = source
+        self.reason = reason
         super().__init__(f"{source.file}#{source.pointer}: {reason}")
 
 

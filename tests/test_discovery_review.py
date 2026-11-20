@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from vintar.cli import app
+from vintar.regression import discovery
 from vintar.regression.cases import ReviewDraftError, load_regression_case
 from vintar.regression.discovery import input_id, load_inventory
 from vintar.regression.discovery_drafts import draft_files
@@ -240,3 +241,79 @@ def test_review_rejects_output_alias_and_non_json_output(review_inputs):
         and "Pass a JSON path to --output" in wrong_extension.stderr
     )
     assert not Path("review.toml").exists()
+
+
+@pytest.mark.parametrize(
+    ("reference", "target", "error"),
+    [
+        ("#/components/examples/E", {"value": VALUE}, None),
+        ("https://never-fetch.invalid/example.json", {}, "Bundle the spec"),
+        (
+            "#/components/examples/E",
+            {"$ref": "#/components/examples/E"},
+            "Break the recursive reference chain",
+        ),
+    ],
+    ids=["local", "external", "cyclic"],
+)
+def test_review_resolves_example_references_at_canonical_pointer(
+    review_inputs, reference, target, error
+):
+    spec, _, config = review_inputs
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    document["components"] = {"examples": {"E": target}}
+    document["paths"]["/sample"]["get"]["parameters"][0]["examples"]["sample"] = {
+        "$ref": reference
+    }
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    pointer = "/components/examples/E/value"
+    answers(config, {"pointer": pointer})
+    result = run_review(review_inputs, Path("review.json"))
+    if error is not None:
+        assert result.exit_code == 2 and result.stdout == ""
+        assert error in result.stderr
+        assert reference not in result.stderr
+        assert not Path("review.json").exists()
+        return
+    assert result.exit_code == 0, result.stderr
+    report = json.loads(Path("review.json").read_text(encoding="utf-8"))
+    assert report["parameters"]["q"] == {
+        "status": "resolved",
+        "source": {"file": spec.name, "pointer": pointer},
+        "value_sha256": hashlib.sha256(json.dumps(VALUE).encode("ascii")).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("extra_reference", [False, True])
+def test_candidate_reference_budget_is_independent_and_bounded(
+    review_inputs, monkeypatch, extra_reference
+):
+    spec, draft, config = review_inputs
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    parameter = document["paths"]["/sample"]["get"]["parameters"][0]
+    document["components"] = {
+        "schemas": {"Q": parameter["schema"]},
+        "examples": {"E": {"value": VALUE}},
+    }
+    parameter["schema"] = {"$ref": "#/components/schemas/Q"}
+    if extra_reference:
+        parameter["examples"]["sample"] = {"$ref": "#/components/examples/E"}
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(discovery, "MAX_REFERENCE_WORK", 1)
+    discovered = CliRunner().invoke(
+        app, ["discover", "--spec", str(spec), "--output", "inventory.json"]
+    )
+    assert discovered.exit_code == 0, discovered.stderr
+
+    pointer = (
+        "/components/examples/E/value"
+        if extra_reference
+        else "/components/schemas/Q/default"
+    )
+    answers(config, {"pointer": pointer})
+    if extra_reference:
+        with pytest.raises(DraftReviewError, match="Simplify or split the spec"):
+            build_review(spec, draft, config)
+    else:
+        report = build_review(spec, draft, config)
+        assert report["parameters"]["q"]["source"]["pointer"] == pointer

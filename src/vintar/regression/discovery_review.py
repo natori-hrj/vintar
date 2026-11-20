@@ -38,11 +38,10 @@ def _candidates(document: _Discovery, item: Input) -> dict[str, JSON]:
         if isinstance(examples, dict):
             for name, example in examples.items():
                 site = source.child("examples").child(name)
-                if (
-                    isinstance(example, dict)
-                    and "value" in example
-                    and ("$ref" not in example and "externalValue" not in example)
-                ):
+                if not isinstance(example, dict):
+                    continue
+                example, site, _ = document.resolve(example, site)
+                if "value" in example and "externalValue" not in example:
                     candidates[site.child("value").pointer] = example["value"]
 
     add_examples(parameter, definition)
@@ -84,7 +83,12 @@ def _decision(
         value = answer["value"]
     elif keys in ({"pointer"}, {"pointer", "value_sha256"}):
         pointer = answer["pointer"]
-        candidates = _candidates(document, item)
+        try:
+            candidates = _candidates(document, item)
+        except DiscoveryError as exc:
+            raise DraftReviewError(
+                f"{prefix} Cannot resolve baseline candidates. {exc.reason}"
+            ) from exc
         if not isinstance(pointer, str) or pointer not in candidates:
             raise DraftReviewError(
                 f"{prefix} pointer is not a supported explicit local baseline candidate. "
@@ -184,9 +188,10 @@ def build_review(spec: Path, draft: Path, answers: Path) -> dict[str, JSON]:
         raise DraftReviewError(
             "Answers contain unknown parameters or an invalid parameters object. Use only declared query names from the draft."
         )
+    candidate_document = _Discovery(document.root, document.source, document.version)
     decisions: dict[str, JSON] = {
         parameter.name: _decision(
-            document, parameter, parameters.get(parameter.name), identifier
+            candidate_document, parameter, parameters.get(parameter.name), identifier
         )
         for parameter in query
     }
