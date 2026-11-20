@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Protocol
 
 from vintar.checks.sqli.models import Verdict
 
@@ -128,19 +127,6 @@ TIME_RESULT_RULES: Mapping[str, TimeResultRule] = MappingProxyType(
 )
 
 
-class TimeAnalysisResult(Protocol):
-    """Minimum immutable timing result needed for product mapping."""
-
-    @property
-    def status(self) -> TimeAnalysisStatus: ...
-
-    @property
-    def reason_code(self) -> str: ...
-
-    @property
-    def request_count(self) -> int: ...
-
-
 @dataclass(frozen=True, slots=True)
 class TimeProductResult:
     """Stable product verdict derived from a timing analysis."""
@@ -150,23 +136,42 @@ class TimeProductResult:
     request_count: int
 
 
-def time_product_result(analysis: TimeAnalysisResult) -> TimeProductResult:
+def time_product_result(analysis: object) -> TimeProductResult:
     """Map one validated timing analysis without changing its final reason."""
-    rule = TIME_RESULT_RULES.get(analysis.reason_code)
-    if rule is None:
-        raise ValueError(
-            "Unsupported timing reason code. Use a reason declared in TIME_RESULT_RULES."
+    # Import locally so the analyzer can consume this module's rules without a
+    # module-initialization cycle.
+    from vintar.checks.sqli.time_analyzer import TimeAnalysis
+
+    if not isinstance(analysis, TimeAnalysis):
+        raise TypeError(
+            "Time product mapping requires a TimeAnalysis produced by the analyzer. Use analyze_time_probes instead of passing raw result fields."
         )
-    if analysis.status is not rule.analysis_status:
+
+    try:
+        validated = TimeAnalysis(
+            status=analysis.status,
+            reason_code=analysis.reason_code,
+            expected_delay_seconds=analysis.expected_delay_seconds,
+            observations=analysis.observations,
+            evidence=analysis.evidence,
+        )
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        raise ValueError(
+            "Time product mapping requires a valid TimeAnalysis produced by the analyzer. Use analyze_time_probes instead of constructing or modifying analysis fields."
+        ) from None
+
+    rule = TIME_RESULT_RULES[validated.reason_code]
+    request_count = len(validated.observations)
+    if validated.status is not rule.analysis_status:
         raise ValueError(
             "Timing reason and analysis status disagree. Use the status required by TIME_RESULT_RULES."
         )
-    if not rule.minimum_requests <= analysis.request_count <= rule.maximum_requests:
+    if not rule.minimum_requests <= request_count <= rule.maximum_requests:
         raise ValueError(
             "Timing reason and request count disagree. Use the bounded request range required by TIME_RESULT_RULES."
         )
     return TimeProductResult(
         verdict=rule.product_verdict,
-        reason_code=analysis.reason_code,
-        request_count=analysis.request_count,
+        reason_code=validated.reason_code,
+        request_count=request_count,
     )

@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Protocol
 
 import pytest
 from test_sqli_time_analyzer import make_observations, make_plan, run_analysis
@@ -149,24 +150,90 @@ def test_timing_threshold_boundaries_are_exact(analysis, expected):
     assert (analysis.status, analysis.reason_code) == expected
 
 
+class AnalysisShape(Protocol):
+    status: TimeAnalysisStatus
+    reason_code: str
+    request_count: int
+
+
+class AnalysisStub:
+    status = TimeAnalysisStatus.NOT_CONFIRMED
+    reason_code = "timing_pattern_not_matched"
+    request_count = 9
+
+
 @pytest.mark.parametrize(
     "analysis",
     [
+        AnalysisStub(),
         SimpleNamespace(
             status=TimeAnalysisStatus.NOT_CONFIRMED,
-            reason_code="timing_pattern_matched",
+            reason_code="timing_pattern_not_matched",
             request_count=9,
         ),
-        SimpleNamespace(
-            status=TimeAnalysisStatus.CANDIDATE,
-            reason_code="timing_pattern_matched",
-            request_count=8,
-        ),
+        {
+            "status": TimeAnalysisStatus.NOT_CONFIRMED,
+            "reason_code": "timing_pattern_not_matched",
+            "request_count": 9,
+        },
     ],
+    ids=["duck-typed", "simple-namespace", "dict"],
 )
-def test_product_mapping_rejects_unvalidated_combinations(analysis):
-    with pytest.raises(ValueError, match=r"disagree.*TIME_RESULT_RULES"):
+def test_product_mapping_rejects_non_analysis_objects(analysis):
+    with pytest.raises(
+        TypeError,
+        match=r"requires a TimeAnalysis produced by the analyzer.*analyze_time_probes",
+    ):
         time_product_result(analysis)
+
+
+def test_product_mapping_rejects_protocol_conforming_stub():
+    analysis: AnalysisShape = AnalysisStub()
+
+    with pytest.raises(
+        TypeError,
+        match=r"requires a TimeAnalysis produced by the analyzer.*analyze_time_probes",
+    ):
+        time_product_result(analysis)
+
+
+def test_product_mapping_rejects_uninitialized_time_analysis():
+    analysis = object.__new__(TimeAnalysis)
+
+    with pytest.raises(
+        ValueError,
+        match=r"requires a valid TimeAnalysis produced by the analyzer.*analyze_time_probes",
+    ):
+        time_product_result(analysis)
+
+
+def test_product_mapping_revalidates_forged_time_analysis():
+    analysis = object.__new__(TimeAnalysis)
+    object.__setattr__(analysis, "status", TimeAnalysisStatus.NOT_CONFIRMED)
+    object.__setattr__(analysis, "reason_code", "timing_pattern_not_matched")
+    object.__setattr__(analysis, "expected_delay_seconds", 1.0)
+    object.__setattr__(analysis, "observations", ())
+    object.__setattr__(analysis, "evidence", None)
+
+    with pytest.raises(
+        ValueError,
+        match=r"requires a valid TimeAnalysis produced by the analyzer.*analyze_time_probes",
+    ):
+        time_product_result(analysis)
+
+
+def test_time_analysis_cannot_be_constructed_without_required_run_evidence():
+    with pytest.raises(
+        ValueError,
+        match=r"observation count does not match.*TIME_RESULT_RULES",
+    ):
+        TimeAnalysis(
+            status=TimeAnalysisStatus.NOT_CONFIRMED,
+            reason_code="timing_pattern_not_matched",
+            expected_delay_seconds=1.0,
+            observations=(),
+            evidence=None,
+        )
 
 
 def test_time_analysis_type_remains_immutable():
