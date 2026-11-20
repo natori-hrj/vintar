@@ -53,8 +53,17 @@ DISCOVER_CLI_IMPORTS = DISCOVERY_IMPORTS | {
 
 def discovery_diagnostics(path, tree):
     allowed = (
-        DISCOVER_CLI_IMPORTS if path == Path("discover_cli.py") else DISCOVERY_IMPORTS
+        DISCOVER_CLI_IMPORTS
+        if path in {Path("discover_cli.py"), Path("review_draft_cli.py")}
+        else DISCOVERY_IMPORTS
     )
+    if path == Path("review_draft_cli.py"):
+        allowed = allowed | {"vintar.regression.discovery_review"}
+    if path == Path("regression/discovery_review.py"):
+        allowed = DISCOVERY_IMPORTS | {
+            "vintar.regression.discovery",
+            "vintar.regression.discovery_drafts",
+        }
     if path == Path("regression/discovery_drafts.py"):
         allowed = DISCOVERY_IMPORTS | {
             "errno",
@@ -105,6 +114,8 @@ def check_source(path: Path, source: str) -> list[str]:
     tree = ast.parse(source, filename=str(path))
     if path in {
         Path("discover_cli.py"),
+        Path("review_draft_cli.py"),
+        Path("regression/discovery_review.py"),
         Path("regression/discovery.py"),
         Path("regression/discovery_drafts.py"),
     } or path.parts[:2] == (

@@ -100,3 +100,12 @@ def test_draft_serializer_stays_offline():
     for module in ("httpx", "vintar.regression.runner", "vintar.regression.cases"):
         [diagnostic] = check_source(path, f"import {module}")
         assert "Discovery must remain offline" in diagnostic
+
+
+@pytest.mark.parametrize(
+    "path", ["review_draft_cli.py", "regression/discovery_review.py"]
+)
+def test_review_draft_imports_stay_offline(path):
+    for module in ("httpx", "vintar.regression.runner", "vintar.regression.cases"):
+        [diagnostic] = check_source(Path(path), f"import {module}")
+        assert "Discovery must remain offline" in diagnostic

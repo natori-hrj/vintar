@@ -1,5 +1,6 @@
 """Strict regression case specifications; no network operations."""
 
+import json
 import math
 import os
 import re
@@ -217,6 +218,15 @@ def parse_regression_case(source: str) -> RegressionCase:
         if len(source.encode("utf-8")) > MAX_CASE_BYTES:
             raise ValueError("Invalid regression case size.")
 
+        if source.lstrip().startswith("{"):
+            report: object = json.loads(source)
+            if (
+                isinstance(report, dict)
+                and report.get("report_type") == "discovery_draft_review"
+            ):
+                raise ReviewDraftError(
+                    "A draft review report cannot be verified. Supply a separately reviewed Schema v1 TOML case to --cases."
+                )
         data: object = tomllib.loads(source)
         if isinstance(data, dict) and data.get("kind") == "vintar_review_draft":
             raise ReviewDraftError(
@@ -407,7 +417,14 @@ def parse_regression_case(source: str) -> RegressionCase:
 
     except ReviewDraftError:
         raise
-    except (TypeError, ValueError, OverflowError, UnicodeError, httpx.HTTPError):
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+        UnicodeError,
+        httpx.HTTPError,
+    ):
         # Do not expose payloads, URLs, or parser details.
         raise ValueError(
             "Invalid or unsupported regression case. Use a valid schema v1 TOML case."

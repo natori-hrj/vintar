@@ -158,6 +158,36 @@ Drafts record declared inputs and decisions still needed. Keep them outside your
 
 Draft export requires a filesystem that supports hard links, such as ext4, APFS, or NTFS. Choose another `--drafts-dir` if your current destination is on exFAT or FAT32.
 
+### Record Draft Review Decisions
+
+Save the reviewer’s decisions in `answers.json`. Each declared query parameter needs an explicit `value`, a local `pointer` to a declared example, default, or single-value enum, or `{"omit": true}` for an optional parameter. Null and compound values are rejected. Explicit pointers may include `value_sha256` to detect changed values during re-review. The digest uses compact ASCII-escaped JSON with sorted keys. Choose the expected verdict explicitly.
+
+<!-- cli-example: draft-review/answers -->
+```json
+{
+  "version": 1,
+  "expected_verdict": "not_detected",
+  "parameters": {"q": {"value": "fixture-baseline"}}
+}
+```
+
+<!-- cli-example: draft-review/command -->
+```bash
+uv run --locked vintar review-draft \
+  --spec openapi.json --draft drafts/case-24a9c3cf0c3d01709121ac0d09079903.draft.toml \
+  --answers answers.json --output review.json
+```
+
+<!-- cli-example: draft-review/report -->
+```json
+{
+  "schema_version": 1,
+  "report_type": "discovery_draft_review_summary"
+}
+```
+
+The offline report records evidence, omission decisions, and value digests. It contains no raw baseline values. `vintar verify` requires a separately reviewed Schema v1 TOML case. Reruns preserve identical output and refuse to replace conflicting files. The output filesystem must support hard links.
+
 ## Other CLI Commands
 
 - `vintar --help` lists commands, and `vintar version` prints the current project version.

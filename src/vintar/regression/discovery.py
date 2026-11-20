@@ -61,7 +61,12 @@ class DiscoveryError(ValueError):
 
     def __init__(self, source: Source, reason: str) -> None:
         self.source = source
+        self.reason = reason
         super().__init__(f"{source.file}#{source.pointer}: {reason}")
+
+
+class ReferenceLimitError(DiscoveryError):
+    """Reference resolution exceeded its hop or work limit."""
 
 
 @dataclass(frozen=True)
@@ -367,6 +372,36 @@ def _required(value: JSONMap, source: Source) -> bool:
     return required
 
 
+def _local_pointer_fragment(reference: str, source: Source) -> str:
+    """Decode and validate a same-document JSON Pointer fragment."""
+    if not reference.startswith("#"):
+        raise DiscoveryError(
+            source,
+            "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
+        )
+    if reference == "#":
+        return ""
+    if re.search(r"%(?![0-9a-fA-F]{2})", reference):
+        raise DiscoveryError(
+            source, "Invalid reference encoding. Use percent-encoded UTF-8."
+        )
+    try:
+        fragment = unquote(reference[1:], errors="strict")
+    except UnicodeError as exc:
+        raise DiscoveryError(
+            source, "Invalid reference encoding. Use a UTF-8 JSON Pointer."
+        ) from exc
+    if not fragment.startswith("/"):
+        raise DiscoveryError(
+            source,
+            "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
+        )
+    tokens = fragment[1:].split("/")
+    if any(re.search(r"~(?![01])", token) for token in tokens):
+        raise DiscoveryError(source, "Invalid JSON Pointer escape. Use ~0 or ~1.")
+    return fragment
+
+
 @dataclass
 class _Discovery:
     root: JSONMap
@@ -387,33 +422,12 @@ class _Discovery:
     def _pointer(self, reference: str, source: Source) -> tuple[Source, JSON]:
         if reference in self.pointers:
             return self.pointers[reference]
-        if not reference.startswith("#"):
-            raise DiscoveryError(
-                source,
-                "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
-            )
+        fragment = _local_pointer_fragment(reference, source)
         target = self.source
         value: JSON = self.root
-        if reference == "#":
+        if not fragment:
             return target, value
-        if re.search(r"%(?![0-9a-fA-F]{2})", reference):
-            raise DiscoveryError(
-                source, "Invalid reference encoding. Use percent-encoded UTF-8."
-            )
-        try:
-            fragment = unquote(reference[1:], errors="strict")
-        except UnicodeError as exc:
-            raise DiscoveryError(
-                source, "Invalid reference encoding. Use a UTF-8 JSON Pointer."
-            ) from exc
-        if not fragment.startswith("/"):
-            raise DiscoveryError(
-                source,
-                "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
-            )
         tokens = fragment[1:].split("/")
-        if any(re.search(r"~(?![01])", token) for token in tokens):
-            raise DiscoveryError(source, "Invalid JSON Pointer escape. Use ~0 or ~1.")
         for token in tokens:
             key = token.replace("~1", "/").replace("~0", "~")
             target = target.child(key)
@@ -470,7 +484,7 @@ class _Discovery:
                 self.reference_work > MAX_REFERENCE_WORK
                 or len(trail) >= MAX_REFERENCE_DEPTH
             ):
-                raise DiscoveryError(
+                raise ReferenceLimitError(
                     site, "Reference work limit exceeded. Simplify or split the spec."
                 )
             target, value = self._pointer(_string(node["$ref"], site), site)
@@ -849,8 +863,7 @@ def _read_json(data: bytes, source: Source) -> JSON:
     return _normalize(parsed, source, _DocumentBudget())
 
 
-def load_inventory(path: Path) -> Inventory:
-    """Inventory a local spec. YAML dates, yes/no, and other non-JSON scalars stay strings."""
+def _load_document(path: Path) -> _Discovery:
     source = Source(path)
     extension = path.suffix.lower()
     if extension not in {".json", ".yaml", ".yml"}:
@@ -872,7 +885,12 @@ def load_inventory(path: Path) -> Inventory:
         raise DiscoveryError(
             source.child("paths"), "OpenAPI 3.0 requires paths. Supply a paths object."
         )
-    inventory = _Discovery(root, source, version).inventory()
+    return _Discovery(root, source, version)
+
+
+def load_inventory(path: Path) -> Inventory:
+    """Inventory a local spec. YAML dates, yes/no, and other non-JSON scalars stay strings."""
+    inventory = _load_document(path).inventory()
     _inventory_inputs(inventory)
     return inventory
 

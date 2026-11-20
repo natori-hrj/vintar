@@ -1,0 +1,6 @@
+{
+  "exit_code": 2,
+  "report_json": null,
+  "stderr": "Error: Input input-24a9c3cf0c3d01709121ac0d09079903 parameter 'q': baseline query inputs require concrete non-null values. Supply a concrete value or omit the parameter if optional.\n",
+  "stdout_json": null
+}

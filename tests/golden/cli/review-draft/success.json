@@ -1,0 +1,26 @@
+{
+  "exit_code": 0,
+  "report_json": {
+    "expected_verdict": "not_detected",
+    "input_id": "input-24a9c3cf0c3d01709121ac0d09079903",
+    "parameters": {
+      "q": {
+        "source": "reviewer",
+        "status": "resolved",
+        "value_sha256": "b012c4de574c7e82bb785bcbaa5da9a5de77517168ef17945f93c5f18104b3c9"
+      }
+    },
+    "report_type": "discovery_draft_review",
+    "schema_version": 1,
+    "source": {
+      "file": "openapi.json",
+      "pointer": "/paths/~1a/get/parameters/0"
+    }
+  },
+  "stderr": "",
+  "stdout_json": {
+    "input_id": "input-24a9c3cf0c3d01709121ac0d09079903",
+    "report_type": "discovery_draft_review_summary",
+    "schema_version": 1
+  }
+}

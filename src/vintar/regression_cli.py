@@ -37,6 +37,10 @@ def _case_paths(source: str) -> tuple[Path, ...]:
     metadata = os.lstat(root)
 
     if stat.S_ISREG(metadata.st_mode):
+        if root.suffix == ".json":
+            raise ReviewDraftError(
+                "JSON reports cannot be verified. Supply a separately reviewed Schema v1 TOML case to --cases."
+            )
         if root.suffix != ".toml":
             raise ValueError("Expected TOML case file.")
         return (root,)
