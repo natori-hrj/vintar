@@ -343,6 +343,8 @@ The CLI golden tests use deterministic fixtures. After an intentional output cha
 
 On Linux x86-64, run `uv run python scripts/scan_git_history.py` from a full Git checkout to scan committed secrets. The first run downloads the pinned Gitleaks archive from GitHub. Later scans and pytest reuse the cached archive and verify its SHA-256 before each use. CI warms the same cache in the scan step before pytest. A download or verification failure fails the scan and its tests.
 
+See the [security policy](https://github.com/natori-hrj/vintar/blob/main/SECURITY.md) to report a vulnerability privately.
+
 ## License
 
 Vintar is licensed under the [Apache License, Version 2.0](LICENSE).

@@ -97,6 +97,8 @@ def test_rehearsal_exit_codes_distinguish_audit_failures(
     "changelog, valid",
     [
         ("## Unreleased\n\n### 0.1.0\n\n- Initial release.\n", True),
+        ("## [Unreleased]\n\n## [0.1.0] - 2026-11-20\n\n- Initial release.\n", True),
+        ("## [0.1.0] - 2026-11-20\n\n## [0.2.0] - 2026-11-21\n\n- Other.\n", False),
         ("## 0.2.0\n\n- Different release.\n", False),
         ("## 0.1.0\n\n## 0.2.0\n\n- Different release.\n", False),
         ("## 0.1.0\n\n- First.\n\n## 0.1.0\n\n- Second.\n", False),

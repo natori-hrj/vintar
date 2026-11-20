@@ -6,7 +6,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
-    { name = "natori", email = "natori.rj@gmail.com" }
+    { name = "natori", email = "203920478+natori-hrj@users.noreply.github.com" }
 ]
 requires-python = ">=3.13"
 keywords = ["security", "sql-injection", "regression-testing", "ci", "openapi"]
