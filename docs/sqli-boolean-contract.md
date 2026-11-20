@@ -106,8 +106,10 @@ Offline case materialization supports two named initial-verification payload pai
 
 These names describe the SQL syntax context a reviewer intends to exercise. They are
 not analyzer rules and do not change response classification. Materialization expands
-the selected preset into the existing Schema v1 `true_payload` and `false_payload`
-fields.
+the selected preset into the Schema v1 initial payloads and optional confirmation
+block. Named presets include the reviewed second pair and baseline-preserving third
+predicate and therefore require an eighteen-request case budget. Explicit payloads
+are never completed by matching their strings to a preset.
 
 Preset selection is never inferred from an OpenAPI type. For example, an integer API
 parameter can still reach quoted SQL, be converted before SQL construction, or never
@@ -433,29 +435,18 @@ These limitations must remain visible to maintainers and users.
 
 ## Integration Boundary
 
-The v0.1.0 production CLI supports Boolean verification on GET query
-parameters. Confirmed vulnerability verdicts and CLI integration of 12-probe
-confirmation are deferred to v0.2 and later. For batch outcomes and exit codes,
-see [CI status](ci-integration.md#ci-status).
+Schema v1 cases may opt into confirmation with `[probes.confirmation]`. Cases
+without it retain the existing six-probe execution exactly and report
+`not_configured`. Configured cases use a maximum budget of eighteen; when the
+initial result is not eligible they stop after six and report `not_eligible`.
 
-The confirmation runner and `ConfirmationStatus` are not exposed as
-a production SQLi finding through the existing Schema v1, CLI, or
-CI security gate. Existing CLI and regression paths still invoke the
-six-probe `verify_boolean_sqli()` workflow, not
-`verify_boolean_sqli_with_confirmation()`.
-
-No confirmation status automatically becomes a production
-vulnerability finding.
-
-Future integration must define:
-
-- A stable result schema
-- Appropriate user-facing terminology
-- Evidence disclosure policy
-- Finding deduplication
-- Handling of execution errors
-- CI gate behavior
-- Backward compatibility requirements
+The batch report keeps the initial six-probe report and adds a sibling
+`confirmation` object. A matched relation has confirmation reason
+`confirmation_pattern_matched`, while the final reason remains
+`boolean_candidate` for the established CI contract. A stable mismatch makes
+`candidate_confirmation_mismatch` the final reason. Operational confirmation
+reasons likewise become the final reason. All three outcomes remain
+INCONCLUSIVE, use exit code 3, and never become NOT_DETECTED or VULNERABLE.
 
 ## Contract Change Policy
 

@@ -17,10 +17,18 @@
     "not_run_case_ids": [],
     "outcomes": [
       {
+        "actual_reason_code": "no_boolean_difference",
         "actual_verdict": "not_detected",
         "case_id": "a-case",
+        "confirmation": {
+          "configured": false,
+          "reason_code": null,
+          "request_count": 0,
+          "status": "not_configured"
+        },
         "expectation_match": false,
         "expected_verdict": "vulnerable",
+        "request_count": 6,
         "status": "fail",
         "verification": {
           "check_type": "sqli_boolean",

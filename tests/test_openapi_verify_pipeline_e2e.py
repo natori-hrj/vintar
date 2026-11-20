@@ -15,7 +15,10 @@ from test_sqli_http_e2e import (
 )
 from typer.testing import CliRunner
 
-from vintar.checks.sqli.presets import get_boolean_probe_preset
+from vintar.checks.sqli.presets import (
+    get_boolean_confirmation_preset,
+    get_boolean_probe_preset,
+)
 from vintar.cli import app
 from vintar.regression.cases import load_regression_case
 
@@ -69,7 +72,7 @@ def write_pipeline_inputs(
     origin: str,
     parameter_name: str,
     example_pointer: str,
-    preset_name: str,
+    preset_name: str | None,
 ) -> tuple[Path, Path]:
     answers = folder / "answers.json"
     answers.write_text(
@@ -86,6 +89,16 @@ def write_pipeline_inputs(
         encoding="utf-8",
     )
     config = folder / "case-config.toml"
+    probe_lines = (
+        ('selection = "preset"', f"preset = {json.dumps(preset_name)}")
+        if preset_name is not None
+        else (
+            'selection = "explicit"',
+            'true_payload = "\' AND 1=1-- "',
+            'false_payload = "\' AND 1=2-- "',
+        )
+    )
+    max_requests = 18 if preset_name is not None else 6
     config.write_text(
         "\n".join(
             (
@@ -103,11 +116,10 @@ def write_pipeline_inputs(
                 'mode = "append"',
                 "",
                 "[probes]",
-                'selection = "preset"',
-                f"preset = {json.dumps(preset_name)}",
+                *probe_lines,
                 "",
                 "[limits]",
-                "max_requests = 6",
+                f"max_requests = {max_requests}",
                 "requests_per_second = 10.0",
                 "timeout_seconds = 5.0",
                 "",
@@ -132,7 +144,7 @@ def run_pipeline(
     parameter_name: str,
     example_pointer: str,
     baseline: str,
-    preset_name: str,
+    preset_name: str | None,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     spec = Path("openapi.json")
@@ -245,17 +257,28 @@ def run_pipeline(
             ],
         )
         case = load_regression_case(case_path)
+        confirmation_configured = preset_name is not None
         assert materialized == {
             "case_id": case.case_id,
+            "confirmation": (
+                "configured" if confirmation_configured else "not configured"
+            ),
+            "max_requests": 18 if confirmation_configured else 6,
             "report_type": "regression_case_materialization_summary",
             "schema_version": 1,
         }
         assert case.case_id == "case-" + input_id.removeprefix("input-")
         assert case.template.url == origin + endpoint
         assert case.template.params == ((parameter_name, baseline),)
-        preset = get_boolean_probe_preset(preset_name)
+        preset = get_boolean_probe_preset(preset_name or "string-quoted")
         assert case.true_payload == preset.true_payload
         assert case.false_payload == preset.false_payload
+        confirmation = (
+            get_boolean_confirmation_preset(preset_name)
+            if preset_name is not None
+            else None
+        )
+        assert case.confirmation == confirmation
 
         assert server.total_requests == 0, (
             "An offline pipeline stage sent HTTP. Check discover, review-draft, and materialize-case transport boundaries."
@@ -268,7 +291,7 @@ def run_pipeline(
                 "--cases",
                 str(case_path),
                 "--max-requests",
-                "6",
+                "18" if confirmation_configured else "6",
                 "--rps",
                 "10",
                 "--timeout",
@@ -288,7 +311,10 @@ def run_pipeline(
         assert report["exit_code"] == expected_exit
         assert report["status"] == expected_status
         assert report["complete"] is True
-        assert report["requests_used"] == 6
+        expected_requests = (
+            18 if confirmation_configured and not endpoint.endswith("safe") else 6
+        )
+        assert report["requests_used"] == expected_requests
         assert report["counts"][expected_status] == 1
         [outcome] = report["outcomes"]
         assert outcome["expected_verdict"] == expected_verdict
@@ -304,9 +330,38 @@ def run_pipeline(
         )
         assert outcome["verification"]["request_count"] == 6
         assert outcome["verification"]["failures"] == []
+        assert outcome["request_count"] == expected_requests
+        assert outcome["actual_reason_code"] == (
+            "no_boolean_difference_literal_input"
+            if endpoint.endswith("safe")
+            else "boolean_candidate"
+        )
+        expected_confirmation = (
+            {
+                "configured": True,
+                "status": "not_eligible",
+                "reason_code": "initial_not_eligible",
+                "request_count": 0,
+            }
+            if confirmation_configured and endpoint.endswith("safe")
+            else {
+                "configured": True,
+                "status": "matched",
+                "reason_code": "confirmation_pattern_matched",
+                "request_count": 12,
+            }
+            if confirmation_configured
+            else {
+                "configured": False,
+                "status": "not_configured",
+                "reason_code": None,
+                "request_count": 0,
+            }
+        )
+        assert outcome["confirmation"] == expected_confirmation
 
-        assert server.total_requests == 6
-        assert len(server.received) == 6
+        assert server.total_requests == expected_requests
+        assert len(server.received) == expected_requests
         received = server.received
         expected_values = [
             baseline,
@@ -316,7 +371,25 @@ def run_pipeline(
             baseline + preset.false_payload,
             baseline + preset.true_payload,
         ]
-        assert [path for path, _, _ in received] == [endpoint] * 6
+        if expected_requests == 18 and confirmation is not None:
+            expected_values.extend(
+                baseline if payload is None else baseline + payload
+                for payload in (
+                    None,
+                    preset.true_payload,
+                    preset.false_payload,
+                    confirmation.baseline_preserving_control,
+                    confirmation.true_payload,
+                    confirmation.false_payload,
+                    None,
+                    confirmation.false_payload,
+                    confirmation.true_payload,
+                    confirmation.baseline_preserving_control,
+                    preset.false_payload,
+                    preset.true_payload,
+                )
+            )
+        assert [path for path, _, _ in received] == [endpoint] * expected_requests
         assert [value for _, value, _ in received] == expected_values
         assert all(
             parse_qs(raw_query, keep_blank_values=True) == {parameter_name: [value]}
@@ -379,6 +452,24 @@ def test_openapi_pipeline_vulnerable_detects_expectation_regression(
         example_pointer="/paths/~1products/get/parameters/0/schema/example",
         baseline="Pets",
         preset_name="string-quoted",
+    )
+
+
+def test_openapi_pipeline_explicit_case_without_confirmation(tmp_path, monkeypatch):
+    run_pipeline(
+        tmp_path,
+        monkeypatch,
+        endpoint="/vulnerable",
+        expected_verdict="inconclusive",
+        expected_exit=3,
+        expected_status="inconclusive",
+        expectation_match=True,
+        spec_fixture="openapi.json",
+        operation_path="/products",
+        parameter_name="category",
+        example_pointer="/paths/~1products/get/parameters/0/schema/example",
+        baseline="Pets",
+        preset_name=None,
     )
 
 

@@ -8,14 +8,17 @@ import sys
 from pathlib import Path
 
 import pytest
-from jsonschema import ValidationError
+from jsonschema import Draft202012Validator, ValidationError
 
+from vintar.checks.sqli import confirmation_runner
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.regression.batch import RegressionBatchResult
 from vintar.regression.report import regression_batch_report_dict
 from vintar.regression.runner import RegressionOutcome, RegressionStatus
 
-_validate = runpy.run_path("scripts/validate_ci_report.py")["_validate"]
+_VALIDATOR_MODULE = runpy.run_path("scripts/validate_ci_report.py")
+_validate = _VALIDATOR_MODULE["_validate"]
+SCHEMA_PATH = Path("schemas/regression-batch-report-v1.schema.json")
 
 
 def make_report():
@@ -46,6 +49,52 @@ def make_report():
     return regression_batch_report_dict(batch)
 
 
+def make_eligible_report():
+    report = make_report()
+    outcome = report["outcomes"][0]
+    digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    outcome["verification"].update(
+        verdict="inconclusive",
+        reason_code="boolean_candidate",
+        request_count=6,
+        observations=[
+            {
+                "kind": kind,
+                "status_code": 200,
+                "body_size": 0,
+                "elapsed": 0.1,
+                "body_digest": digest,
+                "truncated": False,
+            }
+            for kind in ("baseline", "true", "false", "baseline", "false", "true")
+        ],
+        failures=[],
+        evidence={
+            "baseline_true_similarity": 1.0,
+            "baseline_false_similarity": 0.0,
+            "true_false_similarity": 0.0,
+        },
+    )
+    outcome["actual_reason_code"] = "boolean_candidate"
+    outcome["request_count"] = 6
+    report["requests_used"] = 6
+    return report
+
+
+def make_matched_report():
+    report = make_eligible_report()
+    outcome = report["outcomes"][0]
+    outcome["request_count"] = 18
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": "matched",
+        "reason_code": "confirmation_pattern_matched",
+        "request_count": 12,
+    }
+    report["requests_used"] = 18
+    return report
+
+
 def write_report(tmp_path, data):
     path = tmp_path / "report.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -55,6 +104,308 @@ def write_report(tmp_path, data):
 def test_valid_partial_report(tmp_path):
     path = write_report(tmp_path, make_report())
     _validate(path, 3)
+
+
+def test_validator_and_schema_derive_confirmation_request_rules_from_runner():
+    assert (
+        _VALIDATOR_MODULE["_CONFIRMATION_RULES"]
+        is confirmation_runner.CONFIRMATION_RESULT_RULES
+    )
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    confirmation_schema = dict(schema["$defs"]["confirmation"])
+    confirmation_schema["$defs"] = schema["$defs"]
+    validator = Draft202012Validator(confirmation_schema)
+    assert set(schema["$defs"]["operational_reason"]["enum"]) == {
+        reason
+        for reason, rule in confirmation_runner.CONFIRMATION_RESULT_RULES.items()
+        if rule.status is confirmation_runner.ConfirmationStatus.INCONCLUSIVE
+        and reason != "candidate_confirmation_mismatch"
+    }
+    status_by_reason = {
+        "initial_not_eligible": "not_eligible",
+        "confirmation_pattern_matched": "matched",
+        "candidate_confirmation_mismatch": "mismatch",
+    }
+    for reason, rule in confirmation_runner.CONFIRMATION_RESULT_RULES.items():
+        status = status_by_reason.get(reason, "operational")
+        for count in {rule.minimum_requests, rule.maximum_requests}:
+            validator.validate(
+                {
+                    "configured": True,
+                    "status": status,
+                    "reason_code": reason,
+                    "request_count": count,
+                }
+            )
+        if rule.minimum_requests > 0:
+            assert not validator.is_valid(
+                {
+                    "configured": True,
+                    "status": status,
+                    "reason_code": reason,
+                    "request_count": rule.minimum_requests - 1,
+                }
+            )
+        assert not validator.is_valid(
+            {
+                "configured": True,
+                "status": status,
+                "reason_code": reason,
+                "request_count": rule.maximum_requests + 1,
+            }
+        )
+
+
+def test_legacy_v1_report_without_confirmation_fields_is_accepted(tmp_path):
+    fixture = Path("tests/fixtures/regression-batch-report-v1-legacy.json")
+    path = tmp_path / "legacy-report.json"
+    path.write_bytes(fixture.read_bytes())
+
+    _validate(path, 3)
+
+    script = Path("scripts/validate_ci_report.py").resolve()
+    completed = subprocess.run(
+        [sys.executable, str(script), str(path), "3"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["actual_reason_code", "request_count", "confirmation"],
+)
+def test_extended_outcome_fields_are_all_or_nothing(tmp_path, missing):
+    report = make_report()
+    del report["outcomes"][0][missing]
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(ValueError, match="Supply actual_reason_code"):
+        _validate(path, 3)
+
+
+@pytest.mark.parametrize(
+    ("status", "updates"),
+    [
+        (
+            "not_configured",
+            {"configured": False, "reason_code": "confirmation_timeout"},
+        ),
+        (
+            "not_eligible",
+            {"configured": False, "reason_code": "initial_not_eligible"},
+        ),
+        (
+            "matched",
+            {"configured": False, "reason_code": "confirmation_pattern_matched"},
+        ),
+        (
+            "mismatch",
+            {"configured": True, "reason_code": "confirmation_timeout"},
+        ),
+        (
+            "operational",
+            {
+                "configured": True,
+                "reason_code": "confirmation_pattern_matched",
+            },
+        ),
+    ],
+)
+def test_confirmation_status_combinations_are_rejected_by_schema(
+    tmp_path, status, updates
+):
+    report = make_report()
+    confirmation = report["outcomes"][0]["confirmation"]
+    confirmation.update(status=status, **updates)
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(ValueError, match=f"Invalid {status} confirmation"):
+        _validate(path, 3)
+
+
+def test_not_eligible_rejects_boolean_candidate_initial_result(tmp_path):
+    report = make_eligible_report()
+    outcome = report["outcomes"][0]
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": "not_eligible",
+        "reason_code": "initial_not_eligible",
+        "request_count": 0,
+    }
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(ValueError, match="not confirmation-eligible"):
+        _validate(path, 3)
+
+
+@pytest.mark.parametrize(
+    ("status", "confirmation_reason", "final_reason"),
+    [
+        ("matched", "confirmation_pattern_matched", "confirmation_timeout"),
+        (
+            "mismatch",
+            "candidate_confirmation_mismatch",
+            "confirmation_timeout",
+        ),
+    ],
+)
+def test_completed_confirmation_requires_its_exact_final_reason(
+    tmp_path, status, confirmation_reason, final_reason
+):
+    report = make_eligible_report()
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = final_reason
+    outcome["request_count"] = 18
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": status,
+        "reason_code": confirmation_reason,
+        "request_count": 12,
+    }
+    report["requests_used"] = 18
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(ValidationError):
+        _validate(path, 3)
+
+
+def test_operational_confirmation_requires_the_same_final_reason(tmp_path):
+    report = make_eligible_report()
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = "confirmation_timeout"
+    outcome["request_count"] = 7
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": "operational",
+        "reason_code": "confirmation_request_failed",
+        "request_count": 1,
+    }
+    report["requests_used"] = 7
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(
+        ValueError,
+        match="final INCONCLUSIVE/confirmation_request_failed",
+    ):
+        _validate(path, 3)
+
+
+def test_matched_rejects_non_candidate_initial_and_exits_two(tmp_path):
+    report = make_matched_report()
+    outcome = report["outcomes"][0]
+    outcome["verification"].update(
+        verdict="not_detected",
+        reason_code="no_boolean_difference",
+    )
+    path = write_report(tmp_path, report)
+    script = Path("scripts/validate_ci_report.py").resolve()
+
+    completed = subprocess.run(
+        [sys.executable, str(script), str(path), "3"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "Vintar: CI report validation failed.\n"
+
+
+@pytest.mark.parametrize(
+    "invalid_initial",
+    [
+        "reason",
+        "request_count",
+        "failure",
+        "missing_evidence",
+        "kind_counts",
+        "non_success",
+        "truncated",
+        "unstable_pair",
+    ],
+)
+def test_ran_confirmation_requires_complete_eligible_initial(tmp_path, invalid_initial):
+    report = make_matched_report()
+    outcome = report["outcomes"][0]
+    verification = outcome["verification"]
+    if invalid_initial == "reason":
+        verification["reason_code"] = "unexpected_difference"
+    elif invalid_initial == "request_count":
+        verification["observations"].pop()
+        verification["request_count"] = 5
+        outcome["request_count"] = 17
+        report["requests_used"] = 17
+    elif invalid_initial == "failure":
+        verification["observations"].pop()
+        verification["failures"] = [
+            {"kind": "true", "error": "timeout", "elapsed": 0.1}
+        ]
+    elif invalid_initial == "missing_evidence":
+        verification["evidence"] = None
+    elif invalid_initial == "kind_counts":
+        verification["observations"][0]["kind"] = "true"
+    elif invalid_initial == "non_success":
+        verification["observations"][0]["status_code"] = 500
+    elif invalid_initial == "truncated":
+        verification["observations"][0]["truncated"] = True
+    else:
+        verification["observations"][3]["body_size"] = 1
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(
+        (ValueError, ValidationError),
+        match=r"eligible|18 was expected",
+    ):
+        _validate(path, 3)
+
+
+def test_mismatch_rejects_zero_confirmation_requests_and_exits_two(tmp_path):
+    report = make_eligible_report()
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = "candidate_confirmation_mismatch"
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": "mismatch",
+        "reason_code": "candidate_confirmation_mismatch",
+        "request_count": 0,
+    }
+    path = write_report(tmp_path, report)
+    script = Path("scripts/validate_ci_report.py").resolve()
+
+    completed = subprocess.run(
+        [sys.executable, str(script), str(path), "3"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "Vintar: CI report validation failed.\n"
+
+
+def test_not_configured_timeout_repro_exits_two(tmp_path):
+    report = make_report()
+    report["outcomes"][0]["confirmation"]["reason_code"] = "confirmation_timeout"
+    path = write_report(tmp_path, report)
+    script = Path("scripts/validate_ci_report.py").resolve()
+
+    completed = subprocess.run(
+        [sys.executable, str(script), str(path), "3"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "Vintar: CI report validation failed.\n"
 
 
 def test_exit_code_mismatch(tmp_path):
@@ -204,6 +555,7 @@ def test_schema_location_is_independent_of_working_directory(tmp_path, monkeypat
 def test_nested_request_accounting_is_validated(tmp_path):
     report = make_report()
     report["outcomes"][0]["verification"]["request_count"] = 1
+    report["outcomes"][0]["request_count"] = 1
     report["requests_used"] = 1
     path = write_report(tmp_path, report)
 
@@ -246,6 +598,7 @@ def test_conclusive_verification_requires_observations_and_evidence(tmp_path):
         verdict="not_detected",
         reason_code="no_boolean_difference",
     )
+    outcome["actual_reason_code"] = "no_boolean_difference"
     path = write_report(tmp_path, report)
 
     with pytest.raises(ValueError, match="lacks observations"):

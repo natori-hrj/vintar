@@ -490,6 +490,15 @@ duplicate, newly introduced, or unexpectedly resolved record fails after the JSO
 report is saved. Registration documents a known limitation; it does not suppress the
 candidate or turn it into a pass.
 
+Schema v1 exposes this confirmation only when a reviewed case contains the optional
+`[probes.confirmation]` block. Unconfigured cases retain the six-probe measurement
+and report `not_configured`. Preset materialization expands the reviewed confirmation
+predicates; explicit payloads are never inferred. A matched confirmation keeps the
+final `boolean_candidate` reason while its sibling confirmation record says
+`confirmation_pattern_matched`. Mismatch and operational confirmation reasons become
+the final INCONCLUSIVE reason, and no confirmation result becomes NOT_DETECTED or
+VULNERABLE.
+
 Results still depend on the initial value and must not be generalized to other benign
 values. A NOT_DETECTED result means only that these probes found no Boolean
 differential; an unsupported SQL context can make both probes ineffective on a

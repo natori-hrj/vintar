@@ -9,6 +9,21 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
+from vintar.checks.sqli.confirmation import confirmation_eligible
+from vintar.checks.sqli.confirmation_runner import (
+    CONFIRMATION_RESULT_RULES,
+    ConfirmationStatus,
+)
+from vintar.checks.sqli.models import (
+    BooleanEvidence,
+    Observation,
+    ProbeError,
+    ProbeFailure,
+    ProbeKind,
+    Verdict,
+    VerificationResult,
+)
+
 _SCHEMA = (
     Path(__file__).resolve().parents[1]
     / "schemas"
@@ -21,6 +36,18 @@ _ALLOWED_EXIT_CODES = {
 }
 _MAX_REPORT_BYTES = 2_097_152
 _ERROR_MESSAGE = "Vintar: CI report validation failed."
+_EXTENDED_OUTCOME_FIELDS = {
+    "actual_reason_code",
+    "request_count",
+    "confirmation",
+}
+_CONFIRMATION_RULES = CONFIRMATION_RESULT_RULES
+_OPERATIONAL_CONFIRMATION_REASONS = frozenset(
+    reason
+    for reason, rule in _CONFIRMATION_RULES.items()
+    if rule.status is ConfirmationStatus.INCONCLUSIVE
+    and reason != "candidate_confirmation_mismatch"
+)
 
 
 def _read_report(path: Path) -> bytes:
@@ -85,6 +112,52 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def _verification_result(item: dict[str, object]) -> VerificationResult:
+    verification = item["verification"]
+    if not isinstance(verification, dict):
+        raise TypeError("Invalid verification report object.")
+    observations = tuple(
+        Observation(
+            kind=ProbeKind(observation["kind"]),
+            status_code=observation["status_code"],
+            body_size=observation["body_size"],
+            elapsed=observation["elapsed"],
+            body_digest=observation["body_digest"],
+            truncated=observation["truncated"],
+        )
+        for observation in verification["observations"]
+    )
+    failures = tuple(
+        ProbeFailure(
+            kind=ProbeKind(failure["kind"]),
+            error=ProbeError(failure["error"]),
+            elapsed=failure["elapsed"],
+        )
+        for failure in verification["failures"]
+    )
+    evidence_data = verification["evidence"]
+    evidence = (
+        None
+        if evidence_data is None
+        else BooleanEvidence(
+            baseline_true_similarity=evidence_data["baseline_true_similarity"],
+            baseline_false_similarity=evidence_data["baseline_false_similarity"],
+            true_false_similarity=evidence_data["true_false_similarity"],
+        )
+    )
+    return VerificationResult(
+        check_id=item["case_id"],
+        verdict=Verdict(verification["verdict"]),
+        observations=observations,
+        failures=failures,
+        request_count=verification["request_count"],
+        reason_code=verification["reason_code"],
+        reason="Validated report result.",
+        evidence=evidence,
+        confidence=verification["confidence"],
+    )
+
+
 def _validate(path: Path, exit_code: int) -> None:
     if type(exit_code) is not int or exit_code not in _ALLOWED_EXIT_CODES:
         raise ValueError("Invalid CI exit code.")
@@ -98,11 +171,80 @@ def _validate(path: Path, exit_code: int) -> None:
         object_pairs_hook=_unique_object,
     )
 
+    if isinstance(report, dict) and isinstance(report.get("outcomes"), list):
+        for item in report["outcomes"]:
+            if not isinstance(item, dict):
+                continue
+            present = _EXTENDED_OUTCOME_FIELDS & item.keys()
+            if present and present != _EXTENDED_OUTCOME_FIELDS:
+                raise ValueError(
+                    "Invalid extended outcome fields. Supply actual_reason_code, request_count, and confirmation together, or omit all three for a legacy v1 report."
+                )
+
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
 
     validator = Draft202012Validator(schema)
-    validator.validate(report)
+    try:
+        validator.validate(report)
+    except ValidationError:
+        if isinstance(report, dict) and isinstance(report.get("outcomes"), list):
+            for item in report["outcomes"]:
+                if not isinstance(item, dict):
+                    continue
+                confirmation = item.get("confirmation")
+                if not isinstance(confirmation, dict):
+                    continue
+                status = confirmation.get("status")
+                configured = confirmation.get("configured")
+                reason = confirmation.get("reason_code")
+                count = confirmation.get("request_count")
+                expected: str | None = None
+                if status == "not_configured" and (
+                    configured is not False or reason is not None or count != 0
+                ):
+                    expected = (
+                        "Expect configured=false, null reason, and zero requests."
+                    )
+                elif status in {
+                    "not_eligible",
+                    "matched",
+                    "mismatch",
+                    "operational",
+                }:
+                    rule = (
+                        _CONFIRMATION_RULES.get(reason) if type(reason) is str else None
+                    )
+                    expected_status = {
+                        "not_eligible": ConfirmationStatus.SKIPPED,
+                        "matched": ConfirmationStatus.CANDIDATE,
+                        "mismatch": ConfirmationStatus.INCONCLUSIVE,
+                        "operational": ConfirmationStatus.INCONCLUSIVE,
+                    }[status]
+                    if (
+                        configured is not True
+                        or rule is None
+                        or rule.status is not expected_status
+                        or (
+                            status == "operational"
+                            and reason not in _OPERATIONAL_CONFIRMATION_REASONS
+                        )
+                        or type(count) is not int
+                        or not rule.minimum_requests <= count <= rule.maximum_requests
+                    ):
+                        expected = "Expect the runner-defined reason, status, and request-count range."
+                    elif rule.requires_eligible_initial:
+                        try:
+                            eligible = confirmation_eligible(_verification_result(item))
+                        except (KeyError, TypeError, ValueError):
+                            eligible = True
+                        if not eligible:
+                            expected = "Expect an eligible six-request INCONCLUSIVE/boolean_candidate initial result."
+                if expected is not None:
+                    raise ValueError(
+                        f"Invalid {status} confirmation combination. {expected}"
+                    ) from None
+        raise
 
     if report["exit_code"] != exit_code:
         raise ValueError("Process/report exit code mismatch.")
@@ -142,14 +284,12 @@ def _validate(path: Path, exit_code: int) -> None:
         if counts[status] != actual:
             raise ValueError("Inconsistent status count.")
 
-    used = sum(item["verification"]["request_count"] for item in outcomes)
+    used = sum(
+        item.get("request_count", item["verification"]["request_count"])
+        for item in outcomes
+    )
     if report["requests_used"] != used:
         raise ValueError("Inconsistent request accounting.")
-
-    if any(
-        item["verification"]["verdict"] != item["actual_verdict"] for item in outcomes
-    ):
-        raise ValueError("Inconsistent verification verdict.")
 
     if any(
         item["expectation_match"]
@@ -164,6 +304,93 @@ def _validate(path: Path, exit_code: int) -> None:
         verification = item["verification"]
         observations = verification["observations"]
         failures = verification["failures"]
+        if "confirmation" not in item:
+            if item["actual_verdict"] != verification["verdict"]:
+                raise ValueError(
+                    "Invalid legacy v1 outcome. Expect actual_verdict to equal the verification verdict when confirmation fields are omitted."
+                )
+        else:
+            confirmation = item["confirmation"]
+            if item["request_count"] != (
+                verification["request_count"] + confirmation["request_count"]
+            ):
+                raise ValueError(
+                    "Invalid confirmation request accounting. Expect request_count to equal the initial and confirmation request counts."
+                )
+
+            confirmation_status = confirmation["status"]
+            if confirmation_status == "not_configured":
+                if (
+                    confirmation["configured"] is not False
+                    or confirmation["reason_code"] is not None
+                    or confirmation["request_count"] != 0
+                    or item["request_count"] != verification["request_count"]
+                    or item["actual_verdict"] != verification["verdict"]
+                    or item["actual_reason_code"] != verification["reason_code"]
+                ):
+                    raise ValueError(
+                        "Invalid not_configured confirmation. Expect configured=false, null reason, zero confirmation requests, and final verdict/reason/count equal to the initial verification."
+                    )
+            else:
+                reason = confirmation["reason_code"]
+                rule = _CONFIRMATION_RULES.get(reason)
+                expected_status = {
+                    "not_eligible": ConfirmationStatus.SKIPPED,
+                    "matched": ConfirmationStatus.CANDIDATE,
+                    "mismatch": ConfirmationStatus.INCONCLUSIVE,
+                    "operational": ConfirmationStatus.INCONCLUSIVE,
+                }[confirmation_status]
+                if (
+                    confirmation["configured"] is not True
+                    or type(reason) is not str
+                    or rule is None
+                    or rule.status is not expected_status
+                    or (
+                        confirmation_status == "operational"
+                        and reason not in _OPERATIONAL_CONFIRMATION_REASONS
+                    )
+                    or not rule.minimum_requests
+                    <= confirmation["request_count"]
+                    <= rule.maximum_requests
+                ):
+                    raise ValueError(
+                        f"Invalid {confirmation_status} confirmation. Expect the runner-defined reason, status, and request-count range."
+                    )
+
+                initial = _verification_result(item)
+                eligible = confirmation_eligible(initial)
+                if eligible is not rule.requires_eligible_initial:
+                    expected_initial = (
+                        "an eligible six-request INCONCLUSIVE/boolean_candidate initial result"
+                        if rule.requires_eligible_initial
+                        else "an initial result that is not confirmation-eligible"
+                    )
+                    raise ValueError(
+                        f"Invalid {confirmation_status} confirmation initial result. Expect {expected_initial}."
+                    )
+
+                if confirmation_status == "not_eligible":
+                    valid_final = (
+                        item["actual_verdict"] == verification["verdict"]
+                        and item["actual_reason_code"] == verification["reason_code"]
+                    )
+                    expected_final = "the unchanged initial verdict and reason"
+                elif confirmation_status == "matched":
+                    valid_final = (
+                        item["actual_verdict"] == "inconclusive"
+                        and item["actual_reason_code"] == "boolean_candidate"
+                    )
+                    expected_final = "final INCONCLUSIVE/boolean_candidate"
+                else:
+                    valid_final = (
+                        item["actual_verdict"] == "inconclusive"
+                        and item["actual_reason_code"] == reason
+                    )
+                    expected_final = f"final INCONCLUSIVE/{reason}"
+                if not valid_final:
+                    raise ValueError(
+                        f"Invalid {confirmation_status} confirmation final result. Expect {expected_final}."
+                    )
 
         if verification["request_count"] != len(observations) + len(failures):
             raise ValueError("Inconsistent verification request count.")

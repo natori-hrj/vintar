@@ -7,6 +7,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from vintar.checks.sqli import confirmation_runner
 from vintar.checks.sqli.models import (
     BooleanEvidence,
     Observation,
@@ -14,6 +15,7 @@ from vintar.checks.sqli.models import (
     Verdict,
     VerificationResult,
 )
+from vintar.regression import report as regression_report
 from vintar.regression.batch import RegressionBatchResult
 from vintar.regression.report import (
     BATCH_REPORT_SCHEMA_VERSION,
@@ -39,6 +41,19 @@ def report_validator() -> Draft202012Validator:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
+
+
+def test_confirmation_reason_schema_matches_runner_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    enum = schema["$defs"]["confirmation"]["properties"]["reason_code"]["oneOf"][1][
+        "enum"
+    ]
+
+    assert frozenset(enum) == regression_report._CONFIRMATION_REASON_CODES
+    assert regression_report._CONFIRMATION_REASON_CODES == (
+        confirmation_runner._INCONCLUSIVE_REASONS
+        | {"initial_not_eligible", "confirmation_pattern_matched"}
+    )
 
 
 def make_verification(
@@ -389,9 +404,12 @@ def test_report_uses_explicit_allowlist():
         "case_id",
         "expected_verdict",
         "actual_verdict",
+        "actual_reason_code",
+        "request_count",
         "expectation_match",
         "status",
         "verification",
+        "confirmation",
     }
     assert set(report["outcomes"][0]["verification"]) == {
         "schema_version",

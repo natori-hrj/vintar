@@ -7,6 +7,11 @@ from enum import StrEnum
 
 import httpx
 
+from vintar.checks.sqli.confirmation_runner import (
+    ConfirmationOutcome,
+    ConfirmationStatus,
+    verify_boolean_sqli_with_confirmation,
+)
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
 from vintar.core.budget import RequestBudget
@@ -91,6 +96,7 @@ class RegressionOutcome:
     verification: VerificationResult
     expectation_match: bool
     status: RegressionStatus
+    confirmation: ConfirmationOutcome | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -103,6 +109,16 @@ class RegressionOutcome:
             raise TypeError("Invalid expected verdict.")
         if not isinstance(self.verification, VerificationResult):
             raise TypeError("Invalid verification result.")
+        if (
+            self.confirmation is not None
+            and type(self.confirmation) is not ConfirmationOutcome
+        ):
+            raise TypeError("Invalid confirmation result.")
+        if (
+            self.confirmation is not None
+            and self.confirmation.initial != self.verification
+        ):
+            raise ValueError("Confirmation initial result mismatch.")
         if type(self.expectation_match) is not bool:
             raise TypeError("Invalid expectation match.")
         if not isinstance(self.status, RegressionStatus):
@@ -111,13 +127,39 @@ class RegressionOutcome:
         if self.verification.check_id != self.case_id:
             raise ValueError("Verification case identifier mismatch.")
 
-        match = self.verification.verdict is self.expected_verdict
+        match = self.final_verdict is self.expected_verdict
 
         if self.expectation_match != match:
             raise ValueError("Inconsistent expectation match.")
 
-        if self.status is not _classify(self.verification.verdict, match):
+        if self.status is not _classify(self.final_verdict, match):
             raise ValueError("Inconsistent regression status.")
+
+    @property
+    def final_verdict(self) -> Verdict:
+        if (
+            self.confirmation is None
+            or self.confirmation.status is ConfirmationStatus.SKIPPED
+        ):
+            return self.verification.verdict
+        return Verdict.INCONCLUSIVE
+
+    @property
+    def final_reason_code(self) -> str:
+        if (
+            self.confirmation is None
+            or self.confirmation.status is ConfirmationStatus.SKIPPED
+        ):
+            return self.verification.reason_code
+        if self.confirmation.status is ConfirmationStatus.CANDIDATE:
+            return "boolean_candidate"
+        return self.confirmation.reason_code
+
+    @property
+    def request_count(self) -> int:
+        if self.confirmation is None:
+            return self.verification.request_count
+        return self.confirmation.total_requests
 
 
 def _classify(
@@ -154,11 +196,23 @@ def _effective_scope(
 
     scope = ScopePolicy(allowed_origins=frozenset(allowed))
 
-    templates = (
+    templates = [
         case.template,
         inject(case.template, case.point, case.true_payload),
         inject(case.template, case.point, case.false_payload),
-    )
+    ]
+    if case.confirmation is not None:
+        templates.extend(
+            (
+                inject(case.template, case.point, case.confirmation.true_payload),
+                inject(case.template, case.point, case.confirmation.false_payload),
+                inject(
+                    case.template,
+                    case.point,
+                    case.confirmation.baseline_preserving_control,
+                ),
+            )
+        )
 
     if (
         templates[0] == templates[1]
@@ -200,17 +254,39 @@ def _run_with_resources(
         rate_limiter=rate_limiter,
     )
 
-    verification = verify_boolean_sqli(
-        check_id=case.case_id,
-        template=case.template,
-        point=case.point,
-        true_payload=case.true_payload,
-        false_payload=case.false_payload,
-        context=context,
-        transport=transport,
-    )
+    confirmation: ConfirmationOutcome | None = None
+    if case.confirmation is None:
+        verification = verify_boolean_sqli(
+            check_id=case.case_id,
+            template=case.template,
+            point=case.point,
+            true_payload=case.true_payload,
+            false_payload=case.false_payload,
+            context=context,
+            transport=transport,
+        )
+        final_verdict = verification.verdict
+    else:
+        confirmation = verify_boolean_sqli_with_confirmation(
+            check_id=case.case_id,
+            template=case.template,
+            point=case.point,
+            true_1=case.true_payload,
+            false_1=case.false_payload,
+            true_2=case.confirmation.true_payload,
+            false_2=case.confirmation.false_payload,
+            baseline_preserving_control=case.confirmation.baseline_preserving_control,
+            context=context,
+            transport=transport,
+        )
+        verification = confirmation.initial
+        final_verdict = (
+            verification.verdict
+            if confirmation.status is ConfirmationStatus.SKIPPED
+            else Verdict.INCONCLUSIVE
+        )
 
-    expectation_match = verification.verdict is case.expected_verdict
+    expectation_match = final_verdict is case.expected_verdict
 
     return RegressionOutcome(
         case_id=case.case_id,
@@ -218,9 +294,10 @@ def _run_with_resources(
         verification=verification,
         expectation_match=expectation_match,
         status=_classify(
-            verification.verdict,
+            final_verdict,
             expectation_match,
         ),
+        confirmation=confirmation,
     )
 
 

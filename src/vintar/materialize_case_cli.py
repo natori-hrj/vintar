@@ -52,6 +52,10 @@ def materialize_case_command(
                 "schema_version": 1,
                 "report_type": "regression_case_materialization_summary",
                 "case_id": case.case_id,
+                "confirmation": (
+                    "configured" if case.confirmation_configured else "not configured"
+                ),
+                "max_requests": case.max_requests,
             },
             sort_keys=True,
         )

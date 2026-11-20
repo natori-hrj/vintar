@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- Add a local loopback Boolean SQLi precision corpus with separate true-positive,
+  true-negative, false-candidate, and non-decision measurements.
+- Add a reviewed second predicate pair and baseline-preserving third predicate
+  confirmation, including `candidate_confirmation_mismatch`, while retaining
+  `boolean_candidate` as the final reason when confirmation matches.
+- Register structural full-mimic and WAF-200 candidate signals as tested known
+  limitations.
+- Allow Schema v1 Boolean SQLi cases to opt into bounded 18-request confirmation;
+  named probe presets expand confirmation automatically, while explicit probes are
+  never completed by inference.
+- Report confirmation as not configured, not eligible, matched, mismatched, or
+  operational without changing CI exit codes.
+
 ## [0.1.1] - 2026-11-20
 
 - Describe Vintar in CLI help as a tool for security regression tests in CI pipelines.

@@ -10,8 +10,10 @@ A candidate is not proof of SQL injection.
 import hashlib
 import re
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 
 import httpx
 
@@ -44,29 +46,98 @@ from vintar.core.template import validate_template
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
-_INCONCLUSIVE_REASONS = frozenset(
-    {
-        "confirmation_budget_unavailable",
-        "confirmation_preflight_failed",
-        "confirmation_budget_exceeded",
-        "confirmation_rate_limit_interrupted",
-        "confirmation_timeout",
-        "confirmation_request_failed",
-        "confirmation_rate_limited",
-        "confirmation_truncated",
-        "confirmation_non_success_status",
-        "confirmation_unstable",
-        "confirmation_cross_phase_mismatch",
-        "candidate_confirmation_mismatch",
-    }
-)
-
 
 class ConfirmationStatus(StrEnum):
     SKIPPED = "skipped"
     CANDIDATE = "candidate"
     NOT_CONFIRMED = "not_confirmed"
     INCONCLUSIVE = "inconclusive"
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmationResultRule:
+    """Machine-readable invariants shared with report validation."""
+
+    status: ConfirmationStatus
+    minimum_requests: int
+    maximum_requests: int
+    requires_eligible_initial: bool
+
+
+def _rule(
+    status: ConfirmationStatus,
+    minimum_requests: int,
+    maximum_requests: int,
+    *,
+    requires_eligible_initial: bool = True,
+) -> ConfirmationResultRule:
+    return ConfirmationResultRule(
+        status=status,
+        minimum_requests=minimum_requests,
+        maximum_requests=maximum_requests,
+        requires_eligible_initial=requires_eligible_initial,
+    )
+
+
+CONFIRMATION_RESULT_RULES: Mapping[str, ConfirmationResultRule] = MappingProxyType(
+    {
+        "initial_not_eligible": _rule(
+            ConfirmationStatus.SKIPPED,
+            0,
+            0,
+            requires_eligible_initial=False,
+        ),
+        "confirmation_pattern_matched": _rule(
+            ConfirmationStatus.CANDIDATE,
+            CONFIRMATION_REQUESTS,
+            CONFIRMATION_REQUESTS,
+        ),
+        "candidate_confirmation_mismatch": _rule(
+            ConfirmationStatus.INCONCLUSIVE,
+            CONFIRMATION_REQUESTS,
+            CONFIRMATION_REQUESTS,
+        ),
+        "confirmation_budget_unavailable": _rule(ConfirmationStatus.INCONCLUSIVE, 0, 0),
+        "confirmation_preflight_failed": _rule(ConfirmationStatus.INCONCLUSIVE, 0, 0),
+        "confirmation_budget_exceeded": _rule(
+            ConfirmationStatus.INCONCLUSIVE, 0, CONFIRMATION_REQUESTS
+        ),
+        "confirmation_unstable": _rule(
+            ConfirmationStatus.INCONCLUSIVE,
+            CONFIRMATION_REQUESTS,
+            CONFIRMATION_REQUESTS,
+        ),
+        "confirmation_cross_phase_mismatch": _rule(
+            ConfirmationStatus.INCONCLUSIVE,
+            CONFIRMATION_REQUESTS,
+            CONFIRMATION_REQUESTS,
+        ),
+        "confirmation_rate_limit_interrupted": _rule(
+            ConfirmationStatus.INCONCLUSIVE, 1, CONFIRMATION_REQUESTS
+        ),
+        "confirmation_timeout": _rule(
+            ConfirmationStatus.INCONCLUSIVE, 1, CONFIRMATION_REQUESTS
+        ),
+        "confirmation_request_failed": _rule(
+            ConfirmationStatus.INCONCLUSIVE, 1, CONFIRMATION_REQUESTS
+        ),
+        "confirmation_rate_limited": _rule(
+            ConfirmationStatus.INCONCLUSIVE, 1, CONFIRMATION_REQUESTS
+        ),
+        "confirmation_truncated": _rule(
+            ConfirmationStatus.INCONCLUSIVE, 1, CONFIRMATION_REQUESTS
+        ),
+        "confirmation_non_success_status": _rule(
+            ConfirmationStatus.INCONCLUSIVE, 1, CONFIRMATION_REQUESTS
+        ),
+    }
+)
+
+_INCONCLUSIVE_REASONS = frozenset(
+    reason
+    for reason, rule in CONFIRMATION_RESULT_RULES.items()
+    if rule.status is ConfirmationStatus.INCONCLUSIVE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,74 +294,54 @@ class ConfirmationOutcome:
         ):
             raise TypeError("Invalid confirmation evidence.")
 
+        rule = CONFIRMATION_RESULT_RULES.get(self.reason_code)
+        if rule is None or self.status is not rule.status:
+            if self.status is ConfirmationStatus.CANDIDATE:
+                raise ValueError("Inconsistent candidate outcome.")
+            if self.status is ConfirmationStatus.INCONCLUSIVE:
+                raise ValueError("Inconsistent inconclusive outcome.")
+            raise ValueError("Inconsistent confirmation status and reason.")
+        if (
+            not rule.minimum_requests
+            <= self.confirmation_requests
+            <= rule.maximum_requests
+        ):
+            if self.reason_code == "candidate_confirmation_mismatch":
+                raise ValueError("Incomplete confirmation mismatch outcome.")
+            if self.reason_code == "confirmation_cross_phase_mismatch":
+                raise ValueError("Incomplete cross-phase mismatch outcome.")
+            if self.reason_code == "confirmation_unstable":
+                raise ValueError("Incomplete unstable confirmation outcome.")
+            if rule.maximum_requests == 0:
+                raise ValueError("Inconsistent pre-execution outcome.")
+            if self.confirmation_requests == 0:
+                raise ValueError("Missing confirmation request attempt.")
+            raise ValueError("Inconsistent confirmation request count for reason.")
+
+        eligible = confirmation_eligible(self.initial)
+        if eligible is not rule.requires_eligible_initial:
+            raise ValueError("Inconsistent confirmation initial eligibility.")
+
         if self.status is ConfirmationStatus.SKIPPED:
-            if (
-                self.reason_code != "initial_not_eligible"
-                or self.confirmation_requests != 0
-                or self.evidence is not None
-                or confirmation_eligible(self.initial)
-            ):
-                raise ValueError("Inconsistent skipped confirmation outcome.")
+            if self.evidence is not None:
+                raise ValueError("Inconsistent skipped confirmation evidence.")
             return
 
-        if not confirmation_eligible(self.initial):
-            raise ValueError("Confirmation requires an eligible initial result.")
-
         if self.status is ConfirmationStatus.INCONCLUSIVE:
-            if self.reason_code not in _INCONCLUSIVE_REASONS or (
+            if (
                 self.evidence is not None
                 and self.reason_code != "candidate_confirmation_mismatch"
             ):
                 raise ValueError("Inconsistent inconclusive outcome.")
 
-            if self.reason_code == "candidate_confirmation_mismatch" and (
-                self.confirmation_requests != CONFIRMATION_REQUESTS
-                or self.total_requests != TOTAL_REQUESTS
-                or self.evidence is None
+            if (
+                self.reason_code == "candidate_confirmation_mismatch"
+                and self.evidence is None
             ):
                 raise ValueError("Incomplete confirmation mismatch outcome.")
-
-            if self.reason_code == "confirmation_unstable" and (
-                self.confirmation_requests != CONFIRMATION_REQUESTS
-                or self.total_requests != TOTAL_REQUESTS
-            ):
-                raise ValueError("Incomplete unstable confirmation outcome.")
-
-            if self.reason_code == "confirmation_cross_phase_mismatch" and (
-                self.confirmation_requests != CONFIRMATION_REQUESTS
-                or self.total_requests != TOTAL_REQUESTS
-            ):
-                raise ValueError("Incomplete cross-phase mismatch outcome.")
-
-            if (
-                self.reason_code
-                in {
-                    "confirmation_budget_unavailable",
-                    "confirmation_preflight_failed",
-                }
-                and self.confirmation_requests != 0
-            ):
-                raise ValueError("Inconsistent pre-execution outcome.")
-
-            if (
-                self.reason_code
-                not in {
-                    "confirmation_budget_unavailable",
-                    "confirmation_preflight_failed",
-                    "confirmation_budget_exceeded",
-                    "confirmation_unstable",
-                    "confirmation_cross_phase_mismatch",
-                }
-                and self.confirmation_requests == 0
-            ):
-                raise ValueError("Missing confirmation request attempt.")
             return
 
-        if (
-            self.confirmation_requests != CONFIRMATION_REQUESTS
-            or self.total_requests != TOTAL_REQUESTS
-            or self.evidence is None
-        ):
+        if self.evidence is None:
             raise ValueError("Incomplete confirmation outcome.")
 
         relation_matches = (

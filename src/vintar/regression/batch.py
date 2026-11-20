@@ -73,9 +73,7 @@ class RegressionBatchResult:
         if self.status is not _aggregate_status(self.outcomes, self.complete):
             raise ValueError("Inconsistent batch status.")
 
-        if self.requests_used != sum(
-            item.verification.request_count for item in self.outcomes
-        ):
+        if self.requests_used != sum(item.request_count for item in self.outcomes):
             raise ValueError("Inconsistent batch request count.")
 
     @property
@@ -107,7 +105,11 @@ def _must_stop_batch(outcome: RegressionOutcome) -> bool:
     if verification.verdict is Verdict.VULNERABLE:
         return True
 
-    if verification.reason_code == "rate_limited":
+    if outcome.final_reason_code in {
+        "rate_limited",
+        "confirmation_rate_limited",
+        "confirmation_rate_limit_interrupted",
+    }:
         return True
 
     return bool(verification.failures)

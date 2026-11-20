@@ -1,4 +1,3 @@
-
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/natori-hrj/vintar/blob/main/schemas/regression-batch-report-v1.schema.json",
@@ -34,18 +33,48 @@
       "type": "boolean"
     },
     "exit_code": {
-      "enum": [0, 1, 3]
+      "enum": [
+        0,
+        1,
+        3
+      ]
     },
     "planned_case_ids": {
       "allOf": [
-        { "$ref": "#/$defs/identifiers" },
-        { "minItems": 1 }
+        {
+          "if": {
+            "properties": {
+              "confirmation": {
+                "properties": { "status": { "const": "not_eligible" } },
+                "required": ["status"]
+              }
+            },
+            "required": ["confirmation"]
+          },
+          "then": {
+            "properties": {
+              "verification": {
+                "not": { "$ref": "#/$defs/eligible_initial" }
+              }
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/identifiers"
+        },
+        {
+          "minItems": 1
+        }
       ]
     },
     "executed_case_ids": {
       "allOf": [
-        { "$ref": "#/$defs/identifiers" },
-        { "minItems": 1 }
+        {
+          "$ref": "#/$defs/identifiers"
+        },
+        {
+          "minItems": 1
+        }
       ]
     },
     "not_run_case_ids": {
@@ -100,46 +129,93 @@
   "allOf": [
     {
       "if": {
-        "properties": { "status": { "const": "pass" } },
-        "required": ["status"]
+        "properties": {
+          "status": {
+            "const": "pass"
+          }
+        },
+        "required": [
+          "status"
+        ]
       },
       "then": {
         "properties": {
-          "complete": { "const": true },
-          "exit_code": { "const": 0 }
+          "complete": {
+            "const": true
+          },
+          "exit_code": {
+            "const": 0
+          }
         }
       }
     },
     {
       "if": {
-        "properties": { "status": { "const": "fail" } },
-        "required": ["status"]
+        "properties": {
+          "status": {
+            "const": "fail"
+          }
+        },
+        "required": [
+          "status"
+        ]
       },
       "then": {
-        "properties": { "exit_code": { "const": 1 } }
+        "properties": {
+          "exit_code": {
+            "const": 1
+          }
+        }
       }
     },
     {
       "if": {
-        "properties": { "status": { "const": "inconclusive" } },
-        "required": ["status"]
+        "properties": {
+          "status": {
+            "const": "inconclusive"
+          }
+        },
+        "required": [
+          "status"
+        ]
       },
       "then": {
-        "properties": { "exit_code": { "const": 3 } }
+        "properties": {
+          "exit_code": {
+            "const": 3
+          }
+        }
       }
     },
     {
       "if": {
-        "properties": { "complete": { "const": true } },
-        "required": ["complete"]
+        "properties": {
+          "complete": {
+            "const": true
+          }
+        },
+        "required": [
+          "complete"
+        ]
       },
       "then": {
-        "properties": { "not_run_case_ids": { "maxItems": 0 } }
+        "properties": {
+          "not_run_case_ids": {
+            "maxItems": 0
+          }
+        }
       },
       "else": {
         "properties": {
-          "status": { "enum": ["fail", "inconclusive"] },
-          "not_run_case_ids": { "minItems": 1 }
+          "status": {
+            "enum": [
+              "fail",
+              "inconclusive"
+            ]
+          },
+          "not_run_case_ids": {
+            "minItems": 1
+          }
         }
       }
     }
@@ -164,7 +240,11 @@
       }
     },
     "status": {
-      "enum": ["pass", "fail", "inconclusive"]
+      "enum": [
+        "pass",
+        "fail",
+        "inconclusive"
+      ]
     },
     "verdict": {
       "enum": [
@@ -194,6 +274,12 @@
         "actual_verdict": {
           "$ref": "#/$defs/verdict"
         },
+        "actual_reason_code": {
+          "$ref": "#/$defs/final_reason"
+        },
+        "request_count": {
+          "$ref": "#/$defs/count"
+        },
         "expectation_match": {
           "type": "boolean"
         },
@@ -202,8 +288,457 @@
         },
         "verification": {
           "$ref": "#/$defs/verification"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
         }
-      }
+      },
+      "dependentRequired": {
+        "actual_reason_code": [
+          "request_count",
+          "confirmation"
+        ],
+        "request_count": [
+          "actual_reason_code",
+          "confirmation"
+        ],
+        "confirmation": [
+          "actual_reason_code",
+          "request_count"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "confirmation": {
+                "properties": {
+                  "status": {
+                    "const": "matched"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            },
+            "required": [
+              "confirmation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "actual_verdict": {
+                "const": "inconclusive"
+              },
+              "actual_reason_code": {
+                "const": "boolean_candidate"
+              },
+              "request_count": {
+                "const": 18
+              },
+              "verification": {
+                "$ref": "#/$defs/eligible_initial"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "confirmation": {
+                "properties": {
+                  "status": {
+                    "const": "mismatch"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            },
+            "required": [
+              "confirmation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "actual_verdict": {
+                "const": "inconclusive"
+              },
+              "actual_reason_code": {
+                "const": "candidate_confirmation_mismatch"
+              },
+              "request_count": {
+                "const": 18
+              },
+              "verification": {
+                "$ref": "#/$defs/eligible_initial"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "confirmation": {
+                "properties": {
+                  "status": {
+                    "const": "operational"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            },
+            "required": [
+              "confirmation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "actual_verdict": {
+                "const": "inconclusive"
+              },
+              "actual_reason_code": {
+                "$ref": "#/$defs/operational_reason"
+              },
+              "verification": {
+                "$ref": "#/$defs/eligible_initial"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "final_reason": {
+      "enum": [
+        "boolean_candidate",
+        "boolean_differential",
+        "budget_unavailable",
+        "candidate_confirmation_mismatch",
+        "confirmation_budget_exceeded",
+        "confirmation_budget_unavailable",
+        "confirmation_cross_phase_mismatch",
+        "confirmation_non_success_status",
+        "confirmation_preflight_failed",
+        "confirmation_rate_limit_interrupted",
+        "confirmation_rate_limited",
+        "confirmation_request_failed",
+        "confirmation_timeout",
+        "confirmation_truncated",
+        "confirmation_unstable",
+        "connection_error",
+        "insufficient_evidence",
+        "no_boolean_difference",
+        "no_boolean_difference_literal_input",
+        "non_success_status",
+        "possible_dynamic_response",
+        "probe_failed",
+        "rate_limited",
+        "truncated_response",
+        "unexpected_difference",
+        "unstable_response"
+      ]
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configured",
+        "status",
+        "reason_code",
+        "request_count"
+      ],
+      "properties": {
+        "configured": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "not_configured",
+            "not_eligible",
+            "matched",
+            "mismatch",
+            "operational"
+          ]
+        },
+        "reason_code": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "initial_not_eligible",
+                "confirmation_pattern_matched",
+                "candidate_confirmation_mismatch",
+                "confirmation_budget_unavailable",
+                "confirmation_preflight_failed",
+                "confirmation_budget_exceeded",
+                "confirmation_rate_limit_interrupted",
+                "confirmation_timeout",
+                "confirmation_request_failed",
+                "confirmation_rate_limited",
+                "confirmation_truncated",
+                "confirmation_non_success_status",
+                "confirmation_unstable",
+                "confirmation_cross_phase_mismatch"
+              ]
+            }
+          ]
+        },
+        "request_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "not_configured"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "configured": {
+                "const": false
+              },
+              "reason_code": {
+                "type": "null"
+              },
+              "request_count": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "not_eligible"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "configured": {
+                "const": true
+              },
+              "reason_code": {
+                "const": "initial_not_eligible"
+              },
+              "request_count": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "matched"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "configured": {
+                "const": true
+              },
+              "reason_code": {
+                "const": "confirmation_pattern_matched"
+              },
+              "request_count": {
+                "const": 12
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "mismatch"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "configured": {
+                "const": true
+              },
+              "reason_code": {
+                "const": "candidate_confirmation_mismatch"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "operational"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "configured": {
+                "const": true
+              },
+              "reason_code": {
+                "$ref": "#/$defs/operational_reason"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reason_code": {
+                "enum": [
+                  "confirmation_budget_unavailable",
+                  "confirmation_preflight_failed"
+                ]
+              }
+            },
+            "required": ["reason_code"]
+          },
+          "then": {
+            "properties": { "request_count": { "const": 0 } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reason_code": {
+                "enum": [
+                  "confirmation_pattern_matched",
+                  "candidate_confirmation_mismatch",
+                  "confirmation_unstable",
+                  "confirmation_cross_phase_mismatch"
+                ]
+              }
+            },
+            "required": ["reason_code"]
+          },
+          "then": {
+            "properties": { "request_count": { "const": 12 } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reason_code": {
+                "enum": [
+                  "confirmation_rate_limit_interrupted",
+                  "confirmation_timeout",
+                  "confirmation_request_failed",
+                  "confirmation_rate_limited",
+                  "confirmation_truncated",
+                  "confirmation_non_success_status"
+                ]
+              }
+            },
+            "required": ["reason_code"]
+          },
+          "then": {
+            "properties": { "request_count": { "minimum": 1 } }
+          }
+        }
+      ]
+    },
+    "eligible_initial": {
+      "type": "object",
+      "properties": {
+        "verdict": { "const": "inconclusive" },
+        "reason_code": { "const": "boolean_candidate" },
+        "request_count": { "const": 6 },
+        "observations": {
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {
+            "properties": {
+              "status_code": { "minimum": 200, "maximum": 299 },
+              "truncated": { "const": false }
+            }
+          },
+          "allOf": [
+            {
+              "contains": {
+                "properties": { "kind": { "const": "baseline" } },
+                "required": ["kind"]
+              },
+              "minContains": 2,
+              "maxContains": 2
+            },
+            {
+              "contains": {
+                "properties": { "kind": { "const": "true" } },
+                "required": ["kind"]
+              },
+              "minContains": 2,
+              "maxContains": 2
+            },
+            {
+              "contains": {
+                "properties": { "kind": { "const": "false" } },
+                "required": ["kind"]
+              },
+              "minContains": 2,
+              "maxContains": 2
+            }
+          ]
+        },
+        "failures": { "maxItems": 0 },
+        "evidence": { "type": "object" }
+      },
+      "required": [
+        "verdict",
+        "reason_code",
+        "request_count",
+        "observations",
+        "failures",
+        "evidence"
+      ]
+    },
+    "operational_reason": {
+      "enum": [
+        "confirmation_budget_unavailable",
+        "confirmation_preflight_failed",
+        "confirmation_budget_exceeded",
+        "confirmation_rate_limit_interrupted",
+        "confirmation_timeout",
+        "confirmation_request_failed",
+        "confirmation_rate_limited",
+        "confirmation_truncated",
+        "confirmation_non_success_status",
+        "confirmation_unstable",
+        "confirmation_cross_phase_mismatch"
+      ]
     },
     "verification": {
       "type": "object",
@@ -273,7 +808,10 @@
           ]
         },
         "confidence": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "minimum": 0,
           "maximum": 1
         }
@@ -292,7 +830,11 @@
       ],
       "properties": {
         "kind": {
-          "enum": ["baseline", "true", "false"]
+          "enum": [
+            "baseline",
+            "true",
+            "false"
+          ]
         },
         "status_code": {
           "type": "integer",
@@ -305,7 +847,7 @@
         "elapsed": {
           "type": "number",
           "minimum": 0,
-          "maximum": 1.7976931348623157e+308
+          "maximum": 1.7976931348623157E+308
         },
         "body_digest": {
           "type": "string",
@@ -326,7 +868,11 @@
       ],
       "properties": {
         "kind": {
-          "enum": ["baseline", "true", "false"]
+          "enum": [
+            "baseline",
+            "true",
+            "false"
+          ]
         },
         "error": {
           "enum": [
@@ -340,9 +886,12 @@
           ]
         },
         "elapsed": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "minimum": 0,
-          "maximum": 1.7976931348623157e+308
+          "maximum": 1.7976931348623157E+308
         }
       }
     },

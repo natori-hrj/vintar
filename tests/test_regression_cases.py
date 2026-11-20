@@ -51,6 +51,15 @@ requests_per_second = 2.0
 timeout_seconds = 10.0
 """
 
+CONFIRMED_CASE = VALID_CASE.replace(
+    'false_payload = "\' AND 1=2-- "',
+    'false_payload = "\' AND 1=2-- "\n\n'
+    "[probes.confirmation]\n"
+    'true_payload = "\' AND 2<3-- "\n'
+    'false_payload = "\' AND 2>3-- "\n'
+    'baseline_preserving_control = "\' AND 7=7-- "',
+).replace("max_requests = 6", "max_requests = 18")
+
 
 def test_valid_case_is_parsed():
     case = parse_regression_case(VALID_CASE)
@@ -70,6 +79,35 @@ def test_valid_case_is_parsed():
         ("category", "Pets"),
         ("category", "Other"),
     )
+    assert case.confirmation is None
+
+
+def test_optional_confirmation_case_is_parsed():
+    case = parse_regression_case(CONFIRMED_CASE)
+
+    assert case.max_requests == 18
+    assert case.confirmation is not None
+    assert case.confirmation.true_payload == "' AND 2<3-- "
+    assert case.confirmation.false_payload == "' AND 2>3-- "
+    assert case.confirmation.baseline_preserving_control == "' AND 7=7-- "
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        CONFIRMED_CASE.replace("max_requests = 18", "max_requests = 6"),
+        VALID_CASE.replace("max_requests = 6", "max_requests = 18"),
+        CONFIRMED_CASE.replace('true_payload = "\' AND 2<3-- "\n', ""),
+        CONFIRMED_CASE.replace("' AND 2<3-- ", "' AND 1=1-- "),
+        CONFIRMED_CASE.replace(
+            'baseline_preserving_control = "\' AND 7=7-- "',
+            'baseline_preserving_control = "\' AND 7=7-- "\nunknown = true',
+        ),
+    ],
+)
+def test_confirmation_shape_budget_and_distinctness_are_enforced(source):
+    with pytest.raises(ValueError, match="valid schema v1 TOML case"):
+        parse_regression_case(source)
 
 
 def test_injection_preserves_duplicate_parameters():
