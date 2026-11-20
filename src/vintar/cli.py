@@ -16,7 +16,6 @@ from vintar.sqli_cli import sqli_app
 
 app = typer.Typer(
     name="vintar",
-    help="Vintar - Precision Security Toolkit",
     no_args_is_help=True,
 )
 
@@ -33,7 +32,7 @@ console = Console()
 
 @app.callback()
 def main() -> None:
-    """Precision Security Toolkit."""
+    """vintar - security regression tests for CI pipelines."""
 
 
 @app.command()
