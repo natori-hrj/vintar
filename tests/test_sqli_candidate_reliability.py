@@ -15,6 +15,7 @@ from test_sqli_http_e2e import (
     LIVE_TWIN_ENDPOINTS,
     SAFE_PETS_LIMITATION,
     LiveEndpoint,
+    LoopbackFixtureCheckError,
     LoopbackShutdownError,
     LoopbackStartupError,
     check_parameterized_benign_response,
@@ -128,6 +129,16 @@ def measure_live_endpoint(endpoint, runner=run_live_endpoint):
 
 
 def known_limitation_observation(limitation, outcome):
+    if outcome.status is ConfirmationStatus.CANDIDATE:
+        verdict = Verdict.INCONCLUSIVE
+        reason_code = "boolean_candidate"
+    elif outcome.status is ConfirmationStatus.SKIPPED:
+        verdict = outcome.initial.verdict
+        reason_code = outcome.initial.reason_code
+    else:
+        verdict = Verdict.INCONCLUSIVE
+        reason_code = outcome.reason_code
+
     return {
         "limitation_id": limitation.limitation_id,
         "endpoint_id": limitation.endpoint.endpoint_id,
@@ -138,7 +149,12 @@ def known_limitation_observation(limitation, outcome):
         "initial_reason_code": outcome.initial.reason_code,
         "confirmation_status": outcome.status.value,
         "reason_code": outcome.reason_code,
-        "classification": "fp",
+        "verdict": verdict.value,
+        "classification": classify(
+            limitation.endpoint.expected_label,
+            verdict,
+            reason_code,
+        ),
         "request_count": outcome.request_count,
         "failure_category": None,
         "message": None,
@@ -180,6 +196,22 @@ def measure_known_limitation(limitation, runner=run_confirmed_live_endpoint):
             ),
             "classification": "non_decision",
             "failure_category": "transport",
+            "message": str(exc),
+        }
+    except LoopbackFixtureCheckError as exc:
+        return {
+            **known_limitation_observation(
+                limitation,
+                SimpleNamespace(
+                    initial=SimpleNamespace(
+                        verdict=Verdict.INCONCLUSIVE, reason_code=None
+                    ),
+                    status=ConfirmationStatus.INCONCLUSIVE,
+                    reason_code=None,
+                    request_count=0,
+                ),
+            ),
+            "failure_category": "unexpected_response",
             "message": str(exc),
         }
     assert port > 0
@@ -302,6 +334,7 @@ def known_limitation_failures(report):
             and row["confirmation_status"]
             == declaration.expected_confirmation_status.value
             and row["reason_code"] == declaration.expected_reason_code
+            and row["verdict"] == "inconclusive"
             and row["classification"] == "fp"
             and row["request_count"] == 18
         ):
@@ -481,6 +514,91 @@ def test_known_limitation_registry_drift_fails(mutation, diagnostic):
 
     failures = known_limitation_failures({"records": records})
     assert any(diagnostic in failure for failure in failures)
+
+
+def test_demoted_known_limitation_saves_actual_classification_before_failing(
+    measurements, simulated_report
+):
+    live, limitations = passing_live_measurement()
+    declaration = KNOWN_LIMITATION_ENDPOINTS[0]
+    demoted = known_limitation_observation(
+        declaration,
+        SimpleNamespace(
+            initial=SimpleNamespace(
+                verdict=Verdict.INCONCLUSIVE,
+                reason_code="boolean_candidate",
+            ),
+            status=ConfirmationStatus.INCONCLUSIVE,
+            reason_code="candidate_confirmation_mismatch",
+            request_count=18,
+        ),
+    )
+    limitations["records"] = [
+        demoted if row["limitation_id"] == declaration.limitation_id else row
+        for row in limitations["records"]
+    ]
+    path = simulated_report("demoted-known-limitation")
+
+    with pytest.raises(pytest.fail.Exception, match="no longer matches") as caught:
+        run_measurement(
+            measurements,
+            path,
+            lambda: test_sqli_http_e2e.fixed_loopback_record(None, "Fixture passed."),
+            lambda: (live, limitations),
+        )
+
+    report = json.loads(path.read_text(encoding="utf-8"))
+    saved = next(
+        row
+        for row in report["known_limitations"]["records"]
+        if row["limitation_id"] == declaration.limitation_id
+    )
+    assert saved["verdict"] == "inconclusive"
+    assert saved["reason_code"] == "candidate_confirmation_mismatch"
+    assert saved["classification"] == "non_decision"
+    assert f"Measurement report: {path}" in str(caught.value)
+
+
+def test_known_limitation_count_mismatch_writes_diagnostic_report(
+    measurements, simulated_report
+):
+    live, limitations = passing_live_measurement()
+    declaration = KNOWN_LIMITATION_ENDPOINTS[0]
+
+    def mismatched_count(_endpoint):
+        raise LoopbackFixtureCheckError(
+            "The loopback server observed a different total request count. "
+            "Check transport setup and confirmation request accounting."
+        )
+
+    failure = measure_known_limitation(declaration, mismatched_count)
+    limitations["records"] = [
+        failure if row["limitation_id"] == declaration.limitation_id else row
+        for row in limitations["records"]
+    ]
+    path = simulated_report("known-limitation-count-mismatch")
+
+    with pytest.raises(pytest.fail.Exception, match="different total request count"):
+        run_measurement(
+            measurements,
+            path,
+            lambda: test_sqli_http_e2e.fixed_loopback_record(None, "Fixture passed."),
+            lambda: (live, limitations),
+        )
+
+    report = json.loads(path.read_text(encoding="utf-8"))
+    saved = next(
+        row
+        for row in report["known_limitations"]["records"]
+        if row["limitation_id"] == declaration.limitation_id
+    )
+    assert saved["failure_category"] == "unexpected_response"
+    assert saved["classification"] == "non_decision"
+    assert saved["request_count"] == 0
+    assert len(report["live_loopback"]["records"]) == len(LIVE_TWIN_ENDPOINTS)
+    assert len(report["known_limitations"]["records"]) == len(
+        KNOWN_LIMITATION_ENDPOINTS
+    )
 
 
 def test_live_twins_share_declared_values_within_each_sql_context():

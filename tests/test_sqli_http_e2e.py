@@ -396,6 +396,10 @@ class LoopbackShutdownError(RuntimeError):
     """The loopback server thread could not stop."""
 
 
+class LoopbackFixtureCheckError(RuntimeError):
+    """The loopback fixture state disagreed with the completed check."""
+
+
 @contextmanager
 def running_server(server):
     assert server.server_address[0] == "127.0.0.1"
@@ -526,11 +530,31 @@ def run_confirmed_live_endpoint(
             context=context,
         )
 
-        assert outcome.request_count == context.budget.used_requests
-        assert server.total_requests == outcome.request_count
-        assert len(server.received) == outcome.request_count
-        assert not server.handler_failed
-        assert server.query_errors == endpoint.expected_query_errors
+        if outcome.request_count != context.budget.used_requests:
+            raise LoopbackFixtureCheckError(
+                "Confirmation request accounting disagreed with the shared budget. "
+                "Check the confirmation runner and ExecutionContext accounting."
+            )
+        if server.total_requests != outcome.request_count:
+            raise LoopbackFixtureCheckError(
+                "The loopback server observed a different total request count. "
+                "Check transport setup and confirmation request accounting."
+            )
+        if len(server.received) != outcome.request_count:
+            raise LoopbackFixtureCheckError(
+                "The loopback handler recorded a different accepted request count. "
+                "Check endpoint routing and query validation."
+            )
+        if server.handler_failed:
+            raise LoopbackFixtureCheckError(
+                "The loopback handler failed while serving confirmation probes. "
+                "Check the fixture implementation and handler state."
+            )
+        if server.query_errors != endpoint.expected_query_errors:
+            raise LoopbackFixtureCheckError(
+                "The loopback fixture observed an unexpected SQL error count. "
+                "Check the declared fixture expectation and probe context."
+            )
 
     return outcome, port
 
