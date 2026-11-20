@@ -246,7 +246,10 @@ def run_pipeline(
         assert case.true_payload == TRUE_1
         assert case.false_payload == FALSE_1
 
-        before = len(server.received)
+        assert server.total_requests == 0, (
+            "An offline pipeline stage sent HTTP. Check discover, review-draft, and materialize-case transport boundaries."
+        )
+        assert server.received == []
         verified = runner.invoke(
             app,
             [
@@ -291,7 +294,9 @@ def run_pipeline(
         assert outcome["verification"]["request_count"] == 6
         assert outcome["verification"]["failures"] == []
 
-        received = server.received[before:]
+        assert server.total_requests == 6
+        assert len(server.received) == 6
+        received = server.received
         expected_values = [
             BASELINE,
             BASELINE + TRUE_1,
