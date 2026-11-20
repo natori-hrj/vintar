@@ -57,6 +57,162 @@ def test_valid_partial_report(tmp_path):
     _validate(path, 3)
 
 
+def test_legacy_v1_report_without_confirmation_fields_is_accepted(tmp_path):
+    fixture = Path("tests/fixtures/regression-batch-report-v1-legacy.json")
+    path = tmp_path / "legacy-report.json"
+    path.write_bytes(fixture.read_bytes())
+
+    _validate(path, 3)
+
+    script = Path("scripts/validate_ci_report.py").resolve()
+    completed = subprocess.run(
+        [sys.executable, str(script), str(path), "3"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["actual_reason_code", "request_count", "confirmation"],
+)
+def test_extended_outcome_fields_are_all_or_nothing(tmp_path, missing):
+    report = make_report()
+    del report["outcomes"][0][missing]
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(ValueError, match="Supply actual_reason_code"):
+        _validate(path, 3)
+
+
+@pytest.mark.parametrize(
+    ("status", "updates"),
+    [
+        (
+            "not_configured",
+            {"configured": False, "reason_code": "confirmation_timeout"},
+        ),
+        (
+            "not_eligible",
+            {"configured": False, "reason_code": "initial_not_eligible"},
+        ),
+        (
+            "matched",
+            {"configured": False, "reason_code": "confirmation_pattern_matched"},
+        ),
+        (
+            "mismatch",
+            {"configured": True, "reason_code": "confirmation_timeout"},
+        ),
+        (
+            "operational",
+            {
+                "configured": True,
+                "reason_code": "confirmation_pattern_matched",
+            },
+        ),
+    ],
+)
+def test_confirmation_status_combinations_are_rejected_by_schema(
+    tmp_path, status, updates
+):
+    report = make_report()
+    confirmation = report["outcomes"][0]["confirmation"]
+    confirmation.update(status=status, **updates)
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(ValueError, match=f"Invalid {status} confirmation"):
+        _validate(path, 3)
+
+
+def test_not_eligible_rejects_boolean_candidate_initial_result(tmp_path):
+    report = make_report()
+    outcome = report["outcomes"][0]
+    outcome["verification"]["reason_code"] = "boolean_candidate"
+    outcome["actual_reason_code"] = "boolean_candidate"
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": "not_eligible",
+        "reason_code": "initial_not_eligible",
+        "request_count": 0,
+    }
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(ValueError, match="non-candidate initial result"):
+        _validate(path, 3)
+
+
+@pytest.mark.parametrize(
+    ("status", "confirmation_reason", "final_reason"),
+    [
+        ("matched", "confirmation_pattern_matched", "confirmation_timeout"),
+        (
+            "mismatch",
+            "candidate_confirmation_mismatch",
+            "confirmation_timeout",
+        ),
+    ],
+)
+def test_completed_confirmation_requires_its_exact_final_reason(
+    tmp_path, status, confirmation_reason, final_reason
+):
+    report = make_report()
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = final_reason
+    outcome["request_count"] = 18
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": status,
+        "reason_code": confirmation_reason,
+        "request_count": 12,
+    }
+    report["requests_used"] = 18
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(ValidationError):
+        _validate(path, 3)
+
+
+def test_operational_confirmation_requires_the_same_final_reason(tmp_path):
+    report = make_report()
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = "confirmation_timeout"
+    outcome["request_count"] = 1
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": "operational",
+        "reason_code": "confirmation_request_failed",
+        "request_count": 1,
+    }
+    report["requests_used"] = 1
+    path = write_report(tmp_path, report)
+
+    with pytest.raises(ValueError, match="same final INCONCLUSIVE reason"):
+        _validate(path, 3)
+
+
+def test_not_configured_timeout_repro_exits_two(tmp_path):
+    report = make_report()
+    report["outcomes"][0]["confirmation"]["reason_code"] = "confirmation_timeout"
+    path = write_report(tmp_path, report)
+    script = Path("scripts/validate_ci_report.py").resolve()
+
+    completed = subprocess.run(
+        [sys.executable, str(script), str(path), "3"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "Vintar: CI report validation failed.\n"
+
+
 def test_exit_code_mismatch(tmp_path):
     path = write_report(tmp_path, make_report())
 

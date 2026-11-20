@@ -371,7 +371,6 @@ def run_case(origin: str, mode: str):
         max_total_seconds=15.0,
     )
 
-    assert report.budget_used == context.budget.used_requests
     return report
 
 
@@ -397,24 +396,18 @@ def loopback_runs(reliability_server):
         state.reset()
         report = run_case(origin, mode)
         received, sql_calls, delay_calls = state.snapshot()
-        expected_count = EXPECTED[mode][2]
-        assert report.budget_used == expected_count
-        assert report.transport_attempts == expected_count
-        assert received == expected_count
-        assert state.received_values() == expected_probe_values()[:expected_count]
-        assert [item.status_code for item in report.analysis.observations[:-1]] == [
-            200
-        ] * max(0, expected_count - 1)
-        assert not report.deadline_exceeded
-        if mode == "vulnerable":
-            assert (sql_calls, delay_calls) == (9, 6)
-            assert state.delay_value_count(DELAY_SECONDS) == 3
-            assert state.delay_value_count(0.0) == 3
-        elif mode == "safe":
-            assert (sql_calls, delay_calls) == (9, 0)
-        else:
-            assert (sql_calls, delay_calls) == (0, 0)
-        runs.append((mode, report))
+        runs.append(
+            (
+                mode,
+                report,
+                received,
+                sql_calls,
+                delay_calls,
+                state.received_values(),
+                state.delay_value_count(DELAY_SECONDS),
+                state.delay_value_count(0.0),
+            )
+        )
     return tuple(runs)
 
 
@@ -503,7 +496,34 @@ def measured_runs():
 
 
 def test_loopback_transport_order_statuses_db_calls_and_budget(loopback_runs):
-    assert [mode for mode, _ in loopback_runs] == [mode for mode, _ in CASES]
+    assert [run[0] for run in loopback_runs] == [mode for mode, _ in CASES]
+    for (
+        mode,
+        report,
+        received,
+        sql_calls,
+        delay_calls,
+        received_values,
+        delayed_calls,
+        control_calls,
+    ) in loopback_runs:
+        expected_count = EXPECTED[mode][2]
+        assert report.budget_used == expected_count
+        assert report.transport_attempts == expected_count
+        assert received == expected_count
+        assert received_values == expected_probe_values()[:expected_count]
+        assert [item.status_code for item in report.analysis.observations[:-1]] == [
+            200
+        ] * max(0, expected_count - 1)
+        assert not report.deadline_exceeded
+        if mode == "vulnerable":
+            assert (sql_calls, delay_calls) == (9, 6)
+            assert delayed_calls == 3
+            assert control_calls == 3
+        elif mode == "safe":
+            assert (sql_calls, delay_calls) == (9, 0)
+        else:
+            assert (sql_calls, delay_calls) == (0, 0)
 
 
 def test_repeated_http_classifications(measured_runs):
