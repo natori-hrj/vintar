@@ -162,6 +162,12 @@ def _sql_result(category: str, *, safe: bool) -> bytes:
 
 
 class _Handler(BaseHTTPRequestHandler):
+    def parse_request(self) -> bool:
+        parsed = super().parse_request()
+        if parsed:
+            self.server.total_requests += 1
+        return parsed
+
     def do_GET(self) -> None:
         server = self.server
         path = urlsplit(self.path)
@@ -236,6 +242,7 @@ class _Server(HTTPServer):
         )
 
         self.received: list[tuple[str, str, str]] = []
+        self.total_requests = 0
         self.handler_failed = False
         self.query_errors = 0
 
@@ -706,6 +713,31 @@ def test_sqlite_error_is_generic_and_quiet(
     assert server.query_errors == 1
     assert server.handler_failed is False
     assert capsys.readouterr() == ("", "")
+
+
+def test_unexpected_requests_are_counted_before_validation():
+    try:
+        server = _Server()
+    except OSError:
+        pytest.fail(
+            "Cannot bind the request-count fixture. Check that the runner permits IPv4 loopback sockets."
+        )
+
+    with (
+        running_server(server) as (_, origin),
+        httpx.Client(trust_env=False, follow_redirects=False, timeout=5) as client,
+    ):
+        unexpected_query = client.get(
+            origin + "/safe", params={"unexpected": "fixture-value"}
+        )
+        unexpected_method = client.post(origin + "/safe")
+
+    assert unexpected_query.status_code == 404
+    assert unexpected_method.status_code == 501
+    assert server.total_requests == 2
+    assert server.received == []
+    assert server.query_errors == 0
+    assert server.handler_failed is False
 
 
 def test_cli_environment_does_not_inherit_ambient_values(
