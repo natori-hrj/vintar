@@ -10,6 +10,7 @@ from vintar.regression.discovery import (
     JSON,
     DiscoveryError,
     Input,
+    ReferenceLimitError,
     Source,
     _Discovery,
     _inventory_inputs,
@@ -73,16 +74,26 @@ def _candidate(
         target = reference.get("$ref")
         return (
             isinstance(target, str)
-            and target.startswith("#")
+            and target.startswith("#/")
             and pointer == f"{unquote(target[1:])}/value"
         )
 
     for site, reference in sorted(
-        references, key=lambda entry: not is_selected(*entry)
+        references, key=lambda entry: (not is_selected(*entry), entry[0].pointer)
     ):
         selected = is_selected(site, reference)
+        ref = reference["$ref"]
+        if not isinstance(ref, str) or not ref.startswith("#/"):
+            if selected:
+                raise DiscoveryError(
+                    site.child("$ref"),
+                    "Unsupported reference. Bundle the spec and use a local JSON Pointer.",
+                )
+            continue
         try:
             example, target, _ = document.resolve(reference, site)
+        except ReferenceLimitError:
+            raise
         except DiscoveryError:
             if selected:
                 raise

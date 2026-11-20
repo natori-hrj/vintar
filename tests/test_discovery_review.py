@@ -399,3 +399,60 @@ def test_only_selected_bad_example_reference_rejects_review(
     assert remediation in result.stderr
     assert reference not in result.stderr
     assert not Path("rejected.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit"),
+    [
+        ("MAX_REFERENCE_WORK", 2),
+        ("MAX_REFERENCE_WORK", 1),
+        ("MAX_REFERENCE_DEPTH", 1),
+    ],
+    ids=["fits-work-budget", "exceeds-work-budget", "exceeds-hop-budget"],
+)
+def test_two_hop_example_is_order_independent(
+    review_inputs, monkeypatch, limit_name, limit
+):
+    spec, _, config = review_inputs
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    document["components"] = {
+        "examples": {
+            "Alias": {"$ref": "#/components/examples/E"},
+            "E": {"value": VALUE},
+        }
+    }
+    parameter = document["paths"]["/sample"]["get"]["parameters"][0]
+    pointer = "/components/examples/E/value"
+    answers(config, {"pointer": pointer})
+    monkeypatch.setattr(discovery, limit_name, limit)
+
+    examples = [
+        ("valid", {"$ref": "#/components/examples/Alias"}),
+        ("unused", {"$ref": "examples.json#/E"}),
+    ]
+    reports = []
+    for index, entries in enumerate((examples, list(reversed(examples)))):
+        parameter["examples"] = dict(entries)
+        spec.write_text(json.dumps(document), encoding="utf-8")
+        output = Path(f"review-{index}.json")
+        result = run_review(review_inputs, output)
+        if limit == 1:
+            assert result.exit_code == 2
+            assert "Reference work limit exceeded" in result.stderr
+            assert "Simplify or split the spec" in result.stderr
+            assert (
+                "not a supported explicit local baseline candidate" not in result.stderr
+            )
+            assert not output.exists()
+        else:
+            assert result.exit_code == 0, result.stderr
+            reports.append(output.read_bytes())
+    if limit == 2:
+        assert reports[0] == reports[1]
+        assert json.loads(reports[0])["parameters"]["q"] == {
+            "status": "resolved",
+            "source": {"file": spec.name, "pointer": pointer},
+            "value_sha256": hashlib.sha256(
+                json.dumps(VALUE).encode("ascii")
+            ).hexdigest(),
+        }

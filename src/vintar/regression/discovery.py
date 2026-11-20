@@ -65,6 +65,10 @@ class DiscoveryError(ValueError):
         super().__init__(f"{source.file}#{source.pointer}: {reason}")
 
 
+class ReferenceLimitError(DiscoveryError):
+    """Reference resolution exceeded its hop or work limit."""
+
+
 @dataclass(frozen=True)
 class HeldItem:
     source: Source
@@ -471,7 +475,7 @@ class _Discovery:
                 self.reference_work > MAX_REFERENCE_WORK
                 or len(trail) >= MAX_REFERENCE_DEPTH
             ):
-                raise DiscoveryError(
+                raise ReferenceLimitError(
                     site, "Reference work limit exceeded. Simplify or split the spec."
                 )
             target, value = self._pointer(_string(node["$ref"], site), site)
