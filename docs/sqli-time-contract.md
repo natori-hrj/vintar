@@ -219,6 +219,35 @@ an execution error rather than a normal target classification.
 
 Unexpected analyzer failures must not be transformed into a candidate.
 
+## Product Result Contract
+
+The offline product contract maps a validated timing analysis to a product
+verdict without changing its reason code. This mapping does not connect the
+time-based check to Schema v1, the CLI, reports, or a CI gate.
+
+A timing candidate maps to `INCONCLUSIVE`, never `VULNERABLE`. A
+`NOT_DETECTED` result means only that the configured timing pattern was not
+reproduced by this bounded check; it does not prove the absence of SQL
+injection.
+
+| Reason code | Analysis status | Product verdict | Requests | Complete nine | Evidence |
+| --- | --- | --- | ---: | --- | --- |
+| `timing_pattern_matched` | CANDIDATE | INCONCLUSIVE | 9 | required | required |
+| `timing_pattern_not_matched` | NOT_CONFIRMED | NOT_DETECTED | 9 | required | required |
+| `incomplete_probes` | INCONCLUSIVE | INCONCLUSIVE | 0–8 | no | forbidden |
+| `probe_timeout` | INCONCLUSIVE | INCONCLUSIVE | 1–9 | no | forbidden |
+| `probe_failed` | INCONCLUSIVE | INCONCLUSIVE | 1–9 | no | forbidden |
+| `probe_interrupted` | INCONCLUSIVE | INCONCLUSIVE | 1–9 | no | forbidden |
+| `rate_limited` | INCONCLUSIVE | INCONCLUSIVE | 1–9 | no | forbidden |
+| `non_success_status` | INCONCLUSIVE | INCONCLUSIVE | 1–9 | no | forbidden |
+| `truncated_response` | INCONCLUSIVE | INCONCLUSIVE | 1–9 | no | forbidden |
+| `unstable_timing` | INCONCLUSIVE | INCONCLUSIVE | 9 | required | required |
+| `ambiguous_timing` | INCONCLUSIVE | INCONCLUSIVE | 9 | required | required |
+
+`TIME_RESULT_RULES` is the machine-readable source for these invariants. The
+analyzer validates status, reason, request count, completeness, and evidence
+against that table before a result can be mapped.
+
 ## HTTP Runner
 
 The runner constructs the plan and observations inside one trusted
@@ -326,6 +355,11 @@ usage. Targets must be explicitly authorized and suitable for
 controlled testing.
 
 ## Evidence and Data Retention
+
+The content-addressed evidence, acquisition, signature, checkpoint, audit,
+freshness, lifecycle, streaming, and governor modules remain research
+infrastructure. They are not imported into or required by the product result
+mapping path.
 
 The runner's analysis evidence does not retain:
 
