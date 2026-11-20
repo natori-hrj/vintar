@@ -1,0 +1,44 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Reviewed DSVW Boolean SQLi measurement surface",
+    "version": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:65412"
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "dsvwRoot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "example": 2
+            }
+          },
+          {
+            "name": "v",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "0.5"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "DSVW demonstration response"
+          }
+        }
+      }
+    }
+  }
+}

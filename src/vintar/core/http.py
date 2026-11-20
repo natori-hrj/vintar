@@ -1,8 +1,18 @@
 import time
+from urllib.parse import quote, urlencode
 
 import httpx
 
 from vintar.core.models import HttpResult
+
+
+def _url_with_query(url: str, params: list[tuple[str, str]] | None) -> httpx.URL:
+    """Serialize query pairs with RFC 3986 percent encoding."""
+    parsed = httpx.URL(url)
+    if params is None:
+        return parsed
+    query = urlencode(params, doseq=False, safe="", quote_via=quote)
+    return parsed.copy_with(query=query.encode("ascii"))
 
 
 def send_request(
@@ -39,10 +49,9 @@ def send_request(
 
         with active_client.stream(
             method=method,
-            url=url,
+            url=_url_with_query(url, params),
             content=body,
             headers=request_headers,
-            params=tuple(params) if params is not None else None,
             timeout=timeout,
             follow_redirects=False,
         ) as response:

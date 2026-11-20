@@ -1,7 +1,72 @@
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import unquote
+
 import httpx
 import pytest
 
 from vintar.core.http import send_request
+
+
+class _PercentOnlyServer(HTTPServer):
+    """Loopback fixture that decodes percent escapes but not plus-as-space."""
+
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), _PercentOnlyHandler)
+        self.observed_value: str | None = None
+        self.handler_failed = False
+
+    def handle_error(self, request: object, client_address: tuple[str, int]) -> None:
+        self.handler_failed = True
+
+
+class _PercentOnlyHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        server = self.server
+        if not isinstance(server, _PercentOnlyServer):
+            raise TypeError("Unexpected percent-only fixture server.")
+        raw_query = self.path.partition("?")[2]
+        name, separator, raw_value = raw_query.partition("=")
+        if name != "probe" or separator != "=":
+            server.handler_failed = True
+            self.send_error(400)
+            return
+        server.observed_value = unquote(raw_value)
+        body = b"ok"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        """Keep probe values out of test output."""
+
+
+@contextmanager
+def _running_percent_only_server():
+    server = _PercentOnlyServer()
+    started = threading.Event()
+
+    def serve() -> None:
+        started.set()
+        server.serve_forever(poll_interval=0.05)
+
+    thread = threading.Thread(target=serve, name="percent-only-query-fixture")
+    thread.start()
+    assert started.wait(timeout=5), (
+        "The percent-only query fixture did not start. Check loopback socket and thread setup."
+    )
+    try:
+        port = server.server_address[1]
+        yield server, f"http://127.0.0.1:{port}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive(), (
+            "The percent-only query fixture did not stop. Check outstanding loopback requests."
+        )
 
 
 def test_get_request():
@@ -93,6 +158,37 @@ def test_query_parameters_preserve_repeated_key_order():
         assert result.status_code == 200
         assert result.elapsed >= 0
         assert result.size == 7
+
+
+def test_query_serialization_uses_rfc3986_percent_encoding():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.query == (b"probe=%20A%2BB%2FC%3FD%3DE%26F%23G%25H")
+        assert request.url.params["probe"] == " A+B/C?D=E&F#G%H"
+        return httpx.Response(200, text="ok")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = send_request(
+            method="GET",
+            url="http://localhost/",
+            params=[("probe", " A+B/C?D=E&F#G%H")],
+            client=client,
+        )
+
+    assert result.status_code == 200
+
+
+def test_loopback_query_reaches_percent_only_decoder_with_spaces_intact():
+    value = "Pets AND 1=1-- +literal"
+    with _running_percent_only_server() as (server, origin):
+        result = send_request(
+            method="GET",
+            url=origin,
+            params=[("probe", value)],
+        )
+
+    assert result.status_code == 200
+    assert server.observed_value == value
+    assert server.handler_failed is False
 
 
 def test_response_headers():

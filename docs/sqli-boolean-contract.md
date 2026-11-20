@@ -48,6 +48,12 @@ The request order is:
 BASELINE, TRUE, FALSE, BASELINE, FALSE, TRUE
 ```
 
+Query parameter names and values are serialized with RFC 3986 percent encoding.
+Spaces are encoded as `%20`, never `+`, and a literal plus sign is encoded as `%2B`.
+This preserves probe payloads for servers that perform percent decoding without
+form-style plus-to-space conversion, while remaining compatible with form-style
+query decoders.
+
 The analyzer compares each response pair and each cross-category
 relation using:
 
