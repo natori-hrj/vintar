@@ -425,6 +425,11 @@ These limitations must remain visible to maintainers and users.
 
 ## Integration Boundary
 
+The v0.1.0 production CLI supports Boolean verification on GET query
+parameters. Confirmed vulnerability verdicts and CLI integration of 12-probe
+confirmation are deferred to v0.2 and later. For batch outcomes and exit codes,
+see [CI status](ci-integration.md#ci-status).
+
 The confirmation runner and `ConfirmationStatus` are not exposed as
 a production SQLi finding through the existing Schema v1, CLI, or
 CI security gate. Existing CLI and regression paths still invoke the

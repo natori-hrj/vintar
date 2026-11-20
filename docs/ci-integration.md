@@ -4,6 +4,20 @@
 This document describes the initial, manually triggered Vintar
 security verification workflow.
 
+## v0.1.0 Scope
+
+Vintar v0.1.0 supports Boolean-based SQL injection regression checks for
+`GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
+materialization run offline. The workflow is
+`discover → review-draft → materialize-case → verify`. Reviewers explicitly
+select the `string-quoted` or `numeric` probe preset when using presets.
+Verification runs against an authorized, configured target.
+
+Deferred to v0.2 and later are confirmed `VULNERABLE` verdicts and CLI integration
+of 12-probe confirmation, time-based, error-based, and UNION-based SQL injection
+checks, POST form and JSON body injection, cookie and header injection, and
+authenticated workflows.
+
 ## Requirements
 
 - Python 3.13
@@ -47,6 +61,15 @@ Both variables are required.
 These values must be controlled by trusted maintainers.
 Do not place API tokens, credentials, or secrets inside origins.
 
+## Prepare reviewed cases
+
+Use offline OpenAPI discovery to identify candidate inputs, record reviewer
+decisions with `review-draft`, and produce reviewed Schema v1 TOML files with
+`materialize-case`. Store the reviewed cases under `security/cases/` and run
+`verify` with explicit authorization and trusted runtime origins. Restrict
+access to materialized cases because they contain raw reviewed values.
+See the [README workflow](../README.md#discover-inputs-for-review).
+
 ## Execution
 
 Go to:
@@ -65,13 +88,18 @@ It does not run automatically on pull requests.
 
 ## CI status
 
-| Exit code | Meaning |
-| --- | --- |
-| 0 | PASS |
-| 1 | FAIL |
-| 2 | ERROR |
-| 3 | INCONCLUSIVE |
-| 130 | Interrupted |
+| Case outcome or batch condition | `verify` exit code | CI meaning |
+| --- | --- | --- |
+| `NOT_DETECTED` matches the reviewed expectation for every case in a complete batch | `0` | **PASS.** No Boolean differential was detected under the tested probes and conditions. This does not prove SQL injection is absent. |
+| `INCONCLUSIVE` with reason `boolean_candidate` | `3` | **BLOCK / Review required.** A SQLi-like Boolean response differential was observed. This is a candidate signal and requires independent evidence before anyone can call it a confirmed vulnerability. |
+| Other `INCONCLUSIVE` reasons or an incomplete batch | `3` | **BLOCK / Investigation required.** Verification was insufficient. Check the budget, rate limits, transport or HTTP status, and response stability. |
+| `FAIL` | `1` | **FAIL.** A `NOT_DETECTED` result did not match the reviewed expectation. |
+| `ERROR` | `2` | **ERROR.** Invalid input, configuration, execution, or output prevented a usable result. |
+| Interrupted | `130` | **Interrupted.** A usable report may be absent. |
+
+These are batch exit codes. A failed case takes precedence over inconclusive
+outcomes and an incomplete batch. An inconclusive case never passes, even when
+its verdict matches the expectation.
 
 Any nonzero code fails the verification job.
 
@@ -144,9 +172,13 @@ use an external target merely to test these paths.
 ## Current limitations
 
 - Regression cases still use schema v1 with placeholder origins.
-- Automatic OpenAPI discovery is not implemented.
-- Current SQLi analysis does not yet produce confirmed
-  VULNERABLE verdicts.
+- Non-SQL middleware can mimic a Boolean response differential. The
+  `waf200_mimic` fixture demonstrates a false candidate. Vintar does not claim
+  zero false candidates across environments.
+- Matched live loopback evaluation covers ephemeral SQLite twins using the
+  corresponding `string-quoted` and `numeric` presets. The observed candidate
+  counts were **TP=2, TN=2, FP=0, FN=0** for those fixtures. PostgreSQL and MySQL
+  integration tests are opt-in and do not run in default CI.
 - Global execution deadlines are not enforced by the engine;
   the workflow uses a job-level timeout.
 - An interrupted or failed execution may produce no report.

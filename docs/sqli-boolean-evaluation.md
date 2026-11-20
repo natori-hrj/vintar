@@ -424,6 +424,11 @@ coverage.
 
 ## Candidate-signal measurement
 
+The v0.1.0 evidence covers the matched SQLite loopback fixtures described below.
+The separate `waf200_mimic` result demonstrates that non-SQL middleware can
+produce candidates. PostgreSQL and MySQL integration tests remain opt-in and
+are outside the default CI measurement.
+
 The always-on pytest suite measures the Boolean candidate signal on labeled synthetic
 observations. A positive is `INCONCLUSIVE / boolean_candidate`. A negative is
 `NOT_DETECTED`. All other results are non-decisions. Replay reports true positives,
