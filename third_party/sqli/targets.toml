@@ -1,0 +1,35 @@
+version = 1
+
+[target]
+name = "DSVW"
+repository = "https://github.com/stamparm/DSVW"
+license = "Unlicense"
+commit = "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908"
+archive_url = "https://github.com/stamparm/DSVW/archive/9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908.tar.gz"
+archive_sha256 = "96690f62ac0fba8a4f0aeac22f2370853bc02b96fb3efd1b8fc3a39398bf302b"
+
+[[records]]
+id = "dsvw-blind-boolean-id"
+input_id = "input-0927742c7a4ae9527f51f8c541502371"
+parameter = "id"
+initial_value = "2"
+label = "positive"
+evidence_type = "non_parameterized_sql_sink"
+source_path = "dsvw.py"
+source_start_line = 21
+source_end_line = 23
+source_fragment_sha256 = "9158ee846fb3660c991028a0380d63a20735b7c715848d39ba4f6e4709fbd541"
+reviewer_note = "The reviewed upstream handler concatenates the id query value into a SQLite statement; the label is independent of Vintar output."
+
+[[records]]
+id = "dsvw-version-query"
+input_id = "input-ffe5bfa38242d9cad17138d92bb38efd"
+parameter = "v"
+initial_value = "0.5"
+label = "negative"
+evidence_type = "parameter_does_not_reach_sql_sink"
+source_path = "dsvw.py"
+source_start_line = 24
+source_end_line = 25
+source_fragment_sha256 = "8681e2b82b67d8f252482fee5088985a1b722069c02591c33a2154356b0b365d"
+reviewer_note = "The reviewed upstream handler uses v only to replace displayed version text; it does not reach a SQL sink. This is weaker evidence than a parameterized twin."

@@ -1,0 +1,31 @@
+services:
+  dsvw:
+    image: "${DSVW_IMAGE:?Run scripts/prepare_third_party_sqli.py first}"
+    pull_policy: never
+    read_only: true
+    environment:
+      PEX_ROOT: /tmp/pex
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    expose:
+      - "65412"
+    networks:
+      - measurement
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:65412/', timeout=2).read()"
+      interval: 1s
+      timeout: 3s
+      retries: 20
+      start_period: 2s
+
+networks:
+  measurement:
+    internal: true
