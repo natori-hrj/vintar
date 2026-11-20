@@ -1,7 +1,9 @@
-name: Vintar Release Rehearsal
+name: Vintar Release
 
 on:
   workflow_dispatch:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
   contents: read
@@ -63,6 +65,8 @@ jobs:
     needs: quality
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      artifact-id: ${{ steps.verified.outputs.artifact-id }}
 
     steps:
       - name: Check out selected ref
@@ -83,11 +87,16 @@ jobs:
         run: uv sync --locked
 
       - name: Build and verify one distribution set
-        run: >-
-          uv run --locked python -m scripts.rehearse_release
-          --output "$RUNNER_TEMP/vintar-release"
+        run: |
+          set -euo pipefail
+          args=(--output "$RUNNER_TEMP/vintar-release")
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            args+=(--tag "$GITHUB_REF_NAME")
+          fi
+          uv run --locked python -m scripts.rehearse_release "${args[@]}"
 
       - name: Upload verified distribution artifacts
+        id: verified
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vintar-verified-release
@@ -97,3 +106,61 @@ jobs:
             ${{ runner.temp }}/vintar-release/SHA256SUMS
             ${{ runner.temp }}/vintar-release/sbom-cpython-*.cdx.json
           if-no-files-found: error
+
+  publish-pypi:
+    name: Publish verified distributions to PyPI
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: rehearse
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download verified release artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.rehearse.outputs.artifact-id }}
+          path: ${{ runner.temp }}/vintar-release
+
+      - name: Verify hashes and stage distributions
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/vintar-release"
+          sha256sum --check --strict SHA256SUMS
+          mkdir "$GITHUB_WORKSPACE/dist"
+          cp -- ./*.whl ./*.tar.gz "$GITHUB_WORKSPACE/dist/"
+
+      - name: Publish to PyPI with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+
+  github-release:
+    name: Create GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [rehearse, publish-pypi]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified release artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.rehearse.outputs.artifact-id }}
+          path: ${{ runner.temp }}/vintar-release
+
+      - name: Create release with verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/vintar-release"
+          sha256sum --check --strict SHA256SUMS
+          gh release create --verify-tag --generate-notes --title "$GITHUB_REF_NAME" -- \
+            "$GITHUB_REF_NAME" ./*.whl ./*.tar.gz ./SHA256SUMS ./sbom-cpython-*.cdx.json

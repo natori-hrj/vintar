@@ -1,6 +1,6 @@
-# Vintar (Unreleased)
+# Vintar
 
-Vintar is an unreleased Python tool for running authorized web security regression checks in CI. It runs reviewed cases against a configured target and reports the batch result as JSON and a process exit code.
+Vintar is a Python tool for running authorized web security regression checks in CI. It runs reviewed cases against a configured target and reports the batch result as JSON and a process exit code.
 
 ## v0.1.0 Scope
 
@@ -16,15 +16,32 @@ of 12-probe confirmation, time-based, error-based, and UNION-based SQL injection
 checks, POST form and JSON body injection, cookie and header injection, and
 authenticated workflows.
 
-## Install from Source
+## Install from PyPI
 
-Before the PyPI release, use Python 3.13 or later and uv. Clone the repository with an account that has access, then install from the lockfile.
+Use Python 3.13 or later. With uv, install Vintar as a CLI tool.
+
+```bash
+uv tool install vintar
+```
+
+Alternatively, install it in an active virtual environment with pip.
+
+```bash
+pip install vintar
+```
+
+### Install from Source
+
+For development, clone the repository and install from the lockfile.
 
 ```bash
 git clone https://github.com/natori-hrj/vintar.git
 cd vintar
 uv sync --locked
 ```
+
+The examples below use `uv run --locked vintar` from a source checkout. With an
+installed CLI, use `vintar` in its place.
 
 ## Run Your First Regression Batch
 

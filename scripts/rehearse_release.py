@@ -303,7 +303,18 @@ def verify_install(
     )
 
 
-def rehearse(output: Path, interpreters: list[str]) -> int:
+def validate_release_tag(tag: str, version: str) -> None:
+    expected = f"v{version}"
+    if tag != expected or not re.fullmatch(
+        r"v(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}", tag, re.ASCII
+    ):
+        raise ValueError(
+            f"Release tag {tag!r} does not match a stable project version. "
+            f"Use the stable vMAJOR.MINOR.PATCH tag matching pyproject.toml ({expected})."
+        )
+
+
+def rehearse(output: Path, interpreters: list[str], tag: str | None = None) -> int:
     if output.is_relative_to(ROOT) or output.exists():
         raise ValueError(
             "The artifact directory must be new and outside the checkout. Pick a fresh path."
@@ -315,6 +326,8 @@ def rehearse(output: Path, interpreters: list[str]) -> int:
             "The interpreter matrix is invalid. Supply distinct CPython minor versions."
         )
     version = release_version(ROOT)
+    if tag is not None:
+        validate_release_tag(tag, version)
     output.mkdir(parents=True)
     distributions = build_distributions(output)
     if distributions is None:
@@ -357,9 +370,12 @@ def rehearse(output: Path, interpreters: list[str]) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--tag", help="Require this stable release tag to match the project version."
+    )
     args = parser.parse_args()
     try:
-        return rehearse(args.output.resolve(), supported_interpreters())
+        return rehearse(args.output.resolve(), supported_interpreters(), args.tag)
     except AuditFindings as exc:
         print(exc, file=sys.stderr)
         return 1
