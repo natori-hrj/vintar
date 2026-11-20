@@ -9,7 +9,6 @@ A candidate is not proof of SQL injection.
 
 import hashlib
 import re
-import secrets
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -58,6 +57,7 @@ _INCONCLUSIVE_REASONS = frozenset(
         "confirmation_non_success_status",
         "confirmation_unstable",
         "confirmation_cross_phase_mismatch",
+        "candidate_confirmation_mismatch",
     }
 )
 
@@ -108,7 +108,8 @@ class ConfirmationEvidence:
 
     observations: tuple[ConfirmationObservation, ...] = field(repr=False)
     baseline_matches_true: bool
-    false_matches_control: bool
+    baseline_matches_control: bool
+    false_pair_matches: bool
     baseline_differs_from_false: bool
 
     def __post_init__(self) -> None:
@@ -129,7 +130,8 @@ class ConfirmationEvidence:
             raise ValueError("Invalid confirmation evidence response.")
         for value in (
             self.baseline_matches_true,
-            self.false_matches_control,
+            self.baseline_matches_control,
+            self.false_pair_matches,
             self.baseline_differs_from_false,
         ):
             if type(value) is not bool:
@@ -157,16 +159,18 @@ class ConfirmationEvidence:
         false_1 = signature(pairs[ConfirmationKind.FALSE_1][0])
         true_2 = signature(pairs[ConfirmationKind.TRUE_2][0])
         false_2 = signature(pairs[ConfirmationKind.FALSE_2][0])
-        control = signature(pairs[ConfirmationKind.CONTROL][0])
+        control = signature(pairs[ConfirmationKind.BASELINE_PRESERVING_CONTROL][0])
 
         expected = (
             baseline == true_1 == true_2,
-            false_1 == false_2 == control,
+            baseline == control,
+            false_1 == false_2,
             baseline != false_1,
         )
         actual = (
             self.baseline_matches_true,
-            self.false_matches_control,
+            self.baseline_matches_control,
+            self.false_pair_matches,
             self.baseline_differs_from_false,
         )
         if actual != expected:
@@ -177,8 +181,7 @@ class ConfirmationEvidence:
 class ConfirmationOutcome:
     """Result of one initial-plus-confirmation execution.
 
-    NOT_CONFIRMED only means the experimental relation did not match.
-    It is not evidence that the target is safe.
+    A relation mismatch is INCONCLUSIVE and is not evidence that the target is safe.
     """
 
     initial: VerificationResult = field(repr=False)
@@ -234,11 +237,18 @@ class ConfirmationOutcome:
             raise ValueError("Confirmation requires an eligible initial result.")
 
         if self.status is ConfirmationStatus.INCONCLUSIVE:
-            if (
-                self.reason_code not in _INCONCLUSIVE_REASONS
-                or self.evidence is not None
+            if self.reason_code not in _INCONCLUSIVE_REASONS or (
+                self.evidence is not None
+                and self.reason_code != "candidate_confirmation_mismatch"
             ):
                 raise ValueError("Inconsistent inconclusive outcome.")
+
+            if self.reason_code == "candidate_confirmation_mismatch" and (
+                self.confirmation_requests != CONFIRMATION_REQUESTS
+                or self.total_requests != TOTAL_REQUESTS
+                or self.evidence is None
+            ):
+                raise ValueError("Incomplete confirmation mismatch outcome.")
 
             if self.reason_code == "confirmation_unstable" and (
                 self.confirmation_requests != CONFIRMATION_REQUESTS
@@ -285,7 +295,8 @@ class ConfirmationOutcome:
 
         relation_matches = (
             self.evidence.baseline_matches_true
-            and self.evidence.false_matches_control
+            and self.evidence.baseline_matches_control
+            and self.evidence.false_pair_matches
             and self.evidence.baseline_differs_from_false
         )
 
@@ -296,9 +307,7 @@ class ConfirmationOutcome:
             ):
                 raise ValueError("Inconsistent candidate outcome.")
 
-        elif self.status is ConfirmationStatus.NOT_CONFIRMED and (
-            self.reason_code != "confirmation_pattern_not_matched" or relation_matches
-        ):
+        elif self.status is ConfirmationStatus.NOT_CONFIRMED:
             raise ValueError("Inconsistent not-confirmed outcome.")
 
     @property
@@ -321,7 +330,9 @@ def _build_preflight_plan(
         ConfirmationKind.FALSE_1: inject(template, point, payloads.false_1),
         ConfirmationKind.TRUE_2: inject(template, point, payloads.true_2),
         ConfirmationKind.FALSE_2: inject(template, point, payloads.false_2),
-        ConfirmationKind.CONTROL: inject(template, point, payloads.control),
+        ConfirmationKind.BASELINE_PRESERVING_CONTROL: inject(
+            template, point, payloads.baseline_preserving_control
+        ),
     }
 
     if len(set(requests.values())) != len(requests):
@@ -398,21 +409,26 @@ def _analyze(
     false_1 = signature(pairs[ConfirmationKind.FALSE_1][0])
     true_2 = signature(pairs[ConfirmationKind.TRUE_2][0])
     false_2 = signature(pairs[ConfirmationKind.FALSE_2][0])
-    control = signature(pairs[ConfirmationKind.CONTROL][0])
+    control = signature(pairs[ConfirmationKind.BASELINE_PRESERVING_CONTROL][0])
 
     baseline_matches_true = baseline == true_1 == true_2
-    false_matches_control = false_1 == false_2 == control
+    baseline_matches_control = baseline == control
+    false_pair_matches = false_1 == false_2
     baseline_differs_from_false = baseline != false_1
 
     evidence = ConfirmationEvidence(
         observations=observations,
         baseline_matches_true=baseline_matches_true,
-        false_matches_control=false_matches_control,
+        baseline_matches_control=baseline_matches_control,
+        false_pair_matches=false_pair_matches,
         baseline_differs_from_false=baseline_differs_from_false,
     )
 
     candidate = (
-        baseline_matches_true and false_matches_control and baseline_differs_from_false
+        baseline_matches_true
+        and baseline_matches_control
+        and false_pair_matches
+        and baseline_differs_from_false
     )
 
     return (
@@ -430,6 +446,7 @@ def verify_boolean_sqli_with_confirmation(
     false_1: str,
     true_2: str,
     false_2: str,
+    baseline_preserving_control: str,
     context: ExecutionContext,
     transport: httpx.BaseTransport | None = None,
 ) -> ConfirmationOutcome:
@@ -467,7 +484,7 @@ def verify_boolean_sqli_with_confirmation(
         false_1=false_1,
         true_2=true_2,
         false_2=false_2,
-        control="__vintar_control_" + secrets.token_hex(16),
+        baseline_preserving_control=baseline_preserving_control,
     )
 
     try:
@@ -629,12 +646,15 @@ def verify_boolean_sqli_with_confirmation(
                 "confirmation_cross_phase_mismatch",
             )
 
+    if status is ConfirmationStatus.NOT_CONFIRMED:
+        return finish(
+            ConfirmationStatus.INCONCLUSIVE,
+            "candidate_confirmation_mismatch",
+            evidence,
+        )
+
     return finish(
         status,
-        (
-            "confirmation_pattern_matched"
-            if status is ConfirmationStatus.CANDIDATE
-            else "confirmation_pattern_not_matched"
-        ),
+        "confirmation_pattern_matched",
         evidence,
     )

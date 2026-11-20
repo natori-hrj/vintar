@@ -39,6 +39,7 @@ TRUE_1 = "' AND 1=1-- "
 FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
+BASELINE_PRESERVING_CONTROL = "' AND 7=7-- "
 
 INITIAL_ORDER = ("B", "T1", "F1", "B", "F1", "T1")
 CONFIRMATION_ORDER = (
@@ -216,13 +217,12 @@ class FixtureHandler(BaseHTTPRequestHandler):
 
         first_false = value == "Pets" + FALSE_1
         second_false = value == "Pets" + FALSE_2
-        is_control = value.startswith("Pets__vintar_control_")
 
         if mode == "simple":
             return b"B" if first_false else b"A"
 
         if mode in {"mimic", "waf"}:
-            blocked = first_false or second_false or is_control
+            blocked = first_false or second_false
 
             if mode == "waf":
                 return b"access-denied" if blocked else b"products-found"
@@ -357,6 +357,7 @@ def run_real_http(
             false_1=FALSE_1,
             true_2=TRUE_2,
             false_2=FALSE_2,
+            baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
             context=context,
             transport=transport,
         )
@@ -408,7 +409,7 @@ def assert_query_encoding(server: FixtureServer):
     [
         ("vulnerable", ConfirmationStatus.CANDIDATE, 18),
         ("safe", ConfirmationStatus.SKIPPED, 6),
-        ("simple", ConfirmationStatus.NOT_CONFIRMED, 18),
+        ("simple", ConfirmationStatus.INCONCLUSIVE, 18),
         ("mimic", ConfirmationStatus.CANDIDATE, 18),
         ("waf", ConfirmationStatus.CANDIDATE, 18),
         ("auth", ConfirmationStatus.INCONCLUSIVE, 7),
@@ -442,25 +443,26 @@ def test_confirmation_over_real_http(
         assert outcome.reason_code == "confirmation_pattern_matched"
         assert outcome.evidence is not None
 
-    if expected is ConfirmationStatus.NOT_CONFIRMED:
-        assert outcome.reason_code == "confirmation_pattern_not_matched"
-
     if expected is ConfirmationStatus.SKIPPED:
         assert outcome.confirmation_requests == 0
 
     if expected is ConfirmationStatus.INCONCLUSIVE:
-        assert outcome.evidence is None
-        assert outcome.reason_code == (
-            "confirmation_non_success_status"
-            if mode == "auth"
-            else "confirmation_unstable"
-        )
+        if mode == "simple":
+            assert outcome.evidence is not None
+            assert outcome.reason_code == "candidate_confirmation_mismatch"
+        else:
+            assert outcome.evidence is None
+            assert outcome.reason_code == (
+                "confirmation_non_success_status"
+                if mode == "auth"
+                else "confirmation_unstable"
+            )
 
     # No test fixture may turn a candidate into a VULNERABLE verdict.
     assert outcome.initial.verdict is not Verdict.VULNERABLE
 
 
-def test_real_http_probe_order_and_random_control(http_server):
+def test_real_http_probe_order_and_baseline_preserving_control(http_server):
     server, origin = http_server
     server.reset(mode="vulnerable")
 
@@ -481,15 +483,12 @@ def test_real_http_probe_order_and_random_control(http_server):
         "Pets" + TRUE_1,
     ]
 
-    controls = [value for value in values if value.startswith("Pets__vintar_control_")]
+    controls = [
+        value for value in values if value == "Pets" + BASELINE_PRESERVING_CONTROL
+    ]
 
     assert len(controls) == 2
     assert controls[0] == controls[1]
-
-    suffix = controls[0].removeprefix("Pets__vintar_control_")
-
-    assert len(suffix) == 32
-    assert all(ch in "0123456789abcdef" for ch in suffix)
 
     expected = {
         "B": "Pets",
@@ -507,7 +506,7 @@ def test_real_http_probe_order_and_random_control(http_server):
     assert_request_accounting(server, run)
 
 
-def test_control_changes_between_executions(http_server):
+def test_baseline_preserving_control_is_fixed_between_executions(http_server):
     server, origin = http_server
 
     controls = []
@@ -521,11 +520,11 @@ def test_control_changes_between_executions(http_server):
             next(
                 value
                 for _, value, _ in server.received
-                if value.startswith("Pets__vintar_control_")
+                if value == "Pets" + BASELINE_PRESERVING_CONTROL
             )
         )
 
-    assert controls[0] != controls[1]
+    assert controls[0] == controls[1] == "Pets" + BASELINE_PRESERVING_CONTROL
 
 
 @pytest.mark.parametrize("fail_at", [7, 12, 18])
@@ -624,7 +623,7 @@ def test_no_raw_request_content_in_outcome_repr(http_server):
         FALSE_1,
         TRUE_2,
         FALSE_2,
-        "__vintar_control_",
+        BASELINE_PRESERVING_CONTROL,
     ):
         assert sensitive not in rendered
         assert sensitive not in evidence_repr

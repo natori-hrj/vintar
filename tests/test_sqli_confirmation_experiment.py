@@ -14,7 +14,7 @@ TRUE_1 = "' AND 1=1-- "
 FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
-CONTROL = "__vintar_control_7f4a9c2e"
+BASELINE_PRESERVING_CONTROL = "' AND 7=7-- "
 
 PLAN = (
     "B",
@@ -75,12 +75,14 @@ def query_products(
     return 200, body.encode("utf-8")
 
 
-def payloads(control: str = CONTROL) -> dict[str, str]:
+def payloads(
+    baseline_preserving_control: str = BASELINE_PRESERVING_CONTROL,
+) -> dict[str, str]:
     return {
         "B": "Pets",
         "T1": "Pets" + TRUE_1,
         "F1": "Pets" + FALSE_1,
-        "C": "Pets" + control,
+        "C": "Pets" + baseline_preserving_control,
         "T2": "Pets" + TRUE_2,
         "F2": "Pets" + FALSE_2,
     }
@@ -129,7 +131,7 @@ def classify(responses: dict[str, list[Response]]) -> str:
         responses[key][0] for key in ("B", "T1", "F1", "T2", "F2", "C")
     )
 
-    if b == t1 == t2 and f1 == f2 == c and b != f1:
+    if b == t1 == t2 == c and f1 == f2 and b != f1:
         return "candidate"
 
     return "not_confirmed"
@@ -148,7 +150,7 @@ def test_vulnerable_sqlite_produces_candidate(database):
     assert responses["B"][0] == responses["T1"][0]
     assert responses["B"][0] == responses["T2"][0]
     assert responses["F1"][0] == responses["F2"][0]
-    assert responses["F1"][0] == responses["C"][0]
+    assert responses["B"][0] == responses["C"][0]
     assert responses["B"][0] != responses["F1"][0]
 
 
@@ -184,7 +186,7 @@ def test_http_200_filter_can_mimic_all_probes():
     """A non-SQL HTTP 200 filter page can reproduce the relation."""
     values = payloads()
 
-    false_values = {values["F1"], values["F2"], values["C"]}
+    false_values = {values["F1"], values["F2"]}
 
     def mimicking_logic(value: str) -> Response:
         if value in false_values:
@@ -256,8 +258,7 @@ def test_single_missing_repetition_is_inconclusive():
     assert classify(responses) == "inconclusive"
 
 
-def test_plan_and_control_are_distinct_and_non_sql():
+def test_plan_and_baseline_preserving_control_are_distinct():
     assert len(PLAN) == 12
     assert Counter(PLAN) == {kind: 2 for kind in ("B", "T1", "F1", "C", "T2", "F2")}
-    assert len({TRUE_1, FALSE_1, TRUE_2, FALSE_2}) == 4
-    assert CONTROL.replace("_", "").isalnum()
+    assert len({TRUE_1, FALSE_1, TRUE_2, FALSE_2, BASELINE_PRESERVING_CONTROL}) == 5

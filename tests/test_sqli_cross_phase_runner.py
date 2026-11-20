@@ -26,6 +26,7 @@ TRUE_1 = "' AND 1=1-- "
 FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
+BASELINE_PRESERVING_CONTROL = "' AND 7=7-- "
 
 
 def make_context() -> ExecutionContext:
@@ -62,7 +63,7 @@ def run_case(
         false_probe = category in {
             "Pets" + FALSE_1,
             "Pets" + FALSE_2,
-        } or category.startswith("Pets__vintar_control_")
+        }
 
         if mode == "stable":
             body = b"B" if false_probe else b"A"
@@ -100,6 +101,7 @@ def run_case(
         false_1=FALSE_1,
         true_2=TRUE_2,
         false_2=FALSE_2,
+        baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
         context=context,
         transport=httpx.MockTransport(handler),
     )
@@ -124,8 +126,8 @@ def run_case(
         ),
         (
             "not_confirmed",
-            ConfirmationStatus.NOT_CONFIRMED,
-            "confirmation_pattern_not_matched",
+            ConfirmationStatus.INCONCLUSIVE,
+            "candidate_confirmation_mismatch",
             18,
         ),
         (
@@ -292,7 +294,7 @@ def test_mismatch_does_not_expose_sensitive_data():
         FALSE_1,
         TRUE_2,
         FALSE_2,
-        "__vintar_control_",
+        BASELINE_PRESERVING_CONTROL,
         "g1-",
         "g2-",
     ):

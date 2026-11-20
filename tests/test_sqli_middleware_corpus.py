@@ -43,6 +43,7 @@ TRUE_1 = "' AND 1=1-- "
 FALSE_1 = "' AND 1=2-- "
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
+BASELINE_PRESERVING_CONTROL = "' AND 7=7-- "
 
 SCENARIOS = (
     "waf200_mimic",
@@ -64,7 +65,7 @@ EXPECTED = {
     "waf200_blanket": (ConfirmationStatus.SKIPPED, 6),
     "auth401": (ConfirmationStatus.INCONCLUSIVE, 7),
     "auth302": (ConfirmationStatus.INCONCLUSIVE, 7),
-    "auth200_login": (ConfirmationStatus.NOT_CONFIRMED, 18),
+    "auth200_login": (ConfirmationStatus.INCONCLUSIVE, 18),
     "cache_ignore_query": (ConfirmationStatus.SKIPPED, 6),
     "cache_dynamic": (ConfirmationStatus.INCONCLUSIVE, 18),
     "cache_rollover": (ConfirmationStatus.INCONCLUSIVE, 18),
@@ -155,10 +156,6 @@ def is_false_2(category: str) -> bool:
     return category == "Pets" + FALSE_2
 
 
-def is_control(category: str) -> bool:
-    return category.startswith("Pets__vintar_control_")
-
-
 def text_response(
     content: bytes,
     *,
@@ -182,10 +179,8 @@ def middleware_response(
     injected = category != "Pets"
     false_1 = is_false_1(category)
     false_2 = is_false_2(category)
-    control = is_control(category)
-
     if scenario == "waf200_mimic":
-        if false_2 or control:
+        if false_2:
             return text_response(b"B")
 
     elif scenario == "waf403":
@@ -234,7 +229,7 @@ def middleware_response(
 
     elif scenario == "cache_rollover":
         if sequence >= 7:
-            blocked = false_1 or false_2 or control
+            blocked = false_1 or false_2
             return text_response(b"B-generation2" if blocked else b"A-generation2")
 
     else:
@@ -428,6 +423,7 @@ def run_confirmation(
         false_1=FALSE_1,
         true_2=TRUE_2,
         false_2=FALSE_2,
+        baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
         context=context,
     )
 
@@ -476,9 +472,8 @@ def test_middleware_corpus(
         assert outcome.reason_code == ("confirmation_pattern_matched")
         assert outcome.confirmation_requests == 12
 
-    elif expected_status is ConfirmationStatus.NOT_CONFIRMED:
+    elif outcome.reason_code == "candidate_confirmation_mismatch":
         assert outcome.evidence is not None
-        assert outcome.reason_code == ("confirmation_pattern_not_matched")
 
     else:
         assert outcome.evidence is None
@@ -622,12 +617,10 @@ def test_cross_phase_guard_uses_existing_http_evidence_only(
     assert requests_before == 18
 
 
-def test_random_control_is_reused_only_within_run(
+def test_baseline_preserving_control_is_fixed_and_repeated(
     middleware_server,
 ):
     state, origin = middleware_server
-    controls = []
-
     for _ in range(2):
         state.reset()
         outcome, _ = run_confirmation(
@@ -641,14 +634,12 @@ def test_random_control_is_reused_only_within_run(
         values = [
             item.category
             for item in received
-            if item.category.startswith("Pets__vintar_control_")
+            if item.category == "Pets" + BASELINE_PRESERVING_CONTROL
         ]
 
         assert len(values) == 2
         assert values[0] == values[1]
-        controls.append(values[0])
-
-    assert controls[0] != controls[1]
+        assert values[0] == "Pets" + BASELINE_PRESERVING_CONTROL
 
 
 def test_middleware_classification_is_repeatable(
@@ -707,28 +698,24 @@ def test_middleware_corpus_metrics(
 
     assert distribution == {
         ConfirmationStatus.CANDIDATE: 1,
-        ConfirmationStatus.NOT_CONFIRMED: 1,
-        ConfirmationStatus.INCONCLUSIVE: 4,
+        ConfirmationStatus.INCONCLUSIVE: 5,
         ConfirmationStatus.SKIPPED: 4,
     }
 
     false_candidates = distribution[ConfirmationStatus.CANDIDATE]
-    decisive = (
-        distribution[ConfirmationStatus.CANDIDATE]
-        + distribution[ConfirmationStatus.NOT_CONFIRMED]
-    )
+    decisive = distribution[ConfirmationStatus.CANDIDATE]
     non_decisions = (
         distribution[ConfirmationStatus.INCONCLUSIVE]
         + distribution[ConfirmationStatus.SKIPPED]
     )
 
     assert false_candidates / len(SCENARIOS) == 1 / 10
-    assert false_candidates / decisive == 1 / 2
-    assert decisive / len(SCENARIOS) == 2 / 10
+    assert false_candidates / decisive == 1.0
+    assert decisive / len(SCENARIOS) == 1 / 10
 
     assert distribution[ConfirmationStatus.SKIPPED] / len(SCENARIOS) == 4 / 10
-    assert distribution[ConfirmationStatus.INCONCLUSIVE] / len(SCENARIOS) == 4 / 10
-    assert non_decisions / len(SCENARIOS) == 8 / 10
+    assert distribution[ConfirmationStatus.INCONCLUSIVE] / len(SCENARIOS) == 5 / 10
+    assert non_decisions / len(SCENARIOS) == 9 / 10
 
     groups = {
         "waf": tuple(item for item in SCENARIOS if item.startswith("waf")),
@@ -751,7 +738,6 @@ def test_middleware_corpus_metrics(
             results[item]
             in {
                 ConfirmationStatus.CANDIDATE,
-                ConfirmationStatus.NOT_CONFIRMED,
             }
             for item in scenarios
         )
@@ -788,7 +774,7 @@ def test_middleware_output_does_not_expose_probe_values(
         FALSE_1,
         TRUE_2,
         FALSE_2,
-        "__vintar_control_",
+        BASELINE_PRESERVING_CONTROL,
         secret,
     ):
         assert value not in output

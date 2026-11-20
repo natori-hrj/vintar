@@ -17,9 +17,16 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from test_sqli_candidate_reliability import classify
 
+from vintar.checks.sqli.confirmation_runner import (
+    ConfirmationStatus,
+    verify_boolean_sqli_with_confirmation,
+)
 from vintar.checks.sqli.models import Verdict
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
-from vintar.checks.sqli.presets import get_boolean_probe_preset
+from vintar.checks.sqli.presets import (
+    get_boolean_confirmation_preset,
+    get_boolean_probe_preset,
+)
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -150,8 +157,10 @@ class _PrecisionServer(HTTPServer):
 
 def _response(mode: str, value: str, request_count: int) -> tuple[bytes, int]:
     preset = get_boolean_probe_preset("string-quoted")
+    confirmation = get_boolean_confirmation_preset("string-quoted")
     baseline = "Pets"
     false_value = baseline + preset.false_payload
+    second_false_value = baseline + confirmation.false_payload
 
     if mode == "global-noise":
         return f"request-{request_count:02d}-{'x' * request_count}".encode(), 200
@@ -160,7 +169,9 @@ def _response(mode: str, value: str, request_count: int) -> tuple[bytes, int]:
     if mode == "pagination-branch":
         return (b"page-two" if value == false_value else b"page-one"), 200
     if mode == "waf-200":
-        return (b"blocked" if value == false_value else b"products"), 200
+        return (
+            b"blocked" if value in {false_value, second_false_value} else b"products"
+        ), 200
     if mode == "waf-403":
         return (b"blocked", 403) if value != baseline else (b"products", 200)
     if mode == "quote-sanitizer":
@@ -248,6 +259,43 @@ def _measure(case: PrecisionCase):
         return result
 
 
+def _measure_confirmation(case: PrecisionCase):
+    with _running_server() as server:
+        port = server.server_port
+        context = ExecutionContext(
+            scope=ScopePolicy(
+                allowed_origins=frozenset({AllowedOrigin("http", "127.0.0.1", port)})
+            ),
+            budget=RequestBudget(18),
+            timeout=5,
+            rate_limiter=RateLimiter(requests_per_second=100),
+            max_response_size=1_048_576,
+        )
+        initial = get_boolean_probe_preset("string-quoted")
+        confirmation = get_boolean_confirmation_preset("string-quoted")
+        outcome = verify_boolean_sqli_with_confirmation(
+            check_id=case.name,
+            template=RequestTemplate(
+                method="GET",
+                url=f"http://127.0.0.1:{port}/{case.name}",
+                params=(("category", "Pets"),),
+            ),
+            point=InjectionPoint(
+                location=InjectionLocation.QUERY,
+                name="category",
+                mode=InjectionMode.APPEND,
+            ),
+            true_1=initial.true_payload,
+            false_1=initial.false_payload,
+            true_2=confirmation.true_payload,
+            false_2=confirmation.false_payload,
+            baseline_preserving_control=(confirmation.baseline_preserving_control),
+            context=context,
+        )
+        assert server.request_count == outcome.request_count
+        return outcome
+
+
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.name)
 def test_precision_case_measurement(case: PrecisionCase):
     result = _measure(case)
@@ -275,3 +323,44 @@ def test_precision_confusion_table():
         "fn": 0,
         "non_decision": 4,
     }
+
+
+def test_post_confirmation_negative_measurement():
+    negative_cases = [case for case in CASES if case.expected_label == "negative"]
+    outcomes = [(case, _measure_confirmation(case)) for case in negative_cases]
+    counts: Counter[str] = Counter()
+    for _, outcome in outcomes:
+        if outcome.status is ConfirmationStatus.CANDIDATE:
+            counts["fp"] += 1
+        elif outcome.initial.verdict is Verdict.NOT_DETECTED:
+            counts["tn"] += 1
+        else:
+            counts["non_decision"] += 1
+
+    assert {key: counts[key] for key in ("tn", "fp", "non_decision")} == {
+        "tn": 2,
+        "fp": 1,
+        "non_decision": 5,
+    }
+
+    pagination = next(
+        outcome for case, outcome in outcomes if case.name == "pagination-branch"
+    )
+    assert pagination.status is ConfirmationStatus.INCONCLUSIVE
+    assert pagination.reason_code == "candidate_confirmation_mismatch"
+
+    waf = next(outcome for case, outcome in outcomes if case.name == "waf-200")
+    assert waf.status is ConfirmationStatus.CANDIDATE
+    assert waf.reason_code == "confirmation_pattern_matched"
+
+
+def test_synthetic_positive_demotions_are_not_real_false_negatives():
+    positive_cases = [case for case in CASES if case.expected_label == "positive"]
+    outcomes = [_measure_confirmation(case) for case in positive_cases]
+
+    assert len(outcomes) == 3
+    assert all(
+        outcome.status is ConfirmationStatus.INCONCLUSIVE
+        and outcome.reason_code == "candidate_confirmation_mismatch"
+        for outcome in outcomes
+    )

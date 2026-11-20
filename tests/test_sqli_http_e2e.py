@@ -23,9 +23,17 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
+from vintar.checks.sqli.confirmation_runner import (
+    ConfirmationOutcome,
+    ConfirmationStatus,
+    verify_boolean_sqli_with_confirmation,
+)
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
-from vintar.checks.sqli.presets import get_boolean_probe_preset
+from vintar.checks.sqli.presets import (
+    get_boolean_confirmation_preset,
+    get_boolean_probe_preset,
+)
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -46,13 +54,14 @@ _validate = cast(
 
 STRING_QUOTED_PRESET = get_boolean_probe_preset("string-quoted")
 NUMERIC_PRESET = get_boolean_probe_preset("numeric")
+STRING_QUOTED_CONFIRMATION = get_boolean_confirmation_preset("string-quoted")
 TRUE_1 = STRING_QUOTED_PRESET.true_payload
 FALSE_1 = STRING_QUOTED_PRESET.false_payload
 NUMERIC_TRUE = NUMERIC_PRESET.true_payload
 NUMERIC_FALSE = NUMERIC_PRESET.false_payload
-TRUE_2 = "' AND 2<3-- "
-FALSE_2 = "' AND 2>3-- "
-CONTROL = "__vintar_control_7f4a9c2e"
+TRUE_2 = STRING_QUOTED_CONFIRMATION.true_payload
+FALSE_2 = STRING_QUOTED_CONFIRMATION.false_payload
+BASELINE_PRESERVING_CONTROL = STRING_QUOTED_CONFIRMATION.baseline_preserving_control
 FIXTURE_CATEGORIES = frozenset({"Office", "Pets"})
 FIXTURE_PRODUCT_IDS = frozenset({"1", "2", "3"})
 
@@ -132,6 +141,14 @@ class LiveEndpoint:
             raise ValueError("expected_query_errors must be a nonnegative integer.")
 
 
+@dataclass(frozen=True, slots=True)
+class KnownLimitationEndpoint:
+    limitation_id: str
+    endpoint: LiveEndpoint
+    expected_confirmation_status: ConfirmationStatus
+    expected_reason_code: str
+
+
 LIVE_TWIN_ENDPOINTS = (
     LiveEndpoint(
         endpoint_id="sqlite-vulnerable",
@@ -164,6 +181,35 @@ LIVE_TWIN_ENDPOINTS = (
         parameter_name="product_id",
         initial_value="1",
         preset_name="numeric",
+    ),
+)
+
+KNOWN_LIMITATION_ENDPOINTS = (
+    KnownLimitationEndpoint(
+        limitation_id="structural-full-mimic",
+        endpoint=LiveEndpoint(
+            endpoint_id="structural-full-mimic",
+            path="/mimic",
+            expected_label="negative",
+            parameter_name="category",
+            initial_value="Pets",
+            preset_name="string-quoted",
+        ),
+        expected_confirmation_status=ConfirmationStatus.CANDIDATE,
+        expected_reason_code="confirmation_pattern_matched",
+    ),
+    KnownLimitationEndpoint(
+        limitation_id="structural-waf-200",
+        endpoint=LiveEndpoint(
+            endpoint_id="structural-waf-200",
+            path="/waf-200",
+            expected_label="negative",
+            parameter_name="category",
+            initial_value="Pets",
+            preset_name="string-quoted",
+        ),
+        expected_confirmation_status=ConfirmationStatus.CANDIDATE,
+        expected_reason_code="confirmation_pattern_matched",
     ),
 )
 
@@ -251,6 +297,7 @@ class _Handler(BaseHTTPRequestHandler):
             "/vulnerable": "category",
             "/safe": "category",
             "/mimic": "category",
+            "/waf-200": "category",
             "/numeric-vulnerable": "product_id",
             "/numeric-safe": "product_id",
         }.get(path.path)
@@ -266,14 +313,24 @@ class _Handler(BaseHTTPRequestHandler):
             server.received.append((path.path, value, path.query))
 
             try:
-                if path.path == "/mimic":
+                if path.path in {"/mimic", "/waf-200"}:
                     false_inputs = {
                         "Pets" + FALSE_1,
                         "Pets" + FALSE_2,
-                        "Pets" + CONTROL,
                     }
 
-                    body = b"no-results" if value in false_inputs else b"products-found"
+                    if path.path == "/waf-200":
+                        body = (
+                            b"access-denied"
+                            if value in false_inputs
+                            else b"products-found"
+                        )
+                    else:
+                        body = (
+                            b"no-results"
+                            if value in false_inputs
+                            else b"products-found"
+                        )
                 elif path.path in {"/numeric-vulnerable", "/numeric-safe"}:
                     body = _numeric_sql_result(
                         value,
@@ -337,6 +394,21 @@ class LoopbackStartupError(RuntimeError):
 
 class LoopbackShutdownError(RuntimeError):
     """The loopback server thread could not stop."""
+
+
+class LoopbackFixtureCheckError(RuntimeError):
+    """The loopback fixture state disagreed with the completed check."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        outcome: ConfirmationOutcome,
+        observed_values: dict[str, int | bool],
+    ) -> None:
+        super().__init__(message)
+        self.outcome = outcome
+        self.observed_values = dict(observed_values)
 
 
 @contextmanager
@@ -427,6 +499,103 @@ def run_live_endpoint(
         assert server.query_errors == endpoint.expected_query_errors
 
     return result, port
+
+
+def run_confirmed_live_endpoint(
+    endpoint: LiveEndpoint,
+    binder: Callable[[], _Server] = _Server,
+) -> tuple[ConfirmationOutcome, int]:
+    """Run the initial and confirmation probes on one fresh loopback server."""
+    server = binder()
+    port = server.server_port
+
+    with running_server(server) as (_, origin):
+        initial = get_boolean_probe_preset(endpoint.preset_name)
+        confirmation = get_boolean_confirmation_preset(endpoint.preset_name)
+        context = ExecutionContext(
+            scope=ScopePolicy(
+                allowed_origins=frozenset({AllowedOrigin("http", "127.0.0.1", port)})
+            ),
+            budget=RequestBudget(18),
+            timeout=5,
+            rate_limiter=RateLimiter(requests_per_second=100),
+            max_response_size=1_048_576,
+        )
+        outcome = verify_boolean_sqli_with_confirmation(
+            check_id=endpoint.endpoint_id,
+            template=RequestTemplate(
+                method="GET",
+                url=origin + endpoint.path,
+                params=((endpoint.parameter_name, endpoint.initial_value),),
+            ),
+            point=InjectionPoint(
+                location=InjectionLocation.QUERY,
+                name=endpoint.parameter_name,
+                mode=InjectionMode.APPEND,
+            ),
+            true_1=initial.true_payload,
+            false_1=initial.false_payload,
+            true_2=confirmation.true_payload,
+            false_2=confirmation.false_payload,
+            baseline_preserving_control=(confirmation.baseline_preserving_control),
+            context=context,
+        )
+
+        observed_values = {
+            "client_request_count": outcome.request_count,
+            "budget_used_requests": context.budget.used_requests,
+            "server_total_requests": server.total_requests,
+            "server_accepted_requests": len(server.received),
+            "handler_failed": server.handler_failed,
+            "actual_query_errors": server.query_errors,
+            "expected_query_errors": endpoint.expected_query_errors,
+        }
+
+        if outcome.request_count != context.budget.used_requests:
+            raise LoopbackFixtureCheckError(
+                "Confirmation request accounting disagreed: client sent "
+                f"{outcome.request_count}, but the shared budget recorded "
+                f"{context.budget.used_requests}. "
+                "Check the confirmation runner and ExecutionContext accounting.",
+                outcome=outcome,
+                observed_values=observed_values,
+            )
+        if server.total_requests != outcome.request_count:
+            raise LoopbackFixtureCheckError(
+                "The loopback request counts disagreed: client sent "
+                f"{outcome.request_count}, but the server observed "
+                f"{server.total_requests}. "
+                "Check transport setup and confirmation request accounting.",
+                outcome=outcome,
+                observed_values=observed_values,
+            )
+        if len(server.received) != outcome.request_count:
+            raise LoopbackFixtureCheckError(
+                "The loopback accepted-request counts disagreed: client sent "
+                f"{outcome.request_count}, but the handler accepted "
+                f"{len(server.received)}. "
+                "Check endpoint routing and query validation.",
+                outcome=outcome,
+                observed_values=observed_values,
+            )
+        if server.handler_failed:
+            raise LoopbackFixtureCheckError(
+                "The loopback handler failed while serving confirmation probes. "
+                "Check the fixture implementation and handler state.",
+                outcome=outcome,
+                observed_values=observed_values,
+            )
+        if server.query_errors != endpoint.expected_query_errors:
+            raise LoopbackFixtureCheckError(
+                "The loopback SQL error count disagreed: expected "
+                f"{endpoint.expected_query_errors}, but observed "
+                f"{server.query_errors}. "
+                "Check the declared fixture expectation and probe context.",
+                outcome=outcome,
+                observed_values=observed_values,
+            )
+
+    return outcome, port
 
 
 @pytest.fixture
@@ -685,7 +854,7 @@ def test_real_http_twelve_probe_experiment(
         "B": "Pets",
         "T1": "Pets" + TRUE_1,
         "F1": "Pets" + FALSE_1,
-        "C": "Pets" + CONTROL,
+        "C": "Pets" + BASELINE_PRESERVING_CONTROL,
         "T2": "Pets" + TRUE_2,
         "F2": "Pets" + FALSE_2,
     }
@@ -760,7 +929,7 @@ def test_real_http_twelve_probe_experiment(
         )
     )
 
-    relation = b == t1 == t2 and f1 == f2 == control and b != f1
+    relation = b == t1 == t2 == control and f1 == f2 and b != f1
 
     actual = "candidate" if relation else "not_confirmed"
 
@@ -827,6 +996,78 @@ def test_string_quoted_preset_is_inconclusive_for_numeric_vulnerability():
     assert result.verdict is Verdict.INCONCLUSIVE
     assert result.reason_code == "non_success_status"
     assert result.request_count == 6
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        endpoint
+        for endpoint in LIVE_TWIN_ENDPOINTS
+        if endpoint.expected_label == "positive"
+    ],
+    ids=lambda endpoint: endpoint.endpoint_id,
+)
+def test_real_sqlite_positive_twins_survive_confirmation(endpoint):
+    outcome, _ = run_confirmed_live_endpoint(endpoint)
+
+    assert outcome.initial.reason_code == "boolean_candidate"
+    assert outcome.status is ConfirmationStatus.CANDIDATE
+    assert outcome.reason_code == "confirmation_pattern_matched"
+    assert outcome.request_count == 18
+
+
+@pytest.mark.parametrize(
+    "limitation",
+    KNOWN_LIMITATION_ENDPOINTS,
+    ids=lambda limitation: limitation.limitation_id,
+)
+def test_structural_known_limitations_survive_confirmation(limitation):
+    outcome, _ = run_confirmed_live_endpoint(limitation.endpoint)
+
+    assert outcome.initial.reason_code == "boolean_candidate"
+    assert outcome.status is limitation.expected_confirmation_status
+    assert outcome.reason_code == limitation.expected_reason_code
+    assert outcome.request_count == 18
+
+
+def test_confirmed_fixture_count_mismatch_preserves_outcome_and_both_counts():
+    endpoint = KNOWN_LIMITATION_ENDPOINTS[0].endpoint
+
+    def pre_counted_server():
+        server = _Server()
+        server.total_requests = 1
+        return server
+
+    with pytest.raises(LoopbackFixtureCheckError, match="client sent 18") as caught:
+        run_confirmed_live_endpoint(endpoint, pre_counted_server)
+
+    assert caught.value.outcome.request_count == 18
+    assert caught.value.outcome.initial.reason_code == "boolean_candidate"
+    assert caught.value.observed_values["client_request_count"] == 18
+    assert caught.value.observed_values["server_total_requests"] == 19
+    assert "server observed 19" in str(caught.value)
+
+
+def test_confirmed_fixture_sql_error_mismatch_preserves_completed_outcome():
+    endpoint = LiveEndpoint(
+        endpoint_id="structural-waf-200-error-mismatch",
+        path="/waf-200",
+        expected_label="negative",
+        parameter_name="category",
+        initial_value="Pets",
+        preset_name="string-quoted",
+        expected_query_errors=1,
+    )
+
+    with pytest.raises(LoopbackFixtureCheckError, match="expected 1") as caught:
+        run_confirmed_live_endpoint(endpoint)
+
+    assert caught.value.outcome.request_count == 18
+    assert caught.value.outcome.initial.reason_code == "boolean_candidate"
+    assert caught.value.observed_values["client_request_count"] == 18
+    assert caught.value.observed_values["server_total_requests"] == 18
+    assert caught.value.observed_values["actual_query_errors"] == 0
+    assert caught.value.observed_values["expected_query_errors"] == 1
 
 
 def test_unexpected_requests_are_counted_before_validation():
