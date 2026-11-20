@@ -433,24 +433,27 @@ negative, false positive, or non-decision fails the test with remediation.
 The schema-version 2 JSON report separates `replay`, `live_loopback`,
 `known_limitations`, and `fixed_app_loopback`. The live mode runs the production
 six-probe check through `ExecutionContext` against fresh socket-backed SQLite
-servers. `/vulnerable` is labeled positive next to its string-concatenating endpoint,
-and `/safe` is labeled negative next to its parameterized endpoint. The report marks
-the live positive measurement as covered.
+servers. It measures a string-quoted pair (`/vulnerable` and `/safe`) and an unquoted
+numeric pair (`/numeric-vulnerable` and `/numeric-safe`). Labels and preset names are
+declared next to each endpoint. The report marks the live positive measurement as
+covered.
 
-Both live twins use the declared initial category `Pets`, an ordinary value taken
-from the seeded fixture data. With the existing append-mode probes, the vulnerable
-endpoint returns the `Pets` rows for the baseline and true probes and no rows for the
-false probes, producing `INCONCLUSIVE / boolean_candidate`. The parameterized
-endpoint returns the `Pets` rows for the baseline and no rows for either injected
-probe, producing `INCONCLUSIVE / unexpected_difference`.
+The string twins use the declared initial category `Pets`; the numeric twins use the
+declared product ID `1`. Both values come from the seeded fixture data. With the
+matching append-mode preset, each vulnerable endpoint returns its baseline row or
+rows for the baseline and TRUE probes and no rows for the FALSE probes, producing
+`INCONCLUSIVE / boolean_candidate`. Each parameterized endpoint treats the appended
+payload as a literal value, producing identical empty TRUE and FALSE responses and
+`NOT_DETECTED / no_boolean_difference_literal_input`.
 
 The first Phase 8-2 run exposed that relation as a detector limitation: it was
 reported as `INCONCLUSIVE / unexpected_difference`. The analyzer now classifies the
 stable, identical TRUE and FALSE responses as
 `NOT_DETECTED / no_boolean_difference_literal_input`. No input or fixture label was
-changed to obtain that result. The live confusion matrix records one true positive
-and one true negative, while `known_limitations.records` is empty because the current
-actual run no longer reproduces the limitation.
+changed to obtain that result. The expanded live confusion matrix records two true
+positives and two true negatives, with no false positives, false negatives, or
+non-decisions. `known_limitations.records` is empty because the current actual run no
+longer reproduces the limitation.
 
 Results still depend on the initial value and must not be generalized to other benign
 values. A NOT_DETECTED result means only that these probes found no Boolean
@@ -458,6 +461,14 @@ differential; an unsupported SQL context can make both probes ineffective on a
 vulnerable target. The existing fixed-app loopback check separately verifies the
 benign `Pets` response and contributes no entries to the confusion matrix. Confirmed
 vulnerability detection requires separate evidence.
+
+The mismatch safety tests remain outside that matched-preset confusion matrix. The
+`numeric` preset on the string-quoted vulnerable endpoint is treated as literal input
+and produces `NOT_DETECTED / no_boolean_difference_literal_input`. The
+`string-quoted` preset on the numeric vulnerable endpoint causes four SQLite syntax
+errors and produces `INCONCLUSIVE / non_success_status`. In particular, the first
+result does not clear the known vulnerable fixture: a NOT_DETECTED result from an
+incompatible preset does not prove absence of SQL injection.
 
 Run `uv run --locked pytest tests/test_sqli_candidate_reliability.py` to reproduce
 the report. Pytest writes `sqli-candidate-reliability.json` under its temporary test

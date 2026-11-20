@@ -1,0 +1,37 @@
+{
+  "openapi": "3.1.2",
+  "info": {
+    "title": "Vintar numeric loopback pipeline fixture",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/product": {
+      "get": {
+        "parameters": [
+          {
+            "name": "product_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching product name"
+          }
+        }
+      }
+    }
+  }
+}

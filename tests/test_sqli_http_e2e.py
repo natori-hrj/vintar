@@ -23,8 +23,9 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from vintar.checks.sqli.models import VerificationResult
+from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
+from vintar.checks.sqli.presets import get_boolean_probe_preset
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -43,13 +44,17 @@ _validate = cast(
     _VALIDATOR_NAMESPACE["_validate"],
 )
 
-TRUE_1 = "' AND 1=1-- "
-FALSE_1 = "' AND 1=2-- "
+STRING_QUOTED_PRESET = get_boolean_probe_preset("string-quoted")
+NUMERIC_PRESET = get_boolean_probe_preset("numeric")
+TRUE_1 = STRING_QUOTED_PRESET.true_payload
+FALSE_1 = STRING_QUOTED_PRESET.false_payload
+NUMERIC_TRUE = NUMERIC_PRESET.true_payload
+NUMERIC_FALSE = NUMERIC_PRESET.false_payload
 TRUE_2 = "' AND 2<3-- "
 FALSE_2 = "' AND 2>3-- "
 CONTROL = "__vintar_control_7f4a9c2e"
 FIXTURE_CATEGORIES = frozenset({"Office", "Pets"})
-LIVE_INITIAL_CATEGORY = "Pets"
+FIXTURE_PRODUCT_IDS = frozenset({"1", "2", "3"})
 
 PLAN = (
     "B",
@@ -101,14 +106,30 @@ class LiveEndpoint:
     endpoint_id: str
     path: str
     expected_label: str
-    initial_category: str
+    parameter_name: str
+    initial_value: str
+    preset_name: str
+    expected_query_errors: int = 0
 
     def __post_init__(self) -> None:
-        if self.initial_category not in FIXTURE_CATEGORIES:
+        declared = {
+            "category": FIXTURE_CATEGORIES,
+            "product_id": FIXTURE_PRODUCT_IDS,
+        }
+        if (
+            self.parameter_name not in declared
+            or self.initial_value not in declared[self.parameter_name]
+        ):
             raise ValueError(
-                "initial_category must be a benign category declared in the fixture "
-                "data; use Pets or Office instead of SQL syntax."
+                "initial_value must be a benign value declared for the fixture parameter; "
+                "use Pets or Office for category, or 1, 2, or 3 for product_id."
             )
+        get_boolean_probe_preset(self.preset_name)
+        if (
+            type(self.expected_query_errors) is not int
+            or self.expected_query_errors < 0
+        ):
+            raise ValueError("expected_query_errors must be a nonnegative integer.")
 
 
 LIVE_TWIN_ENDPOINTS = (
@@ -116,13 +137,33 @@ LIVE_TWIN_ENDPOINTS = (
         endpoint_id="sqlite-vulnerable",
         path="/vulnerable",
         expected_label="positive",
-        initial_category=LIVE_INITIAL_CATEGORY,
+        parameter_name="category",
+        initial_value="Pets",
+        preset_name="string-quoted",
     ),
     LiveEndpoint(
         endpoint_id="sqlite-parameterized",
         path="/safe",
         expected_label="negative",
-        initial_category=LIVE_INITIAL_CATEGORY,
+        parameter_name="category",
+        initial_value="Pets",
+        preset_name="string-quoted",
+    ),
+    LiveEndpoint(
+        endpoint_id="sqlite-numeric-vulnerable",
+        path="/numeric-vulnerable",
+        expected_label="positive",
+        parameter_name="product_id",
+        initial_value="1",
+        preset_name="numeric",
+    ),
+    LiveEndpoint(
+        endpoint_id="sqlite-numeric-parameterized",
+        path="/numeric-safe",
+        expected_label="negative",
+        parameter_name="product_id",
+        initial_value="1",
+        preset_name="numeric",
     ),
 )
 
@@ -130,19 +171,23 @@ SAFE_PETS_LIMITATION = LiveEndpoint(
     endpoint_id="sqlite-parameterized-pets",
     path="/safe",
     expected_label="negative",
-    initial_category="Pets",
+    parameter_name="category",
+    initial_value="Pets",
+    preset_name="string-quoted",
 )
 
 
 def _sql_result(category: str, *, safe: bool) -> bytes:
     with sqlite3.connect(":memory:") as db:
-        db.execute("CREATE TABLE products (name TEXT NOT NULL, category TEXT NOT NULL)")
+        db.execute(
+            "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL)"
+        )
         db.executemany(
-            "INSERT INTO products VALUES (?, ?)",
+            "INSERT INTO products VALUES (?, ?, ?)",
             [
-                ("Cat toy", "Pets"),
-                ("Dog toy", "Pets"),
-                ("Notebook", "Office"),
+                (1, "Cat toy", "Pets"),
+                (2, "Dog toy", "Pets"),
+                (3, "Notebook", "Office"),
             ],
         )
 
@@ -161,6 +206,32 @@ def _sql_result(category: str, *, safe: bool) -> bytes:
     return "\n".join(sorted(row[0] for row in rows)).encode()
 
 
+def _numeric_sql_result(product_id: str, *, safe: bool) -> bytes:
+    with sqlite3.connect(":memory:") as db:
+        db.execute(
+            "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL)"
+        )
+        db.executemany(
+            "INSERT INTO products VALUES (?, ?, ?)",
+            [
+                (1, "Cat toy", "Pets"),
+                (2, "Dog toy", "Pets"),
+                (3, "Notebook", "Office"),
+            ],
+        )
+        if safe:
+            rows = db.execute(
+                "SELECT name FROM products WHERE id = ?", (product_id,)
+            ).fetchall()
+        else:
+            # Vulnerability intentionally confined to an
+            # in-memory test server.
+            rows = db.execute(
+                f"SELECT name FROM products WHERE id = {product_id}"
+            ).fetchall()
+    return "\n".join(sorted(row[0] for row in rows)).encode()
+
+
 class _Handler(BaseHTTPRequestHandler):
     def parse_request(self) -> bool:
         parsed = super().parse_request()
@@ -176,20 +247,23 @@ class _Handler(BaseHTTPRequestHandler):
             keep_blank_values=True,
         )
 
+        expected_parameter = {
+            "/vulnerable": "category",
+            "/safe": "category",
+            "/mimic": "category",
+            "/numeric-vulnerable": "product_id",
+            "/numeric-safe": "product_id",
+        }.get(path.path)
+
         if (
-            path.path
-            not in (
-                "/vulnerable",
-                "/safe",
-                "/mimic",
-            )
-            or set(query) != {"category"}
-            or len(query["category"]) != 1
+            expected_parameter is None
+            or set(query) != {expected_parameter}
+            or len(query[expected_parameter]) != 1
         ):
             status, body = 404, b"not-found"
         else:
-            category = query["category"][0]
-            server.received.append((path.path, category, path.query))
+            value = query[expected_parameter][0]
+            server.received.append((path.path, value, path.query))
 
             try:
                 if path.path == "/mimic":
@@ -199,12 +273,15 @@ class _Handler(BaseHTTPRequestHandler):
                         "Pets" + CONTROL,
                     }
 
-                    body = (
-                        b"no-results" if category in false_inputs else b"products-found"
+                    body = b"no-results" if value in false_inputs else b"products-found"
+                elif path.path in {"/numeric-vulnerable", "/numeric-safe"}:
+                    body = _numeric_sql_result(
+                        value,
+                        safe=(path.path == "/numeric-safe"),
                     )
                 else:
                     body = _sql_result(
-                        category,
+                        value,
                         safe=(path.path == "/safe"),
                     )
 
@@ -316,6 +393,7 @@ def run_live_endpoint(
     port = server.server_port
 
     with running_server(server) as (_, origin):
+        preset = get_boolean_probe_preset(endpoint.preset_name)
         context = ExecutionContext(
             scope=ScopePolicy(
                 allowed_origins=frozenset({AllowedOrigin("http", "127.0.0.1", port)})
@@ -330,22 +408,23 @@ def run_live_endpoint(
             template=RequestTemplate(
                 method="GET",
                 url=origin + endpoint.path,
-                params=(("category", endpoint.initial_category),),
+                params=((endpoint.parameter_name, endpoint.initial_value),),
             ),
             point=InjectionPoint(
                 location=InjectionLocation.QUERY,
-                name="category",
+                name=endpoint.parameter_name,
                 mode=InjectionMode.APPEND,
             ),
-            true_payload=TRUE_1,
-            false_payload=FALSE_1,
+            true_payload=preset.true_payload,
+            false_payload=preset.false_payload,
             context=context,
         )
 
         assert result.request_count == context.budget.used_requests
+        assert server.total_requests == result.request_count
         assert len(server.received) == result.request_count
         assert not server.handler_failed
-        assert server.query_errors == 0
+        assert server.query_errors == endpoint.expected_query_errors
 
     return result, port
 
@@ -713,6 +792,41 @@ def test_sqlite_error_is_generic_and_quiet(
     assert server.query_errors == 1
     assert server.handler_failed is False
     assert capsys.readouterr() == ("", "")
+
+
+def test_numeric_preset_does_not_clear_string_quoted_vulnerability():
+    endpoint = LiveEndpoint(
+        endpoint_id="string-vulnerable-numeric-preset",
+        path="/vulnerable",
+        expected_label="positive",
+        parameter_name="category",
+        initial_value="Pets",
+        preset_name="numeric",
+    )
+
+    result, _ = run_live_endpoint(endpoint)
+
+    assert result.verdict is Verdict.NOT_DETECTED
+    assert result.reason_code == "no_boolean_difference_literal_input"
+    assert result.request_count == 6
+
+
+def test_string_quoted_preset_is_inconclusive_for_numeric_vulnerability():
+    endpoint = LiveEndpoint(
+        endpoint_id="numeric-vulnerable-string-preset",
+        path="/numeric-vulnerable",
+        expected_label="positive",
+        parameter_name="product_id",
+        initial_value="1",
+        preset_name="string-quoted",
+        expected_query_errors=4,
+    )
+
+    result, _ = run_live_endpoint(endpoint)
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "non_success_status"
+    assert result.request_count == 6
 
 
 def test_unexpected_requests_are_counted_before_validation():

@@ -8,8 +8,6 @@ from urllib.parse import parse_qs
 
 import pytest
 from test_sqli_http_e2e import (
-    FALSE_1,
-    TRUE_1,
     LoopbackShutdownError,
     LoopbackStartupError,
     _Server,
@@ -17,11 +15,11 @@ from test_sqli_http_e2e import (
 )
 from typer.testing import CliRunner
 
+from vintar.checks.sqli.presets import get_boolean_probe_preset
 from vintar.cli import app
 from vintar.regression.cases import load_regression_case
 
-SPEC = Path(__file__).parent / "fixtures" / "pipeline" / "openapi.json"
-BASELINE = "Pets"
+FIXTURES = Path(__file__).parent / "fixtures" / "pipeline"
 
 
 class PipelineLoopbackError(RuntimeError):
@@ -69,6 +67,9 @@ def write_pipeline_inputs(
     expected_verdict: str,
     endpoint: str,
     origin: str,
+    parameter_name: str,
+    example_pointer: str,
+    preset_name: str,
 ) -> tuple[Path, Path]:
     answers = folder / "answers.json"
     answers.write_text(
@@ -77,9 +78,7 @@ def write_pipeline_inputs(
                 "version": 1,
                 "expected_verdict": expected_verdict,
                 "parameters": {
-                    "category": {
-                        "pointer": "/paths/~1products/get/parameters/0/schema/example"
-                    },
+                    parameter_name: {"pointer": example_pointer},
                     "view": {"omit": True},
                 },
             }
@@ -99,14 +98,13 @@ def write_pipeline_inputs(
                 "",
                 "[injection]",
                 'location = "query"',
-                'name = "category"',
+                f"name = {json.dumps(parameter_name)}",
                 "occurrence = 0",
                 'mode = "append"',
                 "",
                 "[probes]",
-                'selection = "explicit"',
-                f"true_payload = {json.dumps(TRUE_1)}",
-                f"false_payload = {json.dumps(FALSE_1)}",
+                'selection = "preset"',
+                f"preset = {json.dumps(preset_name)}",
                 "",
                 "[limits]",
                 "max_requests = 6",
@@ -129,10 +127,16 @@ def run_pipeline(
     expected_exit: int,
     expected_status: str,
     expectation_match: bool,
+    spec_fixture: str,
+    operation_path: str,
+    parameter_name: str,
+    example_pointer: str,
+    baseline: str,
+    preset_name: str,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     spec = Path("openapi.json")
-    spec.write_bytes(SPEC.read_bytes())
+    spec.write_bytes((FIXTURES / spec_fixture).read_bytes())
     runner = CliRunner()
 
     with pipeline_server(endpoint) as (server, origin):
@@ -153,12 +157,12 @@ def run_pipeline(
         selected = [
             item
             for operation in inventory["operations"]
-            if operation["method"] == "GET" and operation["path"] == "/products"
+            if operation["method"] == "GET" and operation["path"] == operation_path
             for item in operation["inputs"]
-            if item["location"] == "query" and item["name"] == "category"
+            if item["location"] == "query" and item["name"] == parameter_name
         ]
         assert len(selected) == 1, (
-            "Discovery did not identify exactly one category query input. Check the pipeline OpenAPI fixture."
+            "Discovery did not identify exactly one selected query input. Check the pipeline OpenAPI fixture."
         )
         input_id = selected[0]["id"]
         selection = Path("selection.toml")
@@ -191,6 +195,9 @@ def run_pipeline(
             expected_verdict=expected_verdict,
             endpoint=endpoint,
             origin=origin,
+            parameter_name=parameter_name,
+            example_pointer=example_pointer,
+            preset_name=preset_name,
         )
         review = Path("review.json")
         review_summary = invoke_success(
@@ -212,7 +219,10 @@ def run_pipeline(
             "report_type": "discovery_draft_review_summary",
             "schema_version": 1,
         }
-        assert BASELINE not in review.read_text(encoding="utf-8")
+        review_report = json.loads(review.read_text(encoding="utf-8"))
+        decision = review_report["parameters"][parameter_name]
+        assert decision["status"] == "resolved"
+        assert "value" not in decision
 
         case_path = Path("generated-case.toml")
         assert not case_path.exists()
@@ -242,9 +252,10 @@ def run_pipeline(
         }
         assert case.case_id == "case-" + input_id.removeprefix("input-")
         assert case.template.url == origin + endpoint
-        assert case.template.params == (("category", BASELINE),)
-        assert case.true_payload == TRUE_1
-        assert case.false_payload == FALSE_1
+        assert case.template.params == ((parameter_name, baseline),)
+        preset = get_boolean_probe_preset(preset_name)
+        assert case.true_payload == preset.true_payload
+        assert case.false_payload == preset.false_payload
 
         assert server.total_requests == 0, (
             "An offline pipeline stage sent HTTP. Check discover, review-draft, and materialize-case transport boundaries."
@@ -282,13 +293,13 @@ def run_pipeline(
         [outcome] = report["outcomes"]
         assert outcome["expected_verdict"] == expected_verdict
         assert outcome["actual_verdict"] == (
-            "not_detected" if endpoint == "/safe" else "inconclusive"
+            "not_detected" if endpoint.endswith("safe") else "inconclusive"
         )
         assert outcome["expectation_match"] is expectation_match
         assert outcome["status"] == expected_status
         assert outcome["verification"]["reason_code"] == (
             "no_boolean_difference_literal_input"
-            if endpoint == "/safe"
+            if endpoint.endswith("safe")
             else "boolean_candidate"
         )
         assert outcome["verification"]["request_count"] == 6
@@ -298,17 +309,17 @@ def run_pipeline(
         assert len(server.received) == 6
         received = server.received
         expected_values = [
-            BASELINE,
-            BASELINE + TRUE_1,
-            BASELINE + FALSE_1,
-            BASELINE,
-            BASELINE + FALSE_1,
-            BASELINE + TRUE_1,
+            baseline,
+            baseline + preset.true_payload,
+            baseline + preset.false_payload,
+            baseline,
+            baseline + preset.false_payload,
+            baseline + preset.true_payload,
         ]
         assert [path for path, _, _ in received] == [endpoint] * 6
         assert [value for _, value, _ in received] == expected_values
         assert all(
-            parse_qs(raw_query, keep_blank_values=True) == {"category": [value]}
+            parse_qs(raw_query, keep_blank_values=True) == {parameter_name: [value]}
             for _, value, raw_query in received
         )
         assert server.query_errors == 0
@@ -324,6 +335,12 @@ def test_openapi_pipeline_safe_matches_not_detected(tmp_path, monkeypatch):
         expected_exit=0,
         expected_status="pass",
         expectation_match=True,
+        spec_fixture="openapi.json",
+        operation_path="/products",
+        parameter_name="category",
+        example_pointer="/paths/~1products/get/parameters/0/schema/example",
+        baseline="Pets",
+        preset_name="string-quoted",
     )
 
 
@@ -336,6 +353,12 @@ def test_openapi_pipeline_vulnerable_matches_inconclusive(tmp_path, monkeypatch)
         expected_exit=3,
         expected_status="inconclusive",
         expectation_match=True,
+        spec_fixture="openapi.json",
+        operation_path="/products",
+        parameter_name="category",
+        example_pointer="/paths/~1products/get/parameters/0/schema/example",
+        baseline="Pets",
+        preset_name="string-quoted",
     )
 
 
@@ -350,6 +373,50 @@ def test_openapi_pipeline_vulnerable_detects_expectation_regression(
         expected_exit=3,
         expected_status="inconclusive",
         expectation_match=False,
+        spec_fixture="openapi.json",
+        operation_path="/products",
+        parameter_name="category",
+        example_pointer="/paths/~1products/get/parameters/0/schema/example",
+        baseline="Pets",
+        preset_name="string-quoted",
+    )
+
+
+def test_openapi_pipeline_numeric_safe_matches_not_detected(tmp_path, monkeypatch):
+    run_pipeline(
+        tmp_path,
+        monkeypatch,
+        endpoint="/numeric-safe",
+        expected_verdict="not_detected",
+        expected_exit=0,
+        expected_status="pass",
+        expectation_match=True,
+        spec_fixture="openapi-numeric.json",
+        operation_path="/product",
+        parameter_name="product_id",
+        example_pointer="/paths/~1product/get/parameters/0/schema/example",
+        baseline="1",
+        preset_name="numeric",
+    )
+
+
+def test_openapi_pipeline_numeric_vulnerable_matches_inconclusive(
+    tmp_path, monkeypatch
+):
+    run_pipeline(
+        tmp_path,
+        monkeypatch,
+        endpoint="/numeric-vulnerable",
+        expected_verdict="inconclusive",
+        expected_exit=3,
+        expected_status="inconclusive",
+        expectation_match=True,
+        spec_fixture="openapi-numeric.json",
+        operation_path="/product",
+        parameter_name="product_id",
+        example_pointer="/paths/~1product/get/parameters/0/schema/example",
+        baseline="1",
+        preset_name="numeric",
     )
 
 

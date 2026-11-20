@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from vintar.checks.sqli.presets import (
+    BOOLEAN_PROBE_PRESET_NAMES,
+    get_boolean_probe_preset,
+)
 from vintar.regression.cases import load_regression_case
 from vintar.regression.discovery import JSON, DiscoveryError, Source, _read, _read_json
 from vintar.regression.discovery_review import (
@@ -30,6 +34,13 @@ class MaterializedCase:
 
 
 def _table(value: object, keys: set[str], message: str) -> dict[str, object]:
+    result = _mapping(value, message)
+    if result.keys() != keys:
+        raise CaseMaterializationError(message)
+    return result
+
+
+def _mapping(value: object, message: str) -> dict[str, object]:
     if type(value) is not dict:
         raise CaseMaterializationError(message)
     result: dict[str, object] = {}
@@ -37,8 +48,6 @@ def _table(value: object, keys: set[str], message: str) -> dict[str, object]:
         if type(key) is not str:
             raise CaseMaterializationError(message)
         result[key] = item
-    if result.keys() != keys:
-        raise CaseMaterializationError(message)
     return result
 
 
@@ -133,6 +142,44 @@ def _load_review(path: Path) -> dict[str, JSON]:
     return parsed
 
 
+def _probe_payloads(value: object) -> tuple[str, str]:
+    message = (
+        'Invalid probes config. Use selection = "explicit" with only true_payload '
+        'and false_payload, or selection = "preset" with only preset.'
+    )
+    probes = _mapping(value, message)
+    selection = probes.get("selection")
+    if type(selection) is not str or selection not in {"explicit", "preset"}:
+        raise CaseMaterializationError(
+            'Invalid probe selection. Use selection = "explicit" or selection = "preset".'
+        )
+    if selection == "explicit":
+        if probes.keys() != {"selection", "true_payload", "false_payload"}:
+            raise CaseMaterializationError(
+                'Invalid explicit probes config. Use only selection = "explicit", true_payload, and false_payload.'
+            )
+        true_payload = _text(probes["true_payload"], "TRUE payload")
+        false_payload = _text(probes["false_payload"], "FALSE payload")
+        if true_payload == false_payload:
+            raise CaseMaterializationError(
+                "Probe payloads are identical. Supply distinct true_payload and false_payload values in --config."
+            )
+        return true_payload, false_payload
+
+    if probes.keys() != {"selection", "preset"}:
+        raise CaseMaterializationError(
+            'Invalid preset probes config. Use only selection = "preset" and preset.'
+        )
+    try:
+        preset = get_boolean_probe_preset(probes["preset"])
+    except ValueError as exc:
+        valid = ", ".join(BOOLEAN_PROBE_PRESET_NAMES)
+        raise CaseMaterializationError(
+            f"Invalid probe preset. Use one of: {valid}."
+        ) from exc
+    return preset.true_payload, preset.false_payload
+
+
 def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
     version = config["config_version"]
     if type(version) is not int or version != 1:
@@ -155,22 +202,13 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
         {"location", "name", "occurrence", "mode"},
         "Invalid injection config. Supply location, name, occurrence, and mode.",
     )
-    probes = _table(
-        config["probes"],
-        {"selection", "true_payload", "false_payload"},
-        'Invalid probes config. Supply selection = "explicit" with true_payload and false_payload; presets are not supported.',
-    )
+    true_payload, false_payload = _probe_payloads(config["probes"])
     limits = _table(
         config["limits"],
         {"max_requests", "requests_per_second", "timeout_seconds"},
         "Invalid limits config. Supply max_requests, requests_per_second, and timeout_seconds.",
     )
 
-    selection = probes["selection"]
-    if type(selection) is not str or selection != "explicit":
-        raise CaseMaterializationError(
-            'Unsupported probe selection. Use selection = "explicit" and supply distinct true_payload and false_payload values.'
-        )
     location = injection["location"]
     name = injection["name"]
     occurrence = injection["occurrence"]
@@ -205,12 +243,6 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
 
     url = _text(target["url"], "target URL")
     allowed_origin = _text(target["allowed_origin"], "allowed origin")
-    true_payload = _text(probes["true_payload"], "TRUE payload")
-    false_payload = _text(probes["false_payload"], "FALSE payload")
-    if true_payload == false_payload:
-        raise CaseMaterializationError(
-            "Probe payloads are identical. Supply distinct true_payload and false_payload values in --config."
-        )
     max_requests = limits["max_requests"]
     if type(max_requests) is not int or max_requests != 6:
         raise CaseMaterializationError(
