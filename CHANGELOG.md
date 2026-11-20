@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-20
+
 - Add a local loopback Boolean SQLi precision corpus with separate true-positive,
   true-negative, false-candidate, and non-decision measurements.
 - Add a reviewed second predicate pair and baseline-preserving third predicate
@@ -12,8 +14,11 @@
 - Allow Schema v1 Boolean SQLi cases to opt into bounded 18-request confirmation;
   named probe presets expand confirmation automatically, while explicit probes are
   never completed by inference.
-- Report confirmation as not configured, not eligible, matched, mismatched, or
-  operational without changing CI exit codes.
+- Report whether confirmation was not configured, not eligible, matched,
+  mismatched, or stopped for an operational reason. CI exit codes are unchanged,
+  and existing v1 reports without confirmation fields remain valid.
+- Test time-based reliability with separate deterministic analysis and live
+  loopback checks for request order, response status, database calls, and budgets.
 
 ## [0.1.1] - 2026-11-20
 
