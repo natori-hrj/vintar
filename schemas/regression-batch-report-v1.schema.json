@@ -42,6 +42,24 @@
     "planned_case_ids": {
       "allOf": [
         {
+          "if": {
+            "properties": {
+              "confirmation": {
+                "properties": { "status": { "const": "not_eligible" } },
+                "required": ["status"]
+              }
+            },
+            "required": ["confirmation"]
+          },
+          "then": {
+            "properties": {
+              "verification": {
+                "not": { "$ref": "#/$defs/eligible_initial" }
+              }
+            }
+          }
+        },
+        {
           "$ref": "#/$defs/identifiers"
         },
         {
@@ -318,6 +336,9 @@
               },
               "request_count": {
                 "const": 18
+              },
+              "verification": {
+                "$ref": "#/$defs/eligible_initial"
               }
             }
           }
@@ -347,6 +368,12 @@
               },
               "actual_reason_code": {
                 "const": "candidate_confirmation_mismatch"
+              },
+              "request_count": {
+                "const": 18
+              },
+              "verification": {
+                "$ref": "#/$defs/eligible_initial"
               }
             }
           }
@@ -376,6 +403,9 @@
               },
               "actual_reason_code": {
                 "$ref": "#/$defs/operational_reason"
+              },
+              "verification": {
+                "$ref": "#/$defs/eligible_initial"
               }
             }
           }
@@ -584,7 +614,115 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "reason_code": {
+                "enum": [
+                  "confirmation_budget_unavailable",
+                  "confirmation_preflight_failed"
+                ]
+              }
+            },
+            "required": ["reason_code"]
+          },
+          "then": {
+            "properties": { "request_count": { "const": 0 } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reason_code": {
+                "enum": [
+                  "confirmation_pattern_matched",
+                  "candidate_confirmation_mismatch",
+                  "confirmation_unstable",
+                  "confirmation_cross_phase_mismatch"
+                ]
+              }
+            },
+            "required": ["reason_code"]
+          },
+          "then": {
+            "properties": { "request_count": { "const": 12 } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reason_code": {
+                "enum": [
+                  "confirmation_rate_limit_interrupted",
+                  "confirmation_timeout",
+                  "confirmation_request_failed",
+                  "confirmation_rate_limited",
+                  "confirmation_truncated",
+                  "confirmation_non_success_status"
+                ]
+              }
+            },
+            "required": ["reason_code"]
+          },
+          "then": {
+            "properties": { "request_count": { "minimum": 1 } }
+          }
         }
+      ]
+    },
+    "eligible_initial": {
+      "type": "object",
+      "properties": {
+        "verdict": { "const": "inconclusive" },
+        "reason_code": { "const": "boolean_candidate" },
+        "request_count": { "const": 6 },
+        "observations": {
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {
+            "properties": {
+              "status_code": { "minimum": 200, "maximum": 299 },
+              "truncated": { "const": false }
+            }
+          },
+          "allOf": [
+            {
+              "contains": {
+                "properties": { "kind": { "const": "baseline" } },
+                "required": ["kind"]
+              },
+              "minContains": 2,
+              "maxContains": 2
+            },
+            {
+              "contains": {
+                "properties": { "kind": { "const": "true" } },
+                "required": ["kind"]
+              },
+              "minContains": 2,
+              "maxContains": 2
+            },
+            {
+              "contains": {
+                "properties": { "kind": { "const": "false" } },
+                "required": ["kind"]
+              },
+              "minContains": 2,
+              "maxContains": 2
+            }
+          ]
+        },
+        "failures": { "maxItems": 0 },
+        "evidence": { "type": "object" }
+      },
+      "required": [
+        "verdict",
+        "reason_code",
+        "request_count",
+        "observations",
+        "failures",
+        "evidence"
       ]
     },
     "operational_reason": {
