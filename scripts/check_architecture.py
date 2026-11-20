@@ -54,11 +54,21 @@ DISCOVER_CLI_IMPORTS = DISCOVERY_IMPORTS | {
 def discovery_diagnostics(path, tree):
     allowed = (
         DISCOVER_CLI_IMPORTS
-        if path in {Path("discover_cli.py"), Path("review_draft_cli.py")}
+        if path
+        in {
+            Path("discover_cli.py"),
+            Path("review_draft_cli.py"),
+            Path("materialize_case_cli.py"),
+        }
         else DISCOVERY_IMPORTS
     )
     if path == Path("review_draft_cli.py"):
         allowed = allowed | {"vintar.regression.discovery_review"}
+    if path == Path("materialize_case_cli.py"):
+        allowed = DISCOVER_CLI_IMPORTS | {
+            "vintar.regression.case_materialization",
+            "vintar.regression.discovery_review",
+        }
     if path == Path("regression/discovery_review.py"):
         allowed = DISCOVERY_IMPORTS | {
             "vintar.regression.discovery",
@@ -69,6 +79,14 @@ def discovery_diagnostics(path, tree):
             "errno",
             "tempfile",
             "vintar.regression.discovery",
+        }
+    if path == Path("regression/case_materialization.py"):
+        allowed = DISCOVERY_IMPORTS | {
+            "errno",
+            "tempfile",
+            "vintar.regression.cases",
+            "vintar.regression.discovery",
+            "vintar.regression.discovery_review",
         }
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -115,6 +133,8 @@ def check_source(path: Path, source: str) -> list[str]:
     if path in {
         Path("discover_cli.py"),
         Path("review_draft_cli.py"),
+        Path("materialize_case_cli.py"),
+        Path("regression/case_materialization.py"),
         Path("regression/discovery_review.py"),
         Path("regression/discovery.py"),
         Path("regression/discovery_drafts.py"),

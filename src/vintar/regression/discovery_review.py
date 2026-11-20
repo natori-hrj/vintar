@@ -3,6 +3,7 @@
 import hashlib
 import json
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
@@ -25,6 +26,20 @@ from vintar.regression.discovery_drafts import draft_files, write_drafts
 
 class DraftReviewError(ValueError):
     """A redacted, actionable review diagnostic."""
+
+
+type ReviewScalar = bool | int | float | str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ReviewMaterial:
+    """Reviewed decisions with raw values confined to the offline boundary."""
+
+    report: dict[str, JSON]
+    values: dict[str, ReviewScalar]
+    omitted: frozenset[str]
+    case_id: str
+    selected_parameter: str
 
 
 def _candidate(
@@ -110,7 +125,7 @@ def _candidate(
 
 def _decision(
     document: _Discovery, item: Input, answer: JSON, identifier: str
-) -> dict[str, JSON]:
+) -> tuple[dict[str, JSON], ReviewScalar | None]:
     prefix = f"Input {identifier} parameter {item.name!a}:"
     if not isinstance(answer, dict):
         raise DraftReviewError(
@@ -122,7 +137,7 @@ def _decision(
             raise DraftReviewError(
                 f"{prefix} required parameters cannot be omitted. Supply a value or baseline pointer."
             )
-        return {"status": "omitted"}
+        return {"status": "omitted"}, None
     source: JSON = "reviewer"
     if keys == {"value"}:
         value = answer["value"]
@@ -166,10 +181,11 @@ def _decision(
         raise DraftReviewError(
             f"{prefix} stale baseline digest. Rerun discovery and re-confirm the input in --answers."
         )
-    return {"status": "resolved", "source": source, "value_sha256": digest}
+    return {"status": "resolved", "source": source, "value_sha256": digest}, value
 
 
-def build_review(spec: Path, draft: Path, answers: Path) -> dict[str, JSON]:
+def resolve_review(spec: Path, draft: Path, answers: Path) -> ReviewMaterial:
+    """Rebuild one review while retaining raw values only in memory."""
     cwd = Path.cwd()
     resolved = spec.resolve()
     if not resolved.is_relative_to(cwd):
@@ -194,6 +210,7 @@ def build_review(spec: Path, draft: Path, answers: Path) -> dict[str, JSON]:
             "Cannot read the draft. Supply a UTF-8 draft exported by discover."
         ) from exc
     identifier = parsed.get("input_id") if isinstance(parsed, dict) else None
+    case_id = parsed.get("id") if isinstance(parsed, dict) else None
     if not isinstance(identifier, str) or identifier not in indexed:
         raise DraftReviewError(
             "Draft input is missing or stale. Rerun discovery and review the current input."
@@ -238,13 +255,29 @@ def build_review(spec: Path, draft: Path, answers: Path) -> dict[str, JSON]:
             "Answers contain unknown parameters or an invalid parameters object. Use only declared query names from the draft."
         )
     candidate_document = _Discovery(document.root, document.source, document.version)
-    decisions: dict[str, JSON] = {
+    resolved_decisions = {
         parameter.name: _decision(
             candidate_document, parameter, parameters.get(parameter.name), identifier
         )
         for parameter in query
     }
-    return {
+    decisions: dict[str, JSON] = {
+        name: decision for name, (decision, _) in resolved_decisions.items()
+    }
+    values: dict[str, ReviewScalar] = {}
+    for name, (_, value) in resolved_decisions.items():
+        if value is not None:
+            values[name] = value
+    omitted = frozenset(
+        name
+        for name, (decision, _) in resolved_decisions.items()
+        if decision["status"] == "omitted"
+    )
+    if not isinstance(case_id, str):
+        raise DraftReviewError(
+            "Draft case ID is missing or stale. Rerun discovery and review the current input."
+        )
+    report: dict[str, JSON] = {
         "schema_version": 1,
         "report_type": "discovery_draft_review",
         "input_id": identifier,
@@ -252,6 +285,18 @@ def build_review(spec: Path, draft: Path, answers: Path) -> dict[str, JSON]:
         "source": {"file": relative.as_posix(), "pointer": item.source.pointer},
         "parameters": decisions,
     }
+    return ReviewMaterial(
+        report=report,
+        values=values,
+        omitted=omitted,
+        case_id=case_id,
+        selected_parameter=item.name,
+    )
+
+
+def build_review(spec: Path, draft: Path, answers: Path) -> dict[str, JSON]:
+    """Build one redacted review report."""
+    return resolve_review(spec, draft, answers).report
 
 
 def write_review(

@@ -16,6 +16,7 @@ EXAMPLES = {
     "discover-review": "discover/success.json",
     "discover-drafts": "discover/drafts.json",
     "draft-review": "review-draft/success.json",
+    "materialize-case": "materialize-case/success.json",
 }
 BLOCKS = {
     "verify-pass/case": "toml",
@@ -31,6 +32,9 @@ BLOCKS = {
     "draft-review/answers": "json",
     "draft-review/command": "bash",
     "draft-review/report": "json",
+    "materialize-case/config": "toml",
+    "materialize-case/command": "bash",
+    "materialize-case/report": "json",
 }
 CASE_PATH = "security/cases/a-case.toml"
 ORIGIN_VARIABLES = {"VINTAR_TARGET_ORIGIN", "VINTAR_ALLOWED_ORIGIN"}
@@ -126,6 +130,18 @@ def test_readme_cli_example(example, readme_blocks, tmp_path):
                 f"Invalid README review answers JSON: {error}. Fix the answers block."
             )
         (tmp_path / "answers.json").write_text(answers, encoding="utf-8")
+    elif example == "materialize-case":
+        assert not env, (
+            "Remove origin variables from the offline materialization command."
+        )
+        config = readme_blocks["materialize-case/config"]
+        try:
+            tomllib.loads(config)
+        except tomllib.TOMLDecodeError as error:
+            pytest.fail(
+                f"Invalid README materialization config TOML: {error}. Fix the config block."
+            )
+        (tmp_path / "case-config.toml").write_text(config, encoding="utf-8")
     elif example in {"discover-review", "discover-drafts"}:
         assert not env, "Remove origin variables from the offline discovery command."
         selection = readme_blocks["discover-review/selection"]

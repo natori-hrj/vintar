@@ -1,0 +1,6 @@
+{
+  "case_valid": false,
+  "exit_code": 2,
+  "stderr": "Error: The review report no longer matches the current spec, draft, or answers. Rerun review-draft and supply its current --review output.\n",
+  "stdout_json": null
+}
