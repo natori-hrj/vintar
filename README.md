@@ -2,9 +2,23 @@
 
 Vintar is an unreleased Python tool for running authorized web security regression checks in CI. It runs reviewed cases against a configured target and reports the batch result as JSON and a process exit code.
 
+## v0.1.0 Scope
+
+Vintar v0.1.0 supports Boolean-based SQL injection regression checks for
+`GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
+materialization run offline. The workflow is
+`discover → review-draft → materialize-case → verify`. Reviewers explicitly
+select the `string-quoted` or `numeric` probe preset when using presets.
+Verification runs against an authorized, configured target.
+
+Deferred to v0.2 and later are confirmed `VULNERABLE` verdicts and CLI integration
+of 12-probe confirmation, time-based, error-based, and UNION-based SQL injection
+checks, POST form and JSON body injection, cookie and header injection, and
+authenticated workflows.
+
 ## Install from Source
 
-Use Python 3.13 or later and uv. Clone the repository with an account that has access, then install from the lockfile.
+Before the PyPI release, use Python 3.13 or later and uv. Clone the repository with an account that has access, then install from the lockfile.
 
 ```bash
 git clone https://github.com/natori-hrj/vintar.git
@@ -67,13 +81,18 @@ uv run --locked vintar verify \
 
 ## Exit Codes and JSON Reports
 
-| `verify` exit code | Meaning |
-| --- | --- |
-| `0` | PASS. The batch completed and all cases passed. |
-| `1` | FAIL. At least one case failed. Failure takes precedence over an incomplete batch. |
-| `2` | ERROR. An input, configuration, execution, or output error prevented a usable result. |
-| `3` | INCONCLUSIVE. There are no failed cases and the batch has an inconclusive case or is incomplete. |
-| `130` | Interrupted. |
+| Case outcome or batch condition | `verify` exit code | CI meaning |
+| --- | --- | --- |
+| `NOT_DETECTED` matches the reviewed expectation for every case in a complete batch | `0` | **PASS.** No Boolean differential was detected under the tested probes and conditions. This does not prove SQL injection is absent. |
+| `INCONCLUSIVE` with reason `boolean_candidate` | `3` | **BLOCK / Review required.** A SQLi-like Boolean response differential was observed. This is a candidate signal and requires independent evidence before anyone can call it a confirmed vulnerability. |
+| Other `INCONCLUSIVE` reasons or an incomplete batch | `3` | **BLOCK / Investigation required.** Verification was insufficient. Check the budget, rate limits, transport or HTTP status, and response stability. |
+| `FAIL` | `1` | **FAIL.** A `NOT_DETECTED` result did not match the reviewed expectation. |
+| `ERROR` | `2` | **ERROR.** Invalid input, configuration, execution, or output prevented a usable result. |
+| Interrupted | `130` | **Interrupted.** A usable report may be absent. |
+
+These are batch exit codes. A failed case takes precedence over inconclusive
+outcomes and an incomplete batch. An inconclusive case never passes, even when
+its verdict matches the expectation.
 
 `verify` emits one [schema v1 JSON report](schemas/regression-batch-report-v1.schema.json) on stdout for results `0`, `1`, and `3`. Diagnostics go to stderr. Use `--pretty` for indentation. An error or interruption can leave stdout empty or incomplete.
 
@@ -247,7 +266,10 @@ selection = "preset"
 preset = "string-quoted"
 ```
 
-The supported presets are `string-quoted` (`' AND 1=1-- ` / `' AND 1=2-- `) and `numeric` (` AND 1=1-- ` / ` AND 1=2-- `). Materialization expands the selected pair into the Schema v1 case; the case does not retain preset metadata. The choice is always explicit. In particular, an OpenAPI `type = integer` declaration does not select `numeric`, because an API type does not establish the downstream SQL syntax context.
+The supported presets are `string-quoted` and `numeric`. Materialization expands
+the selected pair into the Schema v1 case. The reviewer must explicitly choose a
+preset for the downstream SQL context. An OpenAPI integer type alone cannot
+establish that context.
 
 ## Other CLI Commands
 
@@ -279,9 +301,14 @@ uv run --locked vintar sqli verify \
 
 ## Current Limitations
 
-- The current Boolean analyzer reports a candidate as inconclusive. `not_detected` describes a single check result and provides no general security guarantee.
-- Time-based verification is experimental Python functionality. The CLI exposes Boolean verification.
-- Cases use schema v1 with placeholder origins. OpenAPI discovery exports review drafts only.
+- Non-SQL middleware can mimic a Boolean response differential. The
+  `waf200_mimic` fixture demonstrates a false candidate. Vintar does not claim
+  zero false candidates across environments.
+- Matched live loopback evaluation covers ephemeral SQLite twins using the
+  corresponding `string-quoted` and `numeric` presets. The observed candidate
+  counts were **TP=2, TN=2, FP=0, FN=0** for those fixtures. PostgreSQL and MySQL
+  integration tests are opt-in and do not run in default CI.
+- Schema v1 uses placeholder origins. Verification binds the case to the trusted runtime origin.
 - The batch engine has per-request timeouts. The staging workflow supplies the job-level timeout.
 - Schema validation checks the report. Case definitions still require trusted review.
 
