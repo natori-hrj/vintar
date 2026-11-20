@@ -37,6 +37,7 @@ def make_inputs(
     value: object = "baseline-value-sentinel",
     *,
     q_required: bool = True,
+    q_type: str = "string",
     extra: object = None,
 ) -> dict[str, Path]:
     monkeypatch.chdir(tmp_path)
@@ -51,7 +52,7 @@ def make_inputs(
                             "name": "q",
                             "in": "query",
                             "required": q_required,
-                            "schema": {"type": "string"},
+                            "schema": {"type": q_type},
                         },
                         {
                             "name": "extra",
@@ -163,6 +164,15 @@ def invoke(inputs: dict[str, Path]):
             "--output",
             str(inputs["output"]),
         ],
+    )
+
+
+def replace_probes(inputs: dict[str, Path], replacement: str) -> None:
+    source = inputs["config"].read_text(encoding="utf-8")
+    start = source.index("[probes]")
+    end = source.index("[limits]")
+    inputs["config"].write_text(
+        source[:start] + replacement + "\n\n" + source[end:], encoding="utf-8"
     )
 
 
@@ -283,7 +293,7 @@ def test_rejects_stale_review_without_disclosing_value(tmp_path, monkeypatch):
     assert not inputs["output"].exists()
 
 
-@pytest.mark.parametrize("selection", ["preset", "unknown", 1])
+@pytest.mark.parametrize("selection", ["unknown", 1, []])
 def test_rejects_unsupported_probe_selection(tmp_path, monkeypatch, selection):
     inputs = make_inputs(tmp_path, monkeypatch)
     source = inputs["config"].read_text(encoding="utf-8")
@@ -293,8 +303,141 @@ def test_rejects_unsupported_probe_selection(tmp_path, monkeypatch, selection):
     inputs["config"].write_text(source, encoding="utf-8")
     result = invoke(inputs)
     assert result.exit_code == 2 and result.stdout == ""
-    assert "Use selection" in result.stderr
-    assert "true_payload" in result.stderr
+    assert 'selection = "explicit" or selection = "preset"' in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("name", "true_payload", "false_payload"),
+    [
+        ("string-quoted", "' AND 1=1-- ", "' AND 1=2-- "),
+        ("numeric", " AND 1=1-- ", " AND 1=2-- "),
+    ],
+)
+def test_named_probe_preset_expands_to_schema_v1_payloads(
+    tmp_path, monkeypatch, name, true_payload, false_payload
+):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    replace_probes(
+        inputs,
+        f'[probes]\nselection = "preset"\npreset = "{name}"',
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 0 and result.stderr == ""
+    case = load_regression_case(inputs["output"])
+    assert (case.true_payload, case.false_payload) == (true_payload, false_payload)
+    parsed = tomllib.loads(inputs["output"].read_text(encoding="utf-8"))
+    assert parsed["probes"] == {
+        "true_payload": true_payload,
+        "false_payload": false_payload,
+    }
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        (
+            '[probes]\nselection = "explicit"\ntrue_payload = "only-true"',
+            "Invalid explicit probes config",
+        ),
+        (
+            '[probes]\nselection = "preset"',
+            "Invalid preset probes config",
+        ),
+        (
+            (
+                '[probes]\nselection = "explicit"\ntrue_payload = "true-sentinel"\n'
+                'false_payload = "false-sentinel"\npreset = "numeric"'
+            ),
+            "Invalid explicit probes config",
+        ),
+        (
+            (
+                '[probes]\nselection = "preset"\npreset = "numeric"\n'
+                'true_payload = "true-sentinel"\nfalse_payload = "false-sentinel"'
+            ),
+            "Invalid preset probes config",
+        ),
+    ],
+)
+def test_probe_config_rejects_missing_and_mixed_fields_redacted(
+    tmp_path, monkeypatch, replacement, message
+):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    replace_probes(inputs, replacement)
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert message in result.stderr
+    assert "true-sentinel" not in result.stderr
+    assert "false-sentinel" not in result.stderr
+    assert ORIGIN not in result.stderr
+
+
+@pytest.mark.parametrize("preset", ['"unknown"', "1", "[]"])
+def test_probe_config_rejects_unknown_or_non_string_preset(
+    tmp_path, monkeypatch, preset
+):
+    inputs = make_inputs(tmp_path, monkeypatch, value="private-baseline-sentinel")
+    replace_probes(
+        inputs,
+        f'[probes]\nselection = "preset"\npreset = {preset}',
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert "Use one of: numeric, string-quoted" in result.stderr
+    assert "private-baseline-sentinel" not in result.stderr
+    assert ORIGIN not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("true_payload", "false_payload", "message"),
+    [("", "false", "nonempty"), ("same", "same", "identical")],
+)
+def test_explicit_probe_config_rejects_invalid_payloads(
+    tmp_path, monkeypatch, true_payload, false_payload, message
+):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    replace_probes(
+        inputs,
+        "\n".join(
+            (
+                "[probes]",
+                'selection = "explicit"',
+                f"true_payload = {json.dumps(true_payload)}",
+                f"false_payload = {json.dumps(false_payload)}",
+            )
+        ),
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert message in result.stderr
+
+
+def test_preset_selection_is_not_inferred_from_openapi_integer_type(
+    tmp_path, monkeypatch
+):
+    inputs = make_inputs(tmp_path, monkeypatch, value=1, q_type="integer")
+    replace_probes(
+        inputs,
+        '[probes]\nselection = "preset"\npreset = "string-quoted"',
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 0 and result.stderr == ""
+    case = load_regression_case(inputs["output"])
+    assert case.template.params == (("q", "1"),)
+    assert (case.true_payload, case.false_payload) == (
+        "' AND 1=1-- ",
+        "' AND 1=2-- ",
+    )
 
 
 def test_rejects_omitted_injection_parameter(tmp_path, monkeypatch):

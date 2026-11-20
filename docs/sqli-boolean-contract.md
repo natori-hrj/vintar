@@ -95,6 +95,29 @@ difference. It does not prove that the target is not vulnerable: an unsupported 
 context can also make both payloads ineffective. Check whether the target treated the
 payloads as literal input and whether the probe syntax applies to the tested context.
 
+## Reviewed Probe Presets
+
+Offline case materialization supports two named initial-verification payload pairs:
+
+| Preset | TRUE payload | FALSE payload |
+| --- | --- | --- |
+| `string-quoted` | `' AND 1=1-- ` | `' AND 1=2-- ` |
+| `numeric` | ` AND 1=1-- ` | ` AND 1=2-- ` |
+
+These names describe the SQL syntax context a reviewer intends to exercise. They are
+not analyzer rules and do not change response classification. Materialization expands
+the selected preset into the existing Schema v1 `true_payload` and `false_payload`
+fields.
+
+Preset selection is never inferred from an OpenAPI type. For example, an integer API
+parameter can still reach quoted SQL, be converted before SQL construction, or never
+reach SQL at all. The reviewer must select the context explicitly.
+
+Using an incompatible preset can produce `NOT_DETECTED /
+no_boolean_difference_literal_input` when both payloads behave as literals, or
+`INCONCLUSIVE / non_success_status` when they cause syntax errors. Neither outcome
+proves absence of SQL injection.
+
 ## Confirmation Eligibility
 
 Additional confirmation is only available when the initial

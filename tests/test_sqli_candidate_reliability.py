@@ -62,7 +62,8 @@ def live_observation(endpoint, result):
     return {
         "endpoint_id": endpoint.endpoint_id,
         "expected_label": endpoint.expected_label,
-        "initial_value": endpoint.initial_category,
+        "initial_value": endpoint.initial_value,
+        "preset": endpoint.preset_name,
         "verdict": result.verdict.value,
         "reason_code": result.reason_code,
         "classification": classify(
@@ -78,7 +79,8 @@ def live_transport_failure(endpoint, category, message):
     return {
         "endpoint_id": endpoint.endpoint_id,
         "expected_label": endpoint.expected_label,
-        "initial_value": endpoint.initial_category,
+        "initial_value": endpoint.initial_value,
+        "preset": endpoint.preset_name,
         "verdict": None,
         "reason_code": None,
         "classification": "non_decision",
@@ -135,6 +137,7 @@ def measure_live_loopback(runner=run_live_endpoint):
                     "endpoint_id",
                     "expected_label",
                     "initial_value",
+                    "preset",
                     "verdict",
                     "reason_code",
                     "request_count",
@@ -143,7 +146,7 @@ def measure_live_loopback(runner=run_live_endpoint):
                 )
             }
             for record in live["records"]
-            if record["endpoint_id"] == LIVE_TWIN_ENDPOINTS[1].endpoint_id
+            if record["expected_label"] == "negative"
             and record["classification"] == "non_decision"
         ]
     }
@@ -346,8 +349,8 @@ def test_candidate_report_is_sorted_and_counts_match_records(measurements, tmp_p
         "fn": 0,
         "fp": 0,
         "non_decision": 0,
-        "tn": 1,
-        "tp": 1,
+        "tn": 2,
+        "tp": 2,
     }
     assert sum(live["counts"].values()) == len(live["records"])
     assert report["schema_version"] == 2
@@ -356,24 +359,31 @@ def test_candidate_report_is_sorted_and_counts_match_records(measurements, tmp_p
     assert "counts" not in report["known_limitations"]
 
 
-def test_live_twins_share_declared_initial_value():
-    assert len({endpoint.initial_category for endpoint in LIVE_TWIN_ENDPOINTS}) == 1
-    assert {endpoint.expected_label for endpoint in LIVE_TWIN_ENDPOINTS} == {
-        "positive",
-        "negative",
-    }
+def test_live_twins_share_declared_values_within_each_sql_context():
+    contexts = {}
+    for endpoint in LIVE_TWIN_ENDPOINTS:
+        contexts.setdefault(endpoint.preset_name, []).append(endpoint)
+    assert set(contexts) == {"numeric", "string-quoted"}
+    for endpoints in contexts.values():
+        assert len({endpoint.initial_value for endpoint in endpoints}) == 1
+        assert {endpoint.expected_label for endpoint in endpoints} == {
+            "positive",
+            "negative",
+        }
 
 
 def test_live_endpoint_rejects_non_benign_initial_value():
     with pytest.raises(
         ValueError,
-        match="benign category declared in the fixture data; use Pets or Office",
+        match="benign value declared for the fixture parameter",
     ):
         LiveEndpoint(
             endpoint_id="invalid-baseline",
             path="/safe",
             expected_label="negative",
-            initial_category="Pets' OR '1'='1",
+            parameter_name="category",
+            initial_value="Pets' OR '1'='1",
+            preset_name="string-quoted",
         )
 
 
@@ -469,29 +479,34 @@ def test_live_failures_write_report_before_failing(
 def test_unfinished_live_positive_writes_not_covered_report(
     measurements, simulated_report, category
 ):
-    endpoint = LIVE_TWIN_ENDPOINTS[0]
-    if category in {"probe_failed", "rate_limited"}:
-        failure = live_observation(
-            endpoint,
-            SimpleNamespace(
-                verdict=Verdict.INCONCLUSIVE,
-                reason_code=category,
-                request_count=1,
-            ),
-        )
-    else:
-        failure = live_transport_failure(
-            endpoint,
-            category,
-            "The live fixture could not complete the check. Check the loopback transport setup.",
-        )
+    positive_endpoints = [
+        endpoint
+        for endpoint in LIVE_TWIN_ENDPOINTS
+        if endpoint.expected_label == "positive"
+    ]
+    failures = []
+    for endpoint in positive_endpoints:
+        if category in {"probe_failed", "rate_limited"}:
+            failure = live_observation(
+                endpoint,
+                SimpleNamespace(
+                    verdict=Verdict.INCONCLUSIVE,
+                    reason_code=category,
+                    request_count=1,
+                ),
+            )
+        else:
+            failure = live_transport_failure(
+                endpoint,
+                category,
+                "The live fixture could not complete the check. Check the loopback transport setup.",
+            )
+        failures.append(failure)
     passing_live, limitations = passing_live_measurement()
     records = [
-        row
-        for row in passing_live["records"]
-        if row["endpoint_id"] != endpoint.endpoint_id
+        row for row in passing_live["records"] if row["expected_label"] != "positive"
     ]
-    live = live_report([*records, failure])
+    live = live_report([*records, *failures])
     path = simulated_report(f"live-{category}")
 
     with pytest.raises(pytest.fail.Exception, match="live_loopback:") as caught:
@@ -503,12 +518,12 @@ def test_unfinished_live_positive_writes_not_covered_report(
         )
 
     diagnostic = str(caught.value)
-    assert endpoint.endpoint_id in diagnostic
+    assert all(endpoint.endpoint_id in diagnostic for endpoint in positive_endpoints)
     assert category in diagnostic
     assert "transport setup" in diagnostic
     assert str(path) in diagnostic
     report = json.loads(path.read_text(encoding="utf-8"))
-    assert report["live_loopback"]["counts"]["non_decision"] == 1
+    assert report["live_loopback"]["counts"]["non_decision"] == 2
     assert report["live_positive_measurement"] == "not_covered"
 
 
@@ -520,18 +535,14 @@ def passing_live_measurement():
     )
     negative = SimpleNamespace(
         verdict=Verdict.NOT_DETECTED,
-        reason_code="no_boolean_difference",
-        request_count=6,
-    )
-    limitation = SimpleNamespace(
-        verdict=Verdict.INCONCLUSIVE,
-        reason_code="unexpected_difference",
+        reason_code="no_boolean_difference_literal_input",
         request_count=6,
     )
     results = {
         "sqlite-vulnerable": positive,
         "sqlite-parameterized": negative,
-        "sqlite-parameterized-pets": limitation,
+        "sqlite-numeric-vulnerable": positive,
+        "sqlite-numeric-parameterized": negative,
     }
 
     def runner(endpoint):

@@ -84,10 +84,13 @@ def discovery_diagnostics(path, tree):
         allowed = DISCOVERY_IMPORTS | {
             "errno",
             "tempfile",
+            "vintar.checks.sqli.presets",
             "vintar.regression.cases",
             "vintar.regression.discovery",
             "vintar.regression.discovery_review",
         }
+    if path == Path("checks/sqli/presets.py"):
+        allowed = {"collections.abc", "dataclasses", "types"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules = [alias.name for alias in node.names]
@@ -134,6 +137,7 @@ def check_source(path: Path, source: str) -> list[str]:
         Path("discover_cli.py"),
         Path("review_draft_cli.py"),
         Path("materialize_case_cli.py"),
+        Path("checks/sqli/presets.py"),
         Path("regression/case_materialization.py"),
         Path("regression/discovery_review.py"),
         Path("regression/discovery.py"),

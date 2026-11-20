@@ -190,7 +190,7 @@ The offline report records evidence, omission decisions, and value digests. It c
 
 ### Materialize a Reviewed Case
 
-Create an explicit target config for the reviewed input. The target URL is the route that verification will call; it may include a proxy prefix or fixture route and is not inferred from the OpenAPI path. Origins, injection behavior, limits, security expectations, and probe payloads are never guessed. Phase 9-2 supports only `selection = "explicit"`; named presets are not supported yet. Headers, cookies, and credentials are not accepted in this config.
+Create an explicit target config for the reviewed input. The target URL is the route that verification will call; it may include a proxy prefix or fixture route and is not inferred from the OpenAPI path. Origins, injection behavior, limits, security expectations, and probe selection are never guessed. Headers, cookies, and credentials are not accepted in this config.
 
 <!-- cli-example: materialize-case/config -->
 ```toml
@@ -238,6 +238,16 @@ uv run --locked vintar materialize-case \
 Materialization is offline. It regenerates the draft and review decisions from the current spec and answers, verifies the supplied review report including value SHA-256 digests, and validates the generated TOML with the Schema v1 loader. The case ID comes from the regenerated draft. Optional parameters answered with `{"omit": true}` are absent from `target.params`; an explicit empty string remains `value = ""`. Strings are preserved exactly, while booleans, integers, and finite floats use compact canonical JSON scalar text (`true`, `17`, or `1.25`).
 
 The generated case contains the reviewed raw parameter values and explicit probe payloads, so treat it as sensitive review material. Rerunning with byte-identical content is a no-op. Existing conflicting output is preserved, and publishing requires a hard-link-capable filesystem.
+
+Instead of supplying explicit payloads, a reviewer may select one reviewed Boolean probe preset:
+
+```toml
+[probes]
+selection = "preset"
+preset = "string-quoted"
+```
+
+The supported presets are `string-quoted` (`' AND 1=1-- ` / `' AND 1=2-- `) and `numeric` (` AND 1=1-- ` / ` AND 1=2-- `). Materialization expands the selected pair into the Schema v1 case; the case does not retain preset metadata. The choice is always explicit. In particular, an OpenAPI `type = integer` declaration does not select `numeric`, because an API type does not establish the downstream SQL syntax context.
 
 ## Other CLI Commands
 
