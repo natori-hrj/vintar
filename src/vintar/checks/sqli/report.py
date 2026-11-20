@@ -13,6 +13,7 @@ _REPORT_REASON_CODES = frozenset(
         "connection_error",
         "insufficient_evidence",
         "no_boolean_difference",
+        "no_boolean_difference_literal_input",
         "non_success_status",
         "possible_dynamic_response",
         "probe_failed",

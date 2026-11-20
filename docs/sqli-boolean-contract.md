@@ -82,12 +82,18 @@ The initial verifier uses the following result reasons:
 | INCONCLUSIVE | `boolean_candidate` | BASELINE matched TRUE and differed from FALSE. |
 | INCONCLUSIVE | `unexpected_difference` | Stable responses differed without the expected relation. |
 | NOT_DETECTED | `no_boolean_difference` | BASELINE, TRUE, and FALSE all matched. |
+| NOT_DETECTED | `no_boolean_difference_literal_input` | Stable TRUE and FALSE responses matched each other while both differed from BASELINE. |
 
 `probe_failed` records the structured probe error separately; its
 reason code does not distinguish the individual transport failure.
 
 A NOT_DETECTED result is not proof that the target is free
 from SQL injection.
+
+The literal-input result means that the two Boolean probes produced no response
+difference. It does not prove that the target is not vulnerable: an unsupported SQL
+context can also make both payloads ineffective. Check whether the target treated the
+payloads as literal input and whether the probe syntax applies to the tested context.
 
 ## Confirmation Eligibility
 

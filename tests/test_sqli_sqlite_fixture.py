@@ -207,8 +207,8 @@ def test_parameterized_sqlite_rejects_boolean_interpretation(
         )
     )
 
-    assert result.verdict is Verdict.INCONCLUSIVE
-    assert result.reason_code == "unexpected_difference"
+    assert result.verdict is Verdict.NOT_DETECTED
+    assert result.reason_code == "no_boolean_difference_literal_input"
     assert result.evidence is not None
     assert result.evidence.baseline_true_similarity == 0.0
     assert result.evidence.baseline_false_similarity == 0.0

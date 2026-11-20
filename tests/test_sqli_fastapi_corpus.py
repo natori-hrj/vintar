@@ -395,8 +395,8 @@ def test_fastapi_sqlite_corpus(
     if expected is ConfirmationStatus.SKIPPED:
         assert outcome.confirmation_requests == 0
         assert outcome.evidence is None
-        assert outcome.initial.verdict is Verdict.INCONCLUSIVE
-        assert outcome.initial.reason_code == "unexpected_difference"
+        assert outcome.initial.verdict is Verdict.NOT_DETECTED
+        assert outcome.initial.reason_code == "no_boolean_difference_literal_input"
 
     if expected is ConfirmationStatus.INCONCLUSIVE:
         assert outcome.evidence is None

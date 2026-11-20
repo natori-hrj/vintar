@@ -175,8 +175,8 @@ def test_parameterized_sqlite_skips_confirmation():
 
     result, context = run_check(handler)
 
-    assert result.initial.verdict is Verdict.INCONCLUSIVE
-    assert result.initial.reason_code == "unexpected_difference"
+    assert result.initial.verdict is Verdict.NOT_DETECTED
+    assert result.initial.reason_code == "no_boolean_difference_literal_input"
     assert result.status is ConfirmationStatus.SKIPPED
     assert result.reason_code == "initial_not_eligible"
 
