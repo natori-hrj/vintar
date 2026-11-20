@@ -2,8 +2,19 @@
 
 ## [Unreleased]
 
-- Serialize query spaces as RFC 3986 `%20` and literal plus signs as `%2B`, so
-  reviewed SQLi probes reach both percent-only and form-style query decoders intact.
+## [0.2.1] - 2026-11-21
+
+**Fixed**
+
+- SQLi checks could miss candidate signals on servers that decode percent escapes
+  but leave `+` unchanged, because those servers received plus signs where the
+  probes expected spaces. Query values now encode spaces as `%20` and literal plus
+  signs as `%2B` per RFC 3986, so probes reach both percent-only and form-style
+  query decoders intact.
+
+**Internal**
+
+- Add a third-party DSVW evaluation harness for maintainers.
 
 ## [0.2.0] - 2026-11-20
 
