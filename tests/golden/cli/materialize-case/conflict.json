@@ -1,0 +1,6 @@
+{
+  "case_valid": false,
+  "exit_code": 2,
+  "stderr": "Error: Case output already has different content. Move it or choose a different --output path.\n",
+  "stdout_json": null
+}

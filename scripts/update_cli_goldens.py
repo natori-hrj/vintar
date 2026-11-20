@@ -18,6 +18,7 @@ from vintar.cli import app
 from vintar.core import executor, http
 from vintar.core.rate_limit import RateLimiter
 from vintar.regression import batch
+from vintar.regression.cases import load_regression_case
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_DIR = ROOT / "tests" / "golden" / "cli"
@@ -46,6 +47,9 @@ SCENARIOS = {
     "discover/success.json": Scenario(0, 0),
     "review-draft/success.json": Scenario(0, 0),
     "review-draft/null-baseline.json": Scenario(2, 0),
+    "materialize-case/success.json": Scenario(0, 0),
+    "materialize-case/conflict.json": Scenario(2, 0),
+    "materialize-case/stale-review.json": Scenario(2, 0),
     "discover/drafts.json": Scenario(0, 0),
     "discover/drafts-conflict.json": Scenario(2, 0),
     "discover/stale-selection.json": Scenario(2, 0),
@@ -261,6 +265,117 @@ def capture_review(name, scenario, folder, args, env):
     }
 
 
+def capture_materialization(name, scenario, folder, args, env):
+    capture_review("review-draft/success.json", Scenario(0, 0), folder, None, env)
+    draft = next((folder / "drafts").iterdir())
+    config = folder / "case-config.toml"
+    if not config.exists():
+        config.write_text(
+            """config_version = 1
+input_id = "input-24a9c3cf0c3d01709121ac0d09079903"
+
+[target]
+url = "http://cli-fixture.invalid/fixture-route"
+allowed_origin = "http://cli-fixture.invalid"
+
+[injection]
+location = "query"
+name = "q"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "explicit"
+true_payload = "true-probe"
+false_payload = "false-probe"
+
+[limits]
+max_requests = 6
+requests_per_second = 10.0
+timeout_seconds = 5.0
+""",
+            encoding="utf-8",
+        )
+    output = folder / "security/cases/case-24a9c3cf0c3d01709121ac0d09079903.toml"
+    if name == "materialize-case/conflict.json":
+        output.parent.mkdir(parents=True)
+        output.write_text("Existing review notes.\n", encoding="utf-8")
+    if name == "materialize-case/stale-review.json":
+        (folder / "answers.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "expected_verdict": "not_detected",
+                    "parameters": {"q": {"value": "changed-baseline"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+    if args is None:
+        args = [
+            "materialize-case",
+            "--spec",
+            "openapi.json",
+            "--draft",
+            str(draft.relative_to(folder)),
+            "--answers",
+            "answers.json",
+            "--review",
+            "review.json",
+            "--config",
+            "case-config.toml",
+            "--output",
+            str(output.relative_to(folder)),
+        ]
+    with (
+        chdir(folder),
+        patch(
+            "socket.socket",
+            side_effect=AssertionError("Materialization opened a socket."),
+        ),
+        patch(
+            "socket.getaddrinfo",
+            side_effect=AssertionError("Materialization resolved DNS."),
+        ),
+    ):
+        result = CliRunner().invoke(app, args, env=env)
+    if result.exit_code != scenario.exit_code:
+        raise ValueError(
+            f"Expected exit {scenario.exit_code}, got {result.exit_code}. "
+            f"Check the materialization inputs and flags. {result.stderr}"
+        )
+    if result.exit_code == 0:
+        if not result.stdout.endswith("\n") or result.stderr or not output.is_file():
+            raise ValueError(
+                "Expected a JSON summary and Schema v1 case. Check the output path."
+            )
+        summary = json.loads(result.stdout)
+        case = load_regression_case(output)
+        if summary["case_id"] != case.case_id:
+            raise ValueError("Materialization summary differs from the generated case.")
+        case_valid = True
+    else:
+        if result.stdout or not result.stderr:
+            raise ValueError(
+                "Expected a materialization diagnostic on stderr and empty stdout."
+            )
+        if name == "materialize-case/conflict.json":
+            if output.read_text(encoding="utf-8") != "Existing review notes.\n":
+                raise ValueError("Materialization changed the conflicting output.")
+        elif output.exists():
+            raise ValueError(
+                "Materialization wrote a case after rejecting stale input."
+            )
+        summary = None
+        case_valid = False
+    return {
+        "case_valid": case_valid,
+        "exit_code": result.exit_code,
+        "stdout_json": summary,
+        "stderr": result.stderr,
+    }
+
+
 def capture(
     name: str,
     scenario: Scenario,
@@ -269,10 +384,13 @@ def capture(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
 ) -> str:
-    if name.startswith(("discover/", "review-draft/")):
-        offline_capture = (
-            capture_review if name.startswith("review-draft/") else capture_discovery
-        )
+    if name.startswith(("discover/", "review-draft/", "materialize-case/")):
+        if name.startswith("review-draft/"):
+            offline_capture = capture_review
+        elif name.startswith("materialize-case/"):
+            offline_capture = capture_materialization
+        else:
+            offline_capture = capture_discovery
         return (
             json.dumps(
                 offline_capture(name, scenario, folder, args, env),
