@@ -39,10 +39,14 @@ def release_version(root: Path) -> str:
     sections = re.split(
         r"(?m)^#{2,6} ", (root / "CHANGELOG.md").read_text(encoding="utf-8")
     )
+    escaped_version = re.escape(version)
+    release_heading = (
+        rf"(?:{escaped_version}|\[{escaped_version}\] - \d{{4}}-\d{{2}}-\d{{2}})"
+    )
     matching = [
         section
         for section in sections[1:]
-        if section.partition("\n")[0].strip() == version
+        if re.fullmatch(release_heading, section.partition("\n")[0].strip())
     ]
     if len(matching) != 1 or not re.search(r"(?m)^- \S", matching[0]):
         raise ValueError(

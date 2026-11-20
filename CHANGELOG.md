@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## [Unreleased]
 
-### 0.1.0
+## [0.1.0] - 2026-11-20
 
 - Run authorized Boolean SQL injection regression checks on GET query parameters with Schema v1 TOML cases, JSON reports, and CI exit codes.
 - Discover inputs offline from OpenAPI 3.0 and 3.1, review the decisions, and materialize reviewed cases with explicit `string-quoted` or `numeric` preset selection.
