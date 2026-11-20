@@ -1,4 +1,10 @@
-"""Measure Boolean-candidate precision against deterministic loopback fixtures."""
+"""Measure candidate-signal response relations on deterministic loopback fixtures.
+
+The positive cases are synthetic: they switch responses by comparing request values
+and do not execute SQL. They are distinct from the real SQLite fixture measurements.
+The negative pagination branch uses the same response-switching mechanism to measure
+a known false-candidate shape.
+"""
 
 import json
 import threading
@@ -9,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from test_sqli_candidate_reliability import classify
 
 from vintar.checks.sqli.models import Verdict
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
@@ -28,7 +35,7 @@ from vintar.core.scope import AllowedOrigin, ScopePolicy
 @dataclass(frozen=True, slots=True)
 class PrecisionCase:
     name: str
-    ground_truth: str
+    expected_label: str
     simulation: str
     expected_verdict: Verdict
     expected_reason: str
@@ -37,78 +44,78 @@ class PrecisionCase:
 CASES = (
     PrecisionCase(
         "global-noise",
-        "safe",
+        "negative",
         "A response-wide request ID changes on every request.",
         Verdict.INCONCLUSIVE,
         "unstable_response",
     ),
     PrecisionCase(
         "localized-csrf",
-        "safe",
+        "negative",
         "A localized CSRF token changes on every request.",
         Verdict.INCONCLUSIVE,
         "possible_dynamic_response",
     ),
     PrecisionCase(
         "pagination-branch",
-        "safe",
+        "negative",
         "Business logic maps the false-looking value to a different page.",
         Verdict.INCONCLUSIVE,
         "boolean_candidate",
     ),
     PrecisionCase(
         "waf-200",
-        "safe",
+        "negative",
         "A filter returns a stable HTTP 200 block page for the false probe.",
         Verdict.INCONCLUSIVE,
         "boolean_candidate",
     ),
     PrecisionCase(
         "waf-403",
-        "safe",
+        "negative",
         "A filter returns HTTP 403 for injected values.",
         Verdict.INCONCLUSIVE,
         "non_success_status",
     ),
     PrecisionCase(
         "quote-sanitizer",
-        "safe",
+        "negative",
         "Sanitization removes the quoted suffix before application logic.",
         Verdict.NOT_DETECTED,
         "no_boolean_difference",
     ),
     PrecisionCase(
         "length-cap",
-        "safe",
+        "negative",
         "The parameter is capped to the benign baseline length.",
         Verdict.NOT_DETECTED,
         "no_boolean_difference",
     ),
     PrecisionCase(
         "input-echo",
-        "safe",
+        "negative",
         "The application safely echoes the literal parameter value.",
         Verdict.INCONCLUSIVE,
         "unexpected_difference",
     ),
     PrecisionCase(
-        "vulnerable-small-diff",
-        "vulnerable",
-        "A vulnerable route changes only one response byte.",
+        "synthetic-positive-small-diff",
+        "positive",
+        "A synthetic positive relation changes only one response byte.",
         Verdict.INCONCLUSIVE,
         "boolean_candidate",
     ),
     PrecisionCase(
-        "vulnerable-json",
-        "vulnerable",
-        "A vulnerable JSON API returns rows versus an empty array.",
+        "synthetic-positive-json",
+        "positive",
+        "A synthetic positive JSON relation returns rows versus an empty array.",
         Verdict.INCONCLUSIVE,
         "boolean_candidate",
     ),
     PrecisionCase(
-        "vulnerable-error-200",
-        "vulnerable",
-        "A SQL error is rendered as a stable HTTP 200 error page.",
+        "synthetic-positive-error-200",
+        "positive",
+        "A synthetic positive relation renders its false branch as an HTTP 200 error page.",
         Verdict.INCONCLUSIVE,
         "boolean_candidate",
     ),
@@ -162,12 +169,12 @@ def _response(mode: str, value: str, request_count: int) -> tuple[bytes, int]:
         return value[: len(baseline)].encode(), 200
     if mode == "input-echo":
         return f"value={value}".encode(), 200
-    if mode == "vulnerable-small-diff":
+    if mode == "synthetic-positive-small-diff":
         return (b"1" if value != false_value else b"0"), 200
-    if mode == "vulnerable-json":
+    if mode == "synthetic-positive-json":
         body = {"items": [1]} if value != false_value else {"items": []}
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode(), 200
-    if mode == "vulnerable-error-200":
+    if mode == "synthetic-positive-error-200":
         return (b"sql-error" if value == false_value else b"products"), 200
     raise AssertionError(f"Unknown precision fixture mode: {mode}")
 
@@ -248,22 +255,23 @@ def test_precision_case_measurement(case: PrecisionCase):
     assert result.reason_code == case.expected_reason
 
 
+def test_positive_cases_are_explicitly_synthetic_response_relations():
+    positive_cases = [case for case in CASES if case.expected_label == "positive"]
+    assert positive_cases
+    assert all(case.name.startswith("synthetic-positive-") for case in positive_cases)
+
+
 def test_precision_confusion_table():
     rows = [(case, _measure(case)) for case in CASES]
-    counts: Counter[str] = Counter()
-    for case, result in rows:
-        candidate = (
-            result.verdict is Verdict.INCONCLUSIVE
-            and result.reason_code == "boolean_candidate"
-        )
-        if case.ground_truth == "vulnerable":
-            counts["tp" if candidate else "fn"] += 1
-        else:
-            counts["fp" if candidate else "tn"] += 1
+    counts = Counter(
+        classify(case.expected_label, result.verdict, result.reason_code)
+        for case, result in rows
+    )
 
-    assert {key: counts[key] for key in ("tp", "tn", "fp", "fn")} == {
+    assert {key: counts[key] for key in ("tp", "tn", "fp", "fn", "non_decision")} == {
         "tp": 3,
-        "tn": 6,
+        "tn": 2,
         "fp": 2,
         "fn": 0,
+        "non_decision": 4,
     }
