@@ -185,6 +185,24 @@ def test_materializes_loadable_case_and_is_idempotent(tmp_path, monkeypatch):
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
 
 
+def test_identical_invalid_output_is_still_schema_validated(tmp_path, monkeypatch):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    source = source.replace("timeout_seconds = 5.0", "timeout_seconds = -1")
+    inputs["config"].write_text(source, encoding="utf-8")
+    invalid_case = build(inputs)
+    inputs["output"].write_bytes(invalid_case.content)
+    before = inputs["output"].stat()
+
+    result = invoke(inputs)
+
+    after = inputs["output"].stat()
+    assert result.exit_code == 2 and result.stdout == ""
+    assert "failed Schema v1 validation" in result.stderr
+    assert inputs["output"].read_bytes() == invalid_case.content
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -203,6 +221,16 @@ def test_scalar_conversion_preserves_empty_and_uses_canonical_json(
     write_materialized_case(inputs["output"], case, tuple(inputs.values())[:-1])
     loaded = load_regression_case(inputs["output"])
     assert loaded.template.params == (("extra", "kept"), ("q", expected))
+
+
+def test_supplementary_unicode_round_trips_through_toml(tmp_path, monkeypatch):
+    inputs = make_inputs(tmp_path, monkeypatch, "Pets 😀")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 0 and result.stderr == ""
+    loaded = load_regression_case(inputs["output"])
+    assert loaded.template.params == (("q", "Pets 😀"),)
 
 
 def test_generated_case_is_accepted_by_offline_verify(tmp_path, monkeypatch):
@@ -340,6 +368,68 @@ def test_review_report_and_config_binding_are_strict(tmp_path, monkeypatch):
     inputs["config"].write_text(source, encoding="utf-8")
     with pytest.raises(CaseMaterializationError, match="input ID"):
         build(inputs)
+
+
+def test_review_schema_version_rejects_boolean(tmp_path, monkeypatch):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    review = json.loads(inputs["review"].read_text(encoding="utf-8"))
+    review["schema_version"] = True
+    inputs["review"].write_text(json.dumps(review), encoding="utf-8")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert "review schema version" in result.stderr
+    assert "version 1 JSON output" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "message"),
+    [
+        ("config_version = 1", "config_version = true", "config version"),
+        ("occurrence = 0", "occurrence = true", "injection occurrence"),
+        ("max_requests = 6", "max_requests = true", "request limit"),
+        (
+            "requests_per_second = 10.0",
+            "requests_per_second = true",
+            "requests_per_second",
+        ),
+        ("timeout_seconds = 5.0", "timeout_seconds = true", "timeout_seconds"),
+    ],
+)
+def test_config_numeric_fields_reject_boolean(
+    tmp_path, monkeypatch, original, replacement, message
+):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    inputs["config"].write_text(source.replace(original, replacement), encoding="utf-8")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert message in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "message"),
+    [
+        ('location = "query"', "location = []", "injection location"),
+        ('mode = "append"', "mode = []", "injection mode"),
+        ('selection = "explicit"', "selection = []", "probe selection"),
+    ],
+)
+def test_config_enum_fields_reject_unhashable_values(
+    tmp_path, monkeypatch, original, replacement, message
+):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    inputs["config"].write_text(source.replace(original, replacement), encoding="utf-8")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert message in result.stderr
+    assert "TypeError" not in result.stderr
 
 
 @pytest.mark.parametrize("field", ["headers", "cookies", "credentials"])

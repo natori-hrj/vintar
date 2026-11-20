@@ -61,7 +61,29 @@ def _number(value: object, field: str) -> int | float:
 
 
 def _toml_string(value: str) -> str:
-    return json.dumps(value, ensure_ascii=True)
+    escapes = {
+        '"': '\\"',
+        "\\": "\\\\",
+        "\b": "\\b",
+        "\t": "\\t",
+        "\n": "\\n",
+        "\f": "\\f",
+        "\r": "\\r",
+    }
+    encoded = []
+    for character in value:
+        codepoint = ord(character)
+        if character in escapes:
+            encoded.append(escapes[character])
+        elif codepoint <= 0x1F or codepoint == 0x7F:
+            encoded.append(f"\\u{codepoint:04X}")
+        elif 0xD800 <= codepoint <= 0xDFFF:
+            raise CaseMaterializationError(
+                "Invalid Unicode string in reviewed inputs. Supply valid Unicode scalar values and rerun review-draft."
+            )
+        else:
+            encoded.append(character)
+    return f'"{"".join(encoded)}"'
 
 
 def _query_value(value: ReviewScalar) -> str:
@@ -144,7 +166,8 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
         "Invalid limits config. Supply max_requests, requests_per_second, and timeout_seconds.",
     )
 
-    if probes["selection"] != "explicit":
+    selection = probes["selection"]
+    if type(selection) is not str or selection != "explicit":
         raise CaseMaterializationError(
             'Unsupported probe selection. Use selection = "explicit" and supply distinct true_payload and false_payload values.'
         )
@@ -152,7 +175,7 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
     name = injection["name"]
     occurrence = injection["occurrence"]
     mode = injection["mode"]
-    if location != "query":
+    if type(location) is not str or location != "query":
         raise CaseMaterializationError(
             'Unsupported injection location. Use location = "query" for Schema v1.'
         )
@@ -168,7 +191,7 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
         raise CaseMaterializationError(
             "Invalid injection occurrence. Supply the zero-based occurrence of the reviewed parameter."
         )
-    if mode not in {"append", "replace"}:
+    if type(mode) is not str or mode not in {"append", "replace"}:
         raise CaseMaterializationError(
             'Unsupported injection mode. Use mode = "append" or mode = "replace".'
         )
@@ -254,6 +277,11 @@ def materialize_case(
     """Revalidate reviewed inputs and render deterministic Schema v1 TOML."""
     material = resolve_review(spec, draft, answers)
     supplied_review = _load_review(review)
+    schema_version = supplied_review.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
+        raise CaseMaterializationError(
+            "Invalid review schema version. Supply the current version 1 JSON output from review-draft."
+        )
     if supplied_review != material.report:
         raise CaseMaterializationError(
             "The review report no longer matches the current spec, draft, or answers. Rerun review-draft and supply its current --review output."
@@ -295,15 +323,6 @@ def write_materialized_case(
 ) -> None:
     """Validate and exclusively publish one materialized case."""
     path = _check_destination(output, inputs)
-    if path.exists():
-        if path.is_file() and path.stat().st_size == len(case.content):
-            with path.open("rb") as stream:
-                if stream.read(len(case.content) + 1) == case.content:
-                    return
-        raise CaseMaterializationError(
-            "Case output already has different content. Move it or choose a different --output path."
-        )
-
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
@@ -324,6 +343,14 @@ def write_materialized_case(
         if loaded.case_id != case.case_id:
             raise CaseMaterializationError(
                 "Generated case ID changed during validation. Rerun discovery and materialize the current draft."
+            )
+        if path.exists():
+            if path.is_file() and path.stat().st_size == len(case.content):
+                with path.open("rb") as stream:
+                    if stream.read(len(case.content) + 1) == case.content:
+                        return
+            raise CaseMaterializationError(
+                "Case output already has different content. Move it or choose a different --output path."
             )
         try:
             os.link(temporary, path)
