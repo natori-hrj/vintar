@@ -3,6 +3,7 @@
 import json
 import socket
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,17 +15,20 @@ from vintar.cli import app
 from vintar.core import executor
 from vintar.regression.case_materialization import (
     CaseMaterializationError,
+    _materialized_case_id,
     materialize_case,
     write_materialized_case,
 )
-from vintar.regression.cases import load_regression_case
+from vintar.regression.cases import TimeRegressionCase, load_regression_case
 from vintar.regression.discovery import input_id, load_inventory
 from vintar.regression.discovery_drafts import draft_files
-from vintar.regression.discovery_review import build_review
+from vintar.regression.discovery_review import build_review, resolve_review
 
 ORIGIN = "http://materialize-fixture.invalid"
 TRUE_PAYLOAD = "true-payload-sentinel"
 FALSE_PAYLOAD = "false-payload-sentinel"
+DELAY_PAYLOAD = "' AND vintar_delay(0.35)=1-- "
+CONTROL_PAYLOAD = "' AND vintar_delay(0)=1-- "
 
 
 def _toml_string(value: str) -> str:
@@ -176,12 +180,47 @@ def replace_probes(inputs: dict[str, Path], replacement: str) -> None:
     )
 
 
+def make_time_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    value: object = "Pets",
+    q_type: str = "string",
+) -> dict[str, Path]:
+    inputs = make_inputs(
+        tmp_path,
+        monkeypatch,
+        value,
+        q_type=q_type,
+    )
+    source = inputs["config"].read_text(encoding="utf-8")
+    source = source.replace(
+        "config_version = 1",
+        'config_version = 1\ntype = "sqli.time"',
+        1,
+    )
+    source = source.replace(
+        '[probes]\nselection = "explicit"\n'
+        f"true_payload = {_toml_string(TRUE_PAYLOAD)}\n"
+        f"false_payload = {_toml_string(FALSE_PAYLOAD)}",
+        '[probes]\nselection = "explicit"\n'
+        f"delay_payload = {_toml_string(DELAY_PAYLOAD)}\n"
+        f"control_payload = {_toml_string(CONTROL_PAYLOAD)}\n"
+        "expected_delay_seconds = 0.25",
+    )
+    source = source.replace("max_requests = 6", "max_requests = 9")
+    source = source.replace("timeout_seconds = 5.0", "timeout_seconds = 3.0")
+    inputs["config"].write_text(source, encoding="utf-8")
+    return inputs
+
+
 def test_materializes_loadable_case_and_is_idempotent(tmp_path, monkeypatch):
     inputs = make_inputs(tmp_path, monkeypatch)
     result = invoke(inputs)
     assert result.exit_code == 0 and result.stderr == ""
     summary = json.loads(result.stdout)
     case = load_regression_case(inputs["output"])
+    material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
     assert summary == {
         "case_id": case.case_id,
         "report_type": "regression_case_materialization_summary",
@@ -190,11 +229,191 @@ def test_materializes_loadable_case_and_is_idempotent(tmp_path, monkeypatch):
         "max_requests": 6,
     }
     assert case.template.url == ORIGIN + "/fixture-route"
+    assert case.case_id == material.case_id
     assert case.template.params == (("q", "baseline-value-sentinel"),)
     before = inputs["output"].stat()
     assert invoke(inputs).exit_code == 0
     after = inputs["output"].stat()
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+
+def test_materializes_explicit_time_case_and_round_trips_loader(tmp_path, monkeypatch):
+    inputs = make_time_inputs(tmp_path, monkeypatch)
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 0 and result.stderr == ""
+    case = load_regression_case(inputs["output"])
+    material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
+    assert isinstance(case, TimeRegressionCase)
+    assert case.case_id == material.case_id + "-time"
+    assert case.check_type == "sqli.time"
+    assert case.delay_payload == DELAY_PAYLOAD
+    assert case.control_payload == CONTROL_PAYLOAD
+    assert case.expected_delay_seconds == 0.25
+    assert case.max_requests == 9
+    assert case.requests_per_second == 10.0
+    assert case.timeout_seconds == 3.0
+    assert json.loads(result.stdout) == {
+        "case_id": case.case_id,
+        "confirmation": "not configured",
+        "max_requests": 9,
+        "report_type": "regression_case_materialization_summary",
+        "schema_version": 1,
+    }
+    parsed = tomllib.loads(inputs["output"].read_text(encoding="utf-8"))
+    assert parsed["probes"] == {
+        "delay_payload": DELAY_PAYLOAD,
+        "control_payload": CONTROL_PAYLOAD,
+        "expected_delay_seconds": 0.25,
+    }
+    assert "selection" not in parsed["probes"]
+    first = build(inputs)
+    second = build(inputs)
+    assert first.case_id == second.case_id == case.case_id
+    assert first.content == second.content
+
+
+def test_time_case_id_suffix_length_limit_is_actionable(tmp_path, monkeypatch):
+    inputs = make_time_inputs(tmp_path, monkeypatch)
+    material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
+    oversized = replace(material, case_id="a" * 60)
+
+    with pytest.raises(
+        CaseMaterializationError,
+        match=r"64-character.*base case ID of at most 59",
+    ):
+        _materialized_case_id(oversized, "sqli.time")
+
+    assert _materialized_case_id(oversized, "sqli.boolean") == "a" * 60
+
+
+def test_time_selection_is_explicit_even_for_integer_openapi_parameter(
+    tmp_path, monkeypatch
+):
+    inputs = make_time_inputs(tmp_path, monkeypatch, value=1, q_type="integer")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 0 and result.stderr == ""
+    case = load_regression_case(inputs["output"])
+    assert isinstance(case, TimeRegressionCase)
+    assert case.template.params == (("q", "1"),)
+
+
+def test_integer_openapi_parameter_does_not_infer_time_case(tmp_path, monkeypatch):
+    inputs = make_inputs(tmp_path, monkeypatch, 1, q_type="integer")
+    replace_probes(
+        inputs,
+        '[probes]\nselection = "explicit"\n'
+        f"delay_payload = {_toml_string(DELAY_PAYLOAD)}\n"
+        f"control_payload = {_toml_string(CONTROL_PAYLOAD)}\n"
+        "expected_delay_seconds = 0.25",
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert "Invalid explicit probes config" in result.stderr
+
+
+@pytest.mark.parametrize("case_type", ['"unknown"', "true", "[]"])
+def test_materialization_type_rejects_unknown_and_wrong_types(
+    tmp_path, monkeypatch, case_type
+):
+    inputs = make_time_inputs(tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    inputs["config"].write_text(
+        source.replace('type = "sqli.time"', f"type = {case_type}"),
+        encoding="utf-8",
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert 'type = "sqli.time"' in result.stderr
+
+
+def test_time_config_rejects_unknown_top_level_key_redacted(tmp_path, monkeypatch):
+    inputs = make_time_inputs(tmp_path, monkeypatch, value="private-baseline")
+    source = inputs["config"].read_text(encoding="utf-8")
+    inputs["config"].write_text(
+        source.replace(
+            'type = "sqli.time"',
+            'type = "sqli.time"\nprivate_key = "private-config-value"',
+        ),
+        encoding="utf-8",
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert "Invalid materialization config keys" in result.stderr
+    assert "private-config-value" not in result.stderr
+    assert "private-baseline" not in result.stderr
+
+
+def test_time_limits_accept_upper_delay_and_minimum_rate_boundaries(
+    tmp_path, monkeypatch
+):
+    inputs = make_time_inputs(tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    source = source.replace(
+        "expected_delay_seconds = 0.25", "expected_delay_seconds = 2.0"
+    )
+    source = source.replace("requests_per_second = 10.0", "requests_per_second = 0.1")
+    source = source.replace("timeout_seconds = 3.0", "timeout_seconds = 2.5")
+    inputs["config"].write_text(source, encoding="utf-8")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 0 and result.stderr == ""
+    case = load_regression_case(inputs["output"])
+    assert isinstance(case, TimeRegressionCase)
+    assert case.expected_delay_seconds == 2.0
+    assert case.requests_per_second == 0.1
+    assert case.timeout_seconds == 2.5
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "message"),
+    [
+        (
+            "expected_delay_seconds = 0.25",
+            "expected_delay_seconds = 0.24",
+            "expected_delay_seconds",
+        ),
+        (
+            "expected_delay_seconds = 0.25",
+            "expected_delay_seconds = 2.01",
+            "expected_delay_seconds",
+        ),
+        ("max_requests = 9", "max_requests = 8", "max_requests = 9"),
+        (
+            "requests_per_second = 10.0",
+            "requests_per_second = 0.09",
+            "requests_per_second",
+        ),
+        (
+            "requests_per_second = 10.0",
+            "requests_per_second = 10.01",
+            "requests_per_second",
+        ),
+        ("timeout_seconds = 3.0", "timeout_seconds = 0.74", "timeout_seconds"),
+        ("timeout_seconds = 3.0", "timeout_seconds = 8.01", "timeout_seconds"),
+    ],
+)
+def test_time_limits_reject_values_outside_schema_v1_bounds(
+    tmp_path, monkeypatch, original, replacement, message
+):
+    inputs = make_time_inputs(tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    inputs["config"].write_text(source.replace(original, replacement), encoding="utf-8")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert message in result.stderr
 
 
 def test_identical_invalid_output_is_still_schema_validated(tmp_path, monkeypatch):
@@ -306,6 +525,111 @@ def test_rejects_unsupported_probe_selection(tmp_path, monkeypatch, selection):
     result = invoke(inputs)
     assert result.exit_code == 2 and result.stdout == ""
     assert 'selection = "explicit" or selection = "preset"' in result.stderr
+
+
+@pytest.mark.parametrize("selection", ['"preset"', '"unknown"', "1", "[]"])
+def test_time_rejects_non_explicit_selection_with_actionable_redacted_error(
+    tmp_path, monkeypatch, selection
+):
+    inputs = make_time_inputs(tmp_path, monkeypatch, value="private-baseline")
+    replace_probes(
+        inputs,
+        f'[probes]\nselection = {selection}\npreset = "private-preset"',
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert 'selection = "explicit"' in result.stderr
+    assert "presets are not available for time cases" in result.stderr
+    assert "private-preset" not in result.stderr
+    assert "private-baseline" not in result.stderr
+    assert ORIGIN not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        (
+            '[probes]\nselection = "explicit"\n'
+            f"delay_payload = {_toml_string(DELAY_PAYLOAD)}\n"
+            f"control_payload = {_toml_string(CONTROL_PAYLOAD)}"
+        ),
+        (
+            '[probes]\nselection = "explicit"\n'
+            f"delay_payload = {_toml_string(DELAY_PAYLOAD)}\n"
+            f"control_payload = {_toml_string(CONTROL_PAYLOAD)}\n"
+            'expected_delay_seconds = 0.25\ntrue_payload = "mixed-secret"'
+        ),
+        (
+            '[probes]\nselection = "explicit"\n'
+            f"delay_payload = {_toml_string(DELAY_PAYLOAD)}\n"
+            f"control_payload = {_toml_string(CONTROL_PAYLOAD)}\n"
+            'expected_delay_seconds = 0.25\nunknown = "private-value"'
+        ),
+    ],
+)
+def test_time_rejects_missing_mixed_and_unknown_probe_keys_redacted(
+    tmp_path, monkeypatch, replacement
+):
+    inputs = make_time_inputs(tmp_path, monkeypatch, value="private-baseline")
+    replace_probes(inputs, replacement)
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert "Invalid time probes config" in result.stderr
+    assert "mixed-secret" not in result.stderr
+    assert "private-value" not in result.stderr
+    assert "private-baseline" not in result.stderr
+    assert ORIGIN not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "message"),
+    [
+        (
+            "expected_delay_seconds = 0.25",
+            "expected_delay_seconds = true",
+            "expected_delay_seconds",
+        ),
+        ("max_requests = 9", "max_requests = true", "request limit"),
+        (
+            "requests_per_second = 10.0",
+            "requests_per_second = true",
+            "requests_per_second",
+        ),
+        ("timeout_seconds = 3.0", "timeout_seconds = true", "timeout_seconds"),
+    ],
+)
+def test_time_config_numeric_fields_reject_booleans(
+    tmp_path, monkeypatch, original, replacement, message
+):
+    inputs = make_time_inputs(tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    inputs["config"].write_text(source.replace(original, replacement), encoding="utf-8")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert message in result.stderr
+
+
+def test_time_config_rejects_non_query_injection_before_output(tmp_path, monkeypatch):
+    inputs = make_time_inputs(tmp_path, monkeypatch, value="private-baseline")
+    source = inputs["config"].read_text(encoding="utf-8")
+    inputs["config"].write_text(
+        source.replace('location = "query"', 'location = "header"'),
+        encoding="utf-8",
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert 'Use location = "query"' in result.stderr
+    assert "private-baseline" not in result.stderr
+    assert ORIGIN not in result.stderr
+    assert not inputs["output"].exists()
 
 
 @pytest.mark.parametrize(
