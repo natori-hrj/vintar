@@ -15,6 +15,8 @@ from vintar.checks.sqli.presets import (
     get_boolean_probe_preset,
 )
 from vintar.regression.cases import (
+    ErrorCaseValidationError,
+    ErrorRegressionCase,
     TimeRegressionCase,
     load_regression_case,
     parse_regression_case,
@@ -44,10 +46,18 @@ class MaterializedCase:
 def _materialized_case_id(material: ReviewMaterial, check_type: str) -> str:
     if check_type == "sqli.boolean":
         return material.case_id
-    candidate = material.case_id + "-time"
+    if check_type == "sqli.time":
+        suffix = "-time"
+        label = "Time"
+        maximum = 59
+    else:
+        suffix = "-error"
+        label = "Error"
+        maximum = 58
+    candidate = material.case_id + suffix
     if len(candidate) > 64:
         raise CaseMaterializationError(
-            "Time case ID exceeds the 64-character Schema v1 limit after adding the -time suffix. Use reviewed material with a base case ID of at most 59 characters."
+            f"{label} case ID exceeds the 64-character Schema v1 limit after adding the {suffix} suffix. Use reviewed material with a base case ID of at most {maximum} characters."
         )
     return candidate
 
@@ -153,9 +163,13 @@ def _load_config(path: Path) -> dict[str, object]:
 
 def _materialization_type(config: dict[str, object]) -> str:
     value = config.get("type", "sqli.boolean")
-    if type(value) is not str or value not in {"sqli.boolean", "sqli.time"}:
+    if type(value) is not str or value not in {
+        "sqli.boolean",
+        "sqli.time",
+        "sqli.error",
+    }:
         raise CaseMaterializationError(
-            'Invalid materialization type. Omit type for Boolean SQLi, or set type = "sqli.time" for an explicit time case.'
+            'Invalid materialization type. Omit type for Boolean SQLi, or set type = "sqli.time" or type = "sqli.error" for an explicit reviewed case.'
         )
     return value
 
@@ -293,6 +307,23 @@ def _time_probe_payloads(value: object) -> tuple[str, str, float]:
     return delay_payload, control_payload, float(expected_delay)
 
 
+def _error_probe_payload(value: object) -> str:
+    message = (
+        'Invalid Error probes config. Use selection = "explicit" with only '
+        "error_payload. Error SQLi presets are not available; supply an explicit "
+        "reviewed error_payload."
+    )
+    probes = _mapping(value, message)
+    selection = probes.get("selection")
+    if type(selection) is not str or selection != "explicit":
+        raise CaseMaterializationError(
+            "Error SQLi presets are not available; supply an explicit reviewed error_payload."
+        )
+    if probes.keys() != {"selection", "error_payload"}:
+        raise CaseMaterializationError(message)
+    return _text(probes["error_payload"], "Error SQLi payload")
+
+
 def _render(
     material: ReviewMaterial,
     config: dict[str, object],
@@ -369,6 +400,8 @@ def _render(
     delay_payload = ""
     control_payload = ""
     expected_delay = 0.0
+    error_payload = ""
+    expected_requests: int | float
     if check_type == "sqli.time":
         delay_payload, control_payload, expected_delay = _time_probe_payloads(
             config["probes"]
@@ -386,6 +419,9 @@ def _render(
             raise CaseMaterializationError(
                 "Invalid time timeout_seconds. Set it to at least expected_delay_seconds + 0.5 and no more than 8.0."
             )
+    elif check_type == "sqli.error":
+        error_payload = _error_probe_payload(config["probes"])
+        expected_requests = _number(max_requests, "Error SQLi max_requests")
     else:
         true_payload, false_payload, confirmation = _probe_payloads(config["probes"])
         expected_requests = 18 if confirmation is not None else 6
@@ -443,6 +479,8 @@ def _render(
                 ),
             )
         )
+    elif check_type == "sqli.error":
+        lines.append(f"error_payload = {_toml_string(error_payload)}")
     else:
         lines.extend(
             (
@@ -467,7 +505,7 @@ def _render(
         (
             "",
             "[limits]",
-            f"max_requests = {expected_requests}",
+            f"max_requests = {json.dumps(expected_requests, allow_nan=False)}",
             f"requests_per_second = {json.dumps(requests_per_second, allow_nan=False)}",
             f"timeout_seconds = {json.dumps(timeout_seconds, allow_nan=False)}",
         )
@@ -508,6 +546,25 @@ def materialize_case(
         if not isinstance(loaded, TimeRegressionCase):
             raise CaseMaterializationError(
                 'Generated case type is inconsistent. Set type = "sqli.time" and supply only time probe fields.'
+            )
+        return MaterializedCase(
+            content=content,
+            case_id=case_id,
+            confirmation_configured=False,
+            max_requests=loaded.max_requests,
+        )
+    if check_type == "sqli.error":
+        try:
+            loaded = parse_regression_case(content.decode("utf-8"))
+        except ErrorCaseValidationError as exc:
+            raise CaseMaterializationError(str(exc)) from exc
+        except (UnicodeError, ValueError) as exc:
+            raise CaseMaterializationError(
+                "Generated Error case failed Schema v1 validation. Check the explicit target, query injection, Error payload, and four-request limits in --config."
+            ) from exc
+        if not isinstance(loaded, ErrorRegressionCase):
+            raise CaseMaterializationError(
+                'Generated case type is inconsistent. Set type = "sqli.error" and supply only an explicit error_payload.'
             )
         return MaterializedCase(
             content=content,

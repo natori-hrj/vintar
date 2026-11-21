@@ -4,6 +4,10 @@
 
 **Added**
 
+- Materialize reviewed OpenAPI decisions into explicit Schema v1 `sqli.error`
+  cases with fixed four-request limits and deterministic `-error` case IDs.
+  Error payloads remain explicit reviewer input; no DBMS, SQL context, or
+  payload is inferred from OpenAPI metadata.
 - Run explicit Schema v1 `sqli.error` cases through `vintar verify` and emit
   additive, redacted Error outcomes in Schema v1 CI reports. A reproducible new
   DBMS diagnostic remains `INCONCLUSIVE / dbms_error_disclosed` and blocks CI;

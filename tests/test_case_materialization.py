@@ -19,7 +19,11 @@ from vintar.regression.case_materialization import (
     materialize_case,
     write_materialized_case,
 )
-from vintar.regression.cases import TimeRegressionCase, load_regression_case
+from vintar.regression.cases import (
+    ErrorRegressionCase,
+    TimeRegressionCase,
+    load_regression_case,
+)
 from vintar.regression.discovery import input_id, load_inventory
 from vintar.regression.discovery_drafts import draft_files
 from vintar.regression.discovery_review import build_review, resolve_review
@@ -29,6 +33,7 @@ TRUE_PAYLOAD = "true-payload-sentinel"
 FALSE_PAYLOAD = "false-payload-sentinel"
 DELAY_PAYLOAD = "' AND vintar_delay(0.35)=1-- "
 CONTROL_PAYLOAD = "' AND vintar_delay(0)=1-- "
+ERROR_PAYLOAD = "'"
 
 
 def _toml_string(value: str) -> str:
@@ -214,6 +219,32 @@ def make_time_inputs(
     return inputs
 
 
+def make_error_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    value: object = "Pets",
+    q_type: str = "string",
+) -> dict[str, Path]:
+    inputs = make_inputs(tmp_path, monkeypatch, value, q_type=q_type)
+    source = inputs["config"].read_text(encoding="utf-8")
+    source = source.replace(
+        "config_version = 1",
+        'config_version = 1\ntype = "sqli.error"',
+        1,
+    )
+    source = source.replace(
+        '[probes]\nselection = "explicit"\n'
+        f"true_payload = {_toml_string(TRUE_PAYLOAD)}\n"
+        f"false_payload = {_toml_string(FALSE_PAYLOAD)}",
+        '[probes]\nselection = "explicit"\n'
+        f"error_payload = {_toml_string(ERROR_PAYLOAD)}",
+    )
+    source = source.replace("max_requests = 6", "max_requests = 4")
+    inputs["config"].write_text(source, encoding="utf-8")
+    return inputs
+
+
 def test_materializes_loadable_case_and_is_idempotent(tmp_path, monkeypatch):
     inputs = make_inputs(tmp_path, monkeypatch)
     result = invoke(inputs)
@@ -274,6 +305,35 @@ def test_materializes_explicit_time_case_and_round_trips_loader(tmp_path, monkey
     assert first.content == second.content
 
 
+def test_materializes_explicit_error_case_and_round_trips_loader(tmp_path, monkeypatch):
+    inputs = make_error_inputs(tmp_path, monkeypatch)
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 0 and result.stderr == ""
+    case = load_regression_case(inputs["output"])
+    material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
+    assert isinstance(case, ErrorRegressionCase)
+    assert case.case_id == material.case_id + "-error"
+    assert case.check_type == "sqli.error"
+    assert case.error_payload == ERROR_PAYLOAD
+    assert case.max_requests == 4
+    assert json.loads(result.stdout) == {
+        "case_id": case.case_id,
+        "confirmation": "not configured",
+        "max_requests": 4,
+        "report_type": "regression_case_materialization_summary",
+        "schema_version": 1,
+    }
+    parsed = tomllib.loads(inputs["output"].read_text(encoding="utf-8"))
+    assert parsed["probes"] == {"error_payload": ERROR_PAYLOAD}
+    assert "selection" not in parsed["probes"]
+    first = build(inputs)
+    second = build(inputs)
+    assert first.case_id == second.case_id == case.case_id
+    assert first.content == second.content
+
+
 def test_time_case_id_suffix_length_limit_is_actionable(tmp_path, monkeypatch):
     inputs = make_time_inputs(tmp_path, monkeypatch)
     material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
@@ -286,6 +346,128 @@ def test_time_case_id_suffix_length_limit_is_actionable(tmp_path, monkeypatch):
         _materialized_case_id(oversized, "sqli.time")
 
     assert _materialized_case_id(oversized, "sqli.boolean") == "a" * 60
+
+
+def test_error_case_id_suffix_and_length_limit_are_actionable(tmp_path, monkeypatch):
+    inputs = make_error_inputs(tmp_path, monkeypatch)
+    material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
+
+    assert _materialized_case_id(replace(material, case_id="a" * 58), "sqli.error") == (
+        "a" * 58 + "-error"
+    )
+    with pytest.raises(
+        CaseMaterializationError,
+        match=r"Error case ID.*64-character.*-error.*at most 58",
+    ):
+        _materialized_case_id(replace(material, case_id="a" * 59), "sqli.error")
+
+
+def test_error_selection_is_explicit_even_for_integer_openapi_parameter(
+    tmp_path, monkeypatch
+):
+    inputs = make_error_inputs(tmp_path, monkeypatch, value=1, q_type="integer")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 0 and result.stderr == ""
+    case = load_regression_case(inputs["output"])
+    assert isinstance(case, ErrorRegressionCase)
+    assert case.template.params == (("q", "1"),)
+
+
+@pytest.mark.parametrize("selection", ['"preset"', '"unknown"', "1", "[]"])
+def test_error_rejects_non_explicit_selection_with_required_message(
+    tmp_path, monkeypatch, selection
+):
+    inputs = make_error_inputs(tmp_path, monkeypatch)
+    replace_probes(
+        inputs,
+        f'[probes]\nselection = {selection}\npreset = "private-preset"',
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert result.stderr == (
+        "Error: Error SQLi presets are not available; supply an explicit reviewed error_payload.\n"
+    )
+    assert "private-preset" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        '[probes]\nselection = "explicit"\nerror_payload = "x"\ntrue_payload = "mixed"',
+        '[probes]\nselection = "explicit"\ntrue_payload = "mixed"',
+    ],
+)
+def test_error_rejects_mixed_or_missing_probe_fields(
+    tmp_path, monkeypatch, replacement
+):
+    inputs = make_error_inputs(tmp_path, monkeypatch)
+    replace_probes(inputs, replacement)
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert "Invalid Error probes config" in result.stderr
+    assert "explicit reviewed error_payload" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ("x" * 513, "Invalid error_payload"),
+        ("\x01", "Invalid error_payload"),
+        (
+            'sqlite3.OperationalError: near "fixture": syntax error',
+            "Invalid error_payload",
+        ),
+    ],
+)
+def test_error_payload_uses_schema_v1_case_validation(
+    tmp_path, monkeypatch, payload, message
+):
+    inputs = make_error_inputs(tmp_path, monkeypatch)
+    replace_probes(
+        inputs,
+        f'[probes]\nselection = "explicit"\nerror_payload = {_toml_string(payload)}',
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert message in result.stderr
+    assert payload not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("max_requests = 4", "max_requests = 6", "exactly 4 requests"),
+        (
+            "requests_per_second = 10.0",
+            "requests_per_second = true",
+            "numeric Schema v1 limit",
+        ),
+        (
+            "timeout_seconds = 5.0",
+            "timeout_seconds = 61.0",
+            "timeout_seconds must be a number from 0.1 through 60.0",
+        ),
+    ],
+)
+def test_error_limits_use_schema_v1_case_validation(
+    tmp_path, monkeypatch, old, new, message
+):
+    inputs = make_error_inputs(tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    inputs["config"].write_text(source.replace(old, new), encoding="utf-8")
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert message in result.stderr
 
 
 def test_time_selection_is_explicit_even_for_integer_openapi_parameter(
