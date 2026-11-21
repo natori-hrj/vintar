@@ -156,23 +156,6 @@ def write_error_case(directory: Path) -> Path:
     return file
 
 
-def test_error_case_is_rejected_before_http_until_report_support(tmp_path, monkeypatch):
-    case = write_error_case(tmp_path)
-
-    def unexpected_batch(*args, **kwargs):
-        raise AssertionError("Error cases must stop before batch execution")
-
-    monkeypatch.setattr(regression_cli, "run_regression_batch", unexpected_batch)
-    result = cli.invoke(app, args_for(case, max_requests=4), env=ENV)
-
-    assert result.exit_code == 2
-    assert result.stdout == ""
-    assert result.stderr == (
-        "Error: Error SQLi cases are not yet supported in CI batch reports. "
-        "Run the Python single-case API for development, or wait for Phase 14-3 report support.\n"
-    )
-
-
 def args_for(
     path: Path,
     max_requests: int = 6,

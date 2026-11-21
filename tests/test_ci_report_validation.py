@@ -11,6 +11,11 @@ import pytest
 from jsonschema import Draft202012Validator, ValidationError
 
 from vintar.checks.sqli import confirmation_runner
+from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
+from vintar.checks.sqli.error_signatures import (
+    ERROR_SIGNATURES,
+    ErrorSignature,
+)
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
 from vintar.regression.batch import RegressionBatchResult
@@ -18,6 +23,7 @@ from vintar.regression.report import regression_batch_report_dict
 from vintar.regression.runner import RegressionOutcome, RegressionStatus
 
 _VALIDATOR_MODULE = runpy.run_path("scripts/validate_ci_report.py")
+_SCHEMA_GENERATOR_MODULE = runpy.run_path("scripts/update_error_signature_schema.py")
 _validate = _VALIDATOR_MODULE["_validate"]
 SCHEMA_PATH = Path("schemas/regression-batch-report-v1.schema.json")
 
@@ -143,6 +149,309 @@ def make_time_report(reason: str):
             }
         ],
     }
+
+
+def make_error_report(reason: str):
+    rule = ERROR_RESULT_RULES[reason]
+    request_count = rule.minimum_requests
+    verdict = rule.product_verdict.value
+    status = "inconclusive" if verdict == "inconclusive" else "pass"
+    error = {
+        "status": rule.analysis_status.value,
+        "reason_code": reason,
+        "request_count": request_count,
+    }
+    if rule.requires_evidence:
+        error.update(
+            dbms="sqlite",
+            signature_id="sqlite_operational_syntax",
+        )
+    return {
+        "schema_version": 1,
+        "report_type": "regression_batch",
+        "status": status,
+        "complete": True,
+        "exit_code": 3 if status == "inconclusive" else 0,
+        "planned_case_ids": ["error-case"],
+        "executed_case_ids": ["error-case"],
+        "not_run_case_ids": [],
+        "planned_count": 1,
+        "executed_count": 1,
+        "requests_used": request_count,
+        "counts": {
+            "pass": int(status == "pass"),
+            "fail": 0,
+            "inconclusive": int(status == "inconclusive"),
+            "not_run": 0,
+        },
+        "outcomes": [
+            {
+                "case_id": "error-case",
+                "check_type": "sqli.error",
+                "expected_verdict": verdict,
+                "actual_verdict": verdict,
+                "actual_reason_code": reason,
+                "request_count": request_count,
+                "expectation_match": True,
+                "status": status,
+                "error": error,
+            }
+        ],
+    }
+
+
+def test_error_schema_and_validator_derive_contract_tables():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    assert set(schema["$defs"]["error"]["properties"]["reason_code"]["enum"]) == set(
+        ERROR_RESULT_RULES
+    )
+    assert _VALIDATOR_MODULE["ERROR_RESULT_RULES"] is ERROR_RESULT_RULES
+
+
+def test_error_signature_schema_pairs_match_registry():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    assert (
+        schema["$defs"]["error_signature_pairs"]
+        == _SCHEMA_GENERATOR_MODULE["error_signature_pair_schema"]()
+    )
+    schema_pairs = {
+        (branch["properties"]["dbms"]["const"], signature_id)
+        for branch in schema["$defs"]["error_signature_pairs"]["oneOf"]
+        for signature_id in branch["properties"]["signature_id"]["enum"]
+    }
+    registry_pairs = {
+        (signature.dbms, signature_id)
+        for signature_id, signature in ERROR_SIGNATURES.items()
+    }
+    assert schema_pairs == registry_pairs
+
+
+def test_error_allowed_values_exist_only_in_generated_pair_definition():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    constrained_paths = []
+
+    def collect(node, path=()):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                current = (*path, key)
+                if (
+                    key in {"dbms", "signature_id"}
+                    and isinstance(value, dict)
+                    and ("enum" in value or "const" in value)
+                ):
+                    constrained_paths.append(current)
+                collect(value, current)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                collect(value, (*path, index))
+
+    collect(schema)
+
+    assert constrained_paths
+    assert all(
+        path[:2] == ("$defs", "error_signature_pairs") for path in constrained_paths
+    )
+
+
+def test_generated_error_signature_schema_is_current():
+    _SCHEMA_GENERATOR_MODULE["check_schema"]()
+
+
+def test_stale_generated_error_signature_schema_is_rejected(tmp_path):
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    stale = schema_path.read_text(encoding="utf-8").replace(
+        "sqlite_operational_syntax", "stale_signature", 1
+    )
+    schema_path.write_text(stale, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"schema is stale.*--write"):
+        _SCHEMA_GENERATOR_MODULE["check_schema"](schema_path)
+
+
+def test_added_signature_regenerates_every_schema_constraint(tmp_path, monkeypatch):
+    extra_signature = ErrorSignature(
+        signature_id="sqlite_extra_syntax",
+        dbms="sqlite",
+        pattern=re.compile(
+            rb"SQLite extra syntax diagnostic", re.ASCII | re.IGNORECASE
+        ),
+    )
+    registry = dict(ERROR_SIGNATURES)
+    registry[extra_signature.signature_id] = extra_signature
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    _SCHEMA_GENERATOR_MODULE["update_schema"](schema_path, registry)
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"].update(
+        dbms="sqlite",
+        signature_id=extra_signature.signature_id,
+    )
+    report_path = write_report(tmp_path, report)
+    monkeypatch.setitem(_validate.__globals__, "ERROR_SIGNATURES", registry)
+
+    Draft202012Validator(schema).validate(report)
+    _validate(report_path, 3, schema_path)
+
+    report["outcomes"][0]["error"]["dbms"] = "oracle"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(report)
+    with pytest.raises(ValidationError):
+        _validate(report_path, 3, schema_path)
+
+
+@pytest.mark.parametrize(
+    ("signature_id", "dbms"),
+    [
+        (signature_id, signature.dbms)
+        for signature_id, signature in ERROR_SIGNATURES.items()
+    ],
+)
+def test_schema_accepts_every_registered_error_signature_pair(signature_id, dbms):
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"].update(
+        dbms=dbms,
+        signature_id=signature_id,
+    )
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    Draft202012Validator(schema).validate(report)
+
+
+def test_schema_rejects_oracle_dbms_with_sqlite_signature():
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"]["dbms"] = "oracle"
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(report)
+
+
+@pytest.mark.parametrize(
+    ("dbms", "signature_id", "accepted"),
+    [
+        *(
+            (signature.dbms, signature_id, True)
+            for signature_id, signature in ERROR_SIGNATURES.items()
+        ),
+        ("oracle", "sqlite_operational_syntax", False),
+    ],
+)
+def test_schema_and_python_validator_agree_on_error_signature_pairs(
+    tmp_path, dbms, signature_id, accepted
+):
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"].update(
+        dbms=dbms,
+        signature_id=signature_id,
+    )
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    path = write_report(tmp_path, report)
+
+    if accepted:
+        Draft202012Validator(schema).validate(report)
+        _validate(path, 3)
+    else:
+        with pytest.raises(ValidationError):
+            Draft202012Validator(schema).validate(report)
+        with pytest.raises(ValidationError):
+            _validate(path, 3)
+
+
+@pytest.mark.parametrize("reason", ERROR_RESULT_RULES)
+def test_every_error_result_rule_is_accepted_by_schema_and_validator(tmp_path, reason):
+    report = make_error_report(reason)
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(report)
+
+    _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize("reason", ERROR_RESULT_RULES)
+@pytest.mark.parametrize(
+    "field", ("verdict", "count_below", "count_above", "status", "reason")
+)
+def test_error_result_rule_mismatches_are_rejected(tmp_path, reason, field):
+    report = make_error_report(reason)
+    outcome = report["outcomes"][0]
+    if field == "verdict":
+        outcome["actual_verdict"] = (
+            "not_detected"
+            if outcome["actual_verdict"] == "inconclusive"
+            else "inconclusive"
+        )
+    elif field in {"count_below", "count_above"}:
+        rule = ERROR_RESULT_RULES[reason]
+        invalid = (
+            rule.minimum_requests - 1
+            if field == "count_below"
+            else rule.maximum_requests + 1
+        )
+        outcome["request_count"] = invalid
+        outcome["error"]["request_count"] = invalid
+        report["requests_used"] = invalid
+    elif field == "status":
+        outcome["error"]["status"] = (
+            "matched" if outcome["error"]["status"] != "matched" else "inconclusive"
+        )
+    else:
+        replacement = next(item for item in ERROR_RESULT_RULES if item != reason)
+        outcome["error"]["reason_code"] = replacement
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize("missing", ("check_type", "error"))
+def test_error_outcome_fields_are_all_or_nothing(tmp_path, missing):
+    report = make_error_report("dbms_error_not_observed")
+    del report["outcomes"][0][missing]
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 0)
+
+
+@pytest.mark.parametrize("field", ("dbms", "signature_id"))
+def test_error_evidence_is_all_or_nothing(tmp_path, field):
+    report = make_error_report("dbms_error_disclosed")
+    del report["outcomes"][0]["error"][field]
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 3)
+
+
+def test_error_evidence_is_forbidden_when_rule_does_not_require_it(tmp_path):
+    report = make_error_report("dbms_error_not_observed")
+    report["outcomes"][0]["error"].update(
+        dbms="sqlite", signature_id="sqlite_operational_syntax"
+    )
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 0)
+
+
+def test_error_evidence_requires_reviewed_dbms_signature_pair(tmp_path):
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"]["dbms"] = "mysql"
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 3)
+
+
+def test_boolean_outcome_rejects_error_object(tmp_path):
+    report = make_report()
+    report["outcomes"][0]["error"] = {
+        "status": "inconclusive",
+        "reason_code": "probe_timeout",
+        "request_count": 1,
+    }
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 3)
 
 
 def test_time_schema_reason_enum_matches_product_contract():

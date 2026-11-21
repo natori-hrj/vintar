@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+**Added**
+
+- Run explicit Schema v1 `sqli.error` cases through `vintar verify` and emit
+  additive, redacted Error outcomes in Schema v1 CI reports. A reproducible new
+  DBMS diagnostic remains `INCONCLUSIVE / dbms_error_disclosed` and blocks CI;
+  it never claims a confirmed vulnerability without independent confirmation.
+
 ## [0.3.0] - 2026-11-21
 
 **Internal**

@@ -1,0 +1,44 @@
+{
+  "exit_code": 0,
+  "stderr": "",
+  "stdout_json": {
+    "complete": true,
+    "counts": {
+      "fail": 0,
+      "inconclusive": 0,
+      "not_run": 0,
+      "pass": 1
+    },
+    "executed_case_ids": [
+      "error-case"
+    ],
+    "executed_count": 1,
+    "exit_code": 0,
+    "not_run_case_ids": [],
+    "outcomes": [
+      {
+        "actual_reason_code": "dbms_error_not_observed",
+        "actual_verdict": "not_detected",
+        "case_id": "error-case",
+        "check_type": "sqli.error",
+        "error": {
+          "reason_code": "dbms_error_not_observed",
+          "request_count": 4,
+          "status": "not_matched"
+        },
+        "expectation_match": true,
+        "expected_verdict": "not_detected",
+        "request_count": 4,
+        "status": "pass"
+      }
+    ],
+    "planned_case_ids": [
+      "error-case"
+    ],
+    "planned_count": 1,
+    "report_type": "regression_batch",
+    "requests_used": 4,
+    "schema_version": 1,
+    "status": "pass"
+  }
+}

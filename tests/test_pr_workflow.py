@@ -98,6 +98,15 @@ def test_pr_uses_existing_loopback_e2e():
     assert "security checks" not in source.lower()
 
 
+def test_pr_checks_generated_error_signature_schema():
+    source = workflow_text()
+
+    assert (
+        "uv run --locked python scripts/update_error_signature_schema.py --check"
+        in source
+    )
+
+
 def test_reports_are_revalidated_before_upload():
     source = workflow_text()
 

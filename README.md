@@ -4,20 +4,52 @@ Vintar is a Python tool for running authorized web security regression checks in
 
 ## Supported Scope
 
-Vintar supports Boolean- and time-based SQL injection regression checks for
-`GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
-materialization run offline. The workflow is
-`discover → review-draft → materialize-case → verify`. Reviewers explicitly
-select the `string-quoted` or `numeric` probe preset for Boolean cases that use presets.
-Verification runs against an authorized, configured target.
+Vintar supports Boolean-, time-, and error-based SQL injection regression
+checks for `GET` query parameters. OpenAPI 3.0 and 3.1 `discover`,
+`review-draft`, and `materialize-case` support Boolean and Time cases and run
+offline; `verify` runs all three check types against an authorized, configured
+target. Reviewers explicitly select the `string-quoted` or `numeric` probe
+preset for Boolean cases that use presets.
+
+Error SQLi currently starts from a hand-written Schema v1 case and runs with
+`vintar verify`. OpenAPI materialization for Error cases is planned for a later
+phase; Vintar never infers an Error payload or DBMS from an OpenAPI type.
 
 Time cases require explicit reviewed delay and control payloads and a fixed
 nine-request budget. The operator controls the execution deadline with
 `verify --time-deadline`. Time presets are unavailable.
 
-Deferred are confirmed `VULNERABLE` verdicts, error-based and UNION-based SQL
+Deferred are confirmed Error `VULNERABLE` verdicts and UNION-based SQL
 injection checks, POST form and JSON body injection, cookie and header injection,
 and authenticated workflows.
+
+Minimal Error case:
+
+```toml
+version = 1
+id = "reviewed-error-case"
+type = "sqli.error"
+expected_verdict = "inconclusive"
+
+[target]
+url = "http://placeholder.invalid:8000/items"
+allowed_origin = "http://placeholder.invalid:8000"
+params = [{ name = "id", value = "1" }]
+
+[injection]
+location = "query"
+name = "id"
+occurrence = 0
+mode = "append"
+
+[probes]
+error_payload = "'"
+
+[limits]
+max_requests = 4
+requests_per_second = 10.0
+timeout_seconds = 5.0
+```
 
 ## Install from PyPI
 
