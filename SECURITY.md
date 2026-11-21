@@ -28,3 +28,10 @@ regular issue for those signals and remove any sensitive target details before
 sharing it.
 
 Only use Vintar to test systems you own or have explicit permission to test.
+
+## Dependency Maintenance
+
+The dependency audit checks locked runtime and development dependencies for
+Linux and Python 3.13 on pull requests, pushes to `main`, and weekly. Dependabot
+proposes weekly updates for uv dependencies and pinned GitHub Actions, grouping
+minor and patch updates by ecosystem.
