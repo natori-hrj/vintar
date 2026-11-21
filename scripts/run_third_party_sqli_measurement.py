@@ -233,6 +233,15 @@ def validate_measurement_report(report: object) -> dict[str, object]:
         )
         declaration = declarations_by_key[key]
         ground_truth = required_text(declaration, "label", "record")
+        expected_verdict = expected_verdict_for_label(ground_truth)
+        if record.get("expected_label") != ground_truth:
+            raise MeasurementError(
+                f"Measurement record {key[0]!r} expected_label contradicts reviewed ground truth {ground_truth!r}. Remeasure from targets.toml; do not hand-edit reports."
+            )
+        if record.get("expected_verdict") != expected_verdict:
+            raise MeasurementError(
+                f"Measurement record {key[0]!r} stored expected_verdict {record.get('expected_verdict')!r} contradicts ground-truth label {ground_truth!r}; expected {expected_verdict!r}. Remeasure the target; do not hand-edit reports."
+            )
         verdict = required_text(record, "actual_verdict", "report record")
         reason = required_text(record, "reason_code", "report record")
         recomputed_classification = classify(
@@ -245,10 +254,6 @@ def validate_measurement_report(report: object) -> dict[str, object]:
         if stored_classification != recomputed_classification:
             raise MeasurementError(
                 f"Measurement record {key[0]!r} stored classification {stored_classification!r} contradicts ground truth {ground_truth!r} with {verdict}/{reason}; expected {recomputed_classification!r}. Remeasure the target; do not hand-edit reports."
-            )
-        if record.get("expected_label") != ground_truth:
-            raise MeasurementError(
-                f"Measurement record {key[0]!r} expected_label contradicts reviewed ground truth {ground_truth!r}. Remeasure from targets.toml; do not hand-edit reports."
             )
         if check_type == "sqli.error":
             _validate_error_detail(record)
@@ -358,6 +363,17 @@ def classify(check_type: str, expected: str, verdict: str, reason: str) -> str:
     if verdict == "not_detected":
         return "fn" if expected == "positive" else "tn"
     return "non_decision"
+
+
+def expected_verdict_for_label(label: str) -> str:
+    """Map one reviewed ground-truth label to its pipeline expectation."""
+    if label == "positive":
+        return "inconclusive"
+    if label == "negative":
+        return "not_detected"
+    raise MeasurementError(
+        "The record has an unsupported ground-truth label. Use positive or negative in targets.toml and remeasure instead of hand-editing reports."
+    )
 
 
 def load_document(path: Path) -> dict[str, object]:
@@ -699,7 +715,7 @@ def run_pipeline_case(
     input_id = required_text(record, "input_id", "record")
     parameter = required_text(record, "parameter", "record")
     label = required_text(record, "label", "record")
-    expected_verdict = "inconclusive" if label == "positive" else "not_detected"
+    expected_verdict = expected_verdict_for_label(label)
     local_spec = folder / "openapi.json"
     local_spec.write_bytes(SPEC.read_bytes())
 

@@ -715,6 +715,27 @@ def test_reaggregated_counts_cannot_hide_classification_relabeling(
         runner.validate_measurement_report(report)
 
 
+@pytest.mark.parametrize(
+    ("endpoint_id", "replacement", "ground_truth", "expected"),
+    [
+        ("dsvw-error-version-query", "vulnerable", "negative", "not_detected"),
+        ("dsvw-blind-boolean-id", "not_detected", "positive", "inconclusive"),
+    ],
+)
+def test_expected_verdict_must_follow_declared_ground_truth(
+    endpoint_id, replacement, ground_truth, expected
+):
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, endpoint_id)["expected_verdict"] = replacement
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"{endpoint_id}.*stored expected_verdict '{replacement}' contradicts ground-truth label '{ground_truth}'; expected '{expected}'.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
 def test_stored_v3_report_fixture_still_validates_unchanged():
     runner = load_runner()
     report = expected_report()
