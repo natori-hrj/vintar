@@ -169,7 +169,11 @@ def _verification_result(item: dict[str, object]) -> VerificationResult:
     )
 
 
-def _validate(path: Path, exit_code: int) -> None:
+def _validate(
+    path: Path,
+    exit_code: int,
+    schema_path: Path = _SCHEMA,
+) -> None:
     if type(exit_code) is not int or exit_code not in _ALLOWED_EXIT_CODES:
         raise ValueError("Invalid CI exit code.")
 
@@ -207,7 +211,7 @@ def _validate(path: Path, exit_code: int) -> None:
                     "Invalid extended outcome fields. Supply actual_reason_code, request_count, and confirmation together, or omit all three for a legacy v1 report."
                 )
 
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
 
     validator = Draft202012Validator(schema)

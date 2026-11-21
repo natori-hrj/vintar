@@ -13,9 +13,8 @@ from jsonschema import Draft202012Validator, ValidationError
 from vintar.checks.sqli import confirmation_runner
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import (
-    ERROR_SIGNATURE_DBMS_NAMES,
-    ERROR_SIGNATURE_IDS,
     ERROR_SIGNATURES,
+    ErrorSignature,
 )
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
@@ -207,12 +206,6 @@ def test_error_schema_and_validator_derive_contract_tables():
     assert set(schema["$defs"]["error"]["properties"]["reason_code"]["enum"]) == set(
         ERROR_RESULT_RULES
     )
-    assert set(schema["$defs"]["error"]["properties"]["dbms"]["enum"]) == set(
-        ERROR_SIGNATURE_DBMS_NAMES
-    )
-    assert set(schema["$defs"]["error"]["properties"]["signature_id"]["enum"]) == set(
-        ERROR_SIGNATURE_IDS
-    )
     assert _VALIDATOR_MODULE["ERROR_RESULT_RULES"] is ERROR_RESULT_RULES
 
 
@@ -233,6 +226,82 @@ def test_error_signature_schema_pairs_match_registry():
         for signature_id, signature in ERROR_SIGNATURES.items()
     }
     assert schema_pairs == registry_pairs
+
+
+def test_error_allowed_values_exist_only_in_generated_pair_definition():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    constrained_paths = []
+
+    def collect(node, path=()):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                current = (*path, key)
+                if (
+                    key in {"dbms", "signature_id"}
+                    and isinstance(value, dict)
+                    and ("enum" in value or "const" in value)
+                ):
+                    constrained_paths.append(current)
+                collect(value, current)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                collect(value, (*path, index))
+
+    collect(schema)
+
+    assert constrained_paths
+    assert all(
+        path[:2] == ("$defs", "error_signature_pairs") for path in constrained_paths
+    )
+
+
+def test_generated_error_signature_schema_is_current():
+    _SCHEMA_GENERATOR_MODULE["check_schema"]()
+
+
+def test_stale_generated_error_signature_schema_is_rejected(tmp_path):
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    stale = schema_path.read_text(encoding="utf-8").replace(
+        "sqlite_operational_syntax", "stale_signature", 1
+    )
+    schema_path.write_text(stale, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"schema is stale.*--write"):
+        _SCHEMA_GENERATOR_MODULE["check_schema"](schema_path)
+
+
+def test_added_signature_regenerates_every_schema_constraint(tmp_path, monkeypatch):
+    extra_signature = ErrorSignature(
+        signature_id="sqlite_extra_syntax",
+        dbms="sqlite",
+        pattern=re.compile(
+            rb"SQLite extra syntax diagnostic", re.ASCII | re.IGNORECASE
+        ),
+    )
+    registry = dict(ERROR_SIGNATURES)
+    registry[extra_signature.signature_id] = extra_signature
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    _SCHEMA_GENERATOR_MODULE["update_schema"](schema_path, registry)
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"].update(
+        dbms="sqlite",
+        signature_id=extra_signature.signature_id,
+    )
+    report_path = write_report(tmp_path, report)
+    monkeypatch.setitem(_validate.__globals__, "ERROR_SIGNATURES", registry)
+
+    Draft202012Validator(schema).validate(report)
+    _validate(report_path, 3, schema_path)
+
+    report["outcomes"][0]["error"]["dbms"] = "oracle"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(report)
+    with pytest.raises(ValidationError):
+        _validate(report_path, 3, schema_path)
 
 
 @pytest.mark.parametrize(

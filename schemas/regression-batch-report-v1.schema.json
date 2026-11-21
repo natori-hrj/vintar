@@ -508,16 +508,10 @@
           "maximum": 4
         },
         "dbms": {
-          "enum": ["mssql", "mysql", "oracle", "postgresql", "sqlite"]
+          "type": "string"
         },
         "signature_id": {
-          "enum": [
-            "mssql_syntax_error",
-            "mysql_syntax_error_1064",
-            "oracle_syntax_error",
-            "postgresql_syntax_error",
-            "sqlite_operational_syntax"
-          ]
+          "type": "string"
         }
       },
       "allOf": [
