@@ -142,10 +142,26 @@ def operational_stop_reason(
     return None
 
 
+def _operational_sequence_stop(
+    attempts: tuple[ErrorObservation | ErrorProbeFailure, ...],
+) -> str | None:
+    """Return the first stop reason and reject observations after it."""
+    for index, attempt in enumerate(attempts):
+        reason = operational_stop_reason(attempt)
+        if reason is None:
+            continue
+        if index != len(attempts) - 1:
+            raise ValueError(
+                "Error SQLi observations continue after an operational stop. The runner stops at the first operational condition, so later observations cannot exist. Pass observations only up to the stop."
+            )
+        return reason
+    return None
+
+
 def _expected_result(
     observations: tuple[ErrorObservation, ...],
 ) -> tuple[ErrorAnalysisStatus, str, ErrorEvidence | None]:
-    terminal_reason = operational_stop_reason(observations[-1])
+    terminal_reason = _operational_sequence_stop(observations)
     if terminal_reason is not None:
         return ErrorAnalysisStatus.INCONCLUSIVE, terminal_reason, None
 
@@ -232,6 +248,7 @@ class ErrorAnalysis:
             raise ValueError(
                 "Invalid error observation order. Use baseline, probe, baseline, probe."
             )
+        implied_reason = _operational_sequence_stop(attempts)
         if len(self.failures) > 1 or (
             self.failures and self.failures[0].sequence != len(attempts)
         ):
@@ -252,28 +269,18 @@ class ErrorAnalysis:
                 "Error analysis evidence disagrees with its reason. Supply evidence only for a reproducible disclosed signature."
             )
         expected: tuple[ErrorAnalysisStatus, str, ErrorEvidence | None]
-        if self.failures:
-            implied_reason = operational_stop_reason(self.failures[0])
-            if implied_reason is None:
+        if implied_reason is not None:
+            if rule.requires_complete_four:
                 raise ValueError(
-                    "Operational probe failure lacks a declared reason. Record the runner's timeout, transport, or interruption reason instead."
-                )
-            expected = (
-                ErrorAnalysisStatus.INCONCLUSIVE,
-                implied_reason,
-                None,
-            )
-        elif not rule.requires_complete_four:
-            terminal = self.observations[-1]
-            implied_reason = operational_stop_reason(terminal)
-            if implied_reason is None:
-                raise ValueError(
-                    "Operational error analysis lacks its declared terminal condition. Stop after HTTP 429 or truncation, or record the runner failure instead."
+                    "Analytical Error SQLi reason cannot contain an operational stop. Use the derived operational reason and pass observations only up to the stop."
                 )
             if self.reason_code != implied_reason:
+                terminal = attempts[-1]
                 precedence = (
                     " HTTP 429 takes precedence over truncation because the batch stops on rate limits."
-                    if implied_reason == "rate_limited" and terminal.truncated
+                    if implied_reason == "rate_limited"
+                    and type(terminal) is ErrorObservation
+                    and terminal.truncated
                     else " Use the reason implied by the terminal attempt."
                 )
                 raise ValueError(
@@ -284,6 +291,10 @@ class ErrorAnalysis:
                 ErrorAnalysisStatus.INCONCLUSIVE,
                 implied_reason,
                 None,
+            )
+        elif not rule.requires_complete_four:
+            raise ValueError(
+                "Operational error analysis lacks its declared terminal condition. Stop after HTTP 429 or truncation, or record the runner failure instead."
             )
         else:
             expected = _expected_result(self.observations)

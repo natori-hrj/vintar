@@ -129,6 +129,49 @@ def operational_analysis(reason: str, request_count: int) -> ErrorAnalysis:
     )
 
 
+def analysis_with_observation_after_stop(
+    reason: str,
+    stop_position: int,
+) -> ErrorAnalysis:
+    observations = []
+    failures = []
+    for sequence, kind_value in enumerate(
+        ("baseline", "probe", "baseline", "probe")[: stop_position + 1],
+        start=1,
+    ):
+        kind = ErrorProbeKind(kind_value)
+        if sequence == stop_position and reason in {
+            "probe_timeout",
+            "probe_failed",
+            "probe_interrupted",
+        }:
+            failures.append(ErrorProbeFailure(kind, sequence, reason))
+            continue
+        observations.append(
+            error_observation(
+                kind,
+                sequence,
+                response(
+                    b"completed",
+                    status=(
+                        429
+                        if reason == "rate_limited" and sequence == stop_position
+                        else 200
+                    ),
+                    truncated=(
+                        reason == "truncated_response" and sequence == stop_position
+                    ),
+                ),
+            )
+        )
+    return ErrorAnalysis(
+        status=ErrorAnalysisStatus.INCONCLUSIVE,
+        reason_code=reason,
+        observations=tuple(observations),
+        failures=tuple(failures),
+    )
+
+
 def test_signature_registry_is_exact_sorted_and_immutable():
     assert ERROR_SIGNATURE_IDS == tuple(sorted(SIGNATURE_FIXTURES))
     assert ERROR_SIGNATURE_DBMS_NAMES == (
@@ -333,6 +376,88 @@ def test_rate_limit_precedes_truncation_in_pure_analysis():
 
     assert analysis.reason_code == "rate_limited"
     assert analysis.request_count == 4
+
+
+@pytest.mark.parametrize("reason", ("rate_limited", "truncated_response"))
+@pytest.mark.parametrize("position", (1, 2, 3, 4))
+def test_pure_analyzer_requires_completed_stop_to_be_last(reason, position):
+    ordered = [response(b"completed") for _ in range(4)]
+    ordered[position - 1] = response(
+        b"stop",
+        status=429 if reason == "rate_limited" else 200,
+        truncated=reason == "truncated_response",
+    )
+
+    if position == 4:
+        analysis = analyze(ordered[0], ordered[1], ordered[2], ordered[3])
+        assert analysis.reason_code == reason
+        assert analysis.request_count == 4
+        return
+
+    with pytest.raises(
+        ValueError,
+        match=r"runner stops at the first operational condition.*later observations cannot exist.*only up to the stop",
+    ):
+        analyze(ordered[0], ordered[1], ordered[2], ordered[3])
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "rate_limited",
+        "truncated_response",
+        "probe_timeout",
+        "probe_failed",
+        "probe_interrupted",
+    ),
+)
+@pytest.mark.parametrize("position", (1, 2, 3, 4))
+def test_operational_stop_is_valid_only_as_the_final_attempt(reason, position):
+    analysis = operational_analysis(reason, position)
+
+    assert analysis.reason_code == reason
+    assert analysis.status is ErrorAnalysisStatus.INCONCLUSIVE
+    assert analysis.request_count == position
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "rate_limited",
+        "truncated_response",
+        "probe_timeout",
+        "probe_failed",
+        "probe_interrupted",
+    ),
+)
+@pytest.mark.parametrize("position", (1, 2, 3))
+def test_constructed_analysis_rejects_observations_after_stop(reason, position):
+    with pytest.raises(
+        ValueError,
+        match=r"runner stops at the first operational condition.*later observations cannot exist.*only up to the stop",
+    ):
+        analysis_with_observation_after_stop(reason, position)
+
+
+def test_not_detected_never_contains_an_operational_condition():
+    for reason in (
+        "rate_limited",
+        "truncated_response",
+        "probe_timeout",
+        "probe_failed",
+        "probe_interrupted",
+    ):
+        for position in range(1, 5):
+            product = error_product_result(operational_analysis(reason, position))
+            assert product.verdict is not Verdict.NOT_DETECTED
+
+    stable = analyze(
+        response(b"baseline one"),
+        response(b"probe one"),
+        response(b"baseline two"),
+        response(b"probe two"),
+    )
+    assert error_product_result(stable).verdict is Verdict.NOT_DETECTED
 
 
 def test_matching_is_bounded_to_the_reviewed_scan_limit():
