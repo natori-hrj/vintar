@@ -47,6 +47,37 @@ requests_per_second = 2.0
 timeout_seconds = 10.0
 """
 
+TIME_CASE_SOURCE = """
+version = 1
+id = "time-case"
+type = "sqli.time"
+expected_verdict = "not_detected"
+
+[target]
+url = "http://placeholder.invalid:8000/products"
+allowed_origin = "http://placeholder.invalid:8000"
+
+[[target.params]]
+name = "category"
+value = "Pets"
+
+[injection]
+location = "query"
+name = "category"
+occurrence = 0
+mode = "append"
+
+[probes]
+delay_payload = "-delay"
+control_payload = "-control"
+expected_delay_seconds = 0.25
+
+[limits]
+max_requests = 9
+requests_per_second = 10.0
+timeout_seconds = 3.0
+"""
+
 ENV = {
     "VINTAR_TARGET_ORIGIN": "http://127.0.0.1:8765",
     "VINTAR_ALLOWED_ORIGIN": "http://127.0.0.1:8765",
@@ -79,6 +110,13 @@ def write_case(
 
     file = directory / f"{case_id}.toml"
     file.write_text(source, encoding="utf-8")
+    return file
+
+
+def write_time_case(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    file = directory / "time-case.toml"
+    file.write_text(TIME_CASE_SOURCE, encoding="utf-8")
     return file
 
 
@@ -181,6 +219,24 @@ def test_verify_enum_json_and_exit_code_are_contract(
     assert outcome["expected_verdict"] == expected
     assert outcome["actual_verdict"] == verdict
     assert outcome["verification"]["verdict"] == verdict
+
+
+def test_time_case_cli_fails_cleanly_until_batch_reports_are_supported(
+    tmp_path, mock_http
+):
+    case = write_time_case(tmp_path)
+    received, _ = mock_http
+
+    result = cli.invoke(app, args_for(case, max_requests=9), env=ENV)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "Error: Time SQLi cases are not yet supported in batch reports. "
+        "Use the Python single-case regression API until Phase 13-3 adds report support.\n"
+    )
+    assert result.exception is not None
+    assert received == []
 
 
 def test_environment_rebinds_target_origin(

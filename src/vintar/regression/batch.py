@@ -100,19 +100,20 @@ def _aggregate_status(
 
 def _must_stop_batch(outcome: RegressionOutcome) -> bool:
     """Stop when continuing would ignore a safety or decisive condition."""
-    verification = outcome.verification
-
-    if verification.verdict is Verdict.VULNERABLE:
+    if outcome.final_verdict is Verdict.VULNERABLE:
         return True
 
     if outcome.final_reason_code in {
         "rate_limited",
+        "probe_timeout",
+        "probe_failed",
+        "probe_interrupted",
         "confirmation_rate_limited",
         "confirmation_rate_limit_interrupted",
     }:
         return True
 
-    return bool(verification.failures)
+    return bool(outcome.verification is not None and outcome.verification.failures)
 
 
 def run_regression_batch(

@@ -62,7 +62,7 @@ def bind_runtime_target(
     Schema v1's original absolute origin is a placeholder in this workflow.
     The raw request path and all injection inputs remain unchanged.
     """
-    if type(case) is not RegressionCase:
+    if not isinstance(case, RegressionCase):
         raise TypeError("Invalid regression case.")
     if type(target) is not AllowedOrigin:
         raise TypeError("Invalid runtime target.")
@@ -88,6 +88,6 @@ def bind_runtime_target(
         scope=ScopePolicy(allowed_origins=frozenset({target})),
     )
 
-    # RegressionCase construction revalidates the full injection plan.
+    # Case reconstruction revalidates the full injection plan.
     validate_scope(rebound.template.url, trusted_scope)
     return rebound

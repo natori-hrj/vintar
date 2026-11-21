@@ -31,6 +31,10 @@ _CONFIRMATION_REASON_CODES = frozenset(
 )
 
 
+class UnsupportedTimeBatchReportError(ValueError):
+    """A time outcome reached the not-yet-supported batch report boundary."""
+
+
 class CIExitCode(IntEnum):
     """Stable process exit codes for CI integrations.
 
@@ -76,6 +80,10 @@ def regression_batch_report_dict(
     """
     if type(result) is not RegressionBatchResult:
         raise TypeError("result must be a RegressionBatchResult.")
+    if any(outcome.time_run is not None for outcome in result.outcomes):
+        raise UnsupportedTimeBatchReportError(
+            "Time SQLi cases are not yet supported in batch reports. Use the Python single-case regression API until Phase 13-3 adds report support."
+        )
     if any(
         type(outcome) is not RegressionOutcome
         or type(outcome.verification) is not VerificationResult
@@ -99,6 +107,9 @@ def regression_batch_report_dict(
     outcomes: list[dict[str, object]] = []
 
     for outcome in result.outcomes:
+        verification = outcome.verification
+        if verification is None:
+            raise TypeError("result contains an unsupported derived model.")
         confirmation = outcome.confirmation
         if confirmation is None:
             confirmation_report: dict[str, object] = {
@@ -131,7 +142,7 @@ def regression_batch_report_dict(
                 "request_count": outcome.request_count,
                 "expectation_match": outcome.expectation_match,
                 "status": outcome.status.value,
-                "verification": verification_report_dict(outcome.verification),
+                "verification": verification_report_dict(verification),
                 "confirmation": confirmation_report,
             }
         )
