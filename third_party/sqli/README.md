@@ -1,4 +1,4 @@
-# Third-party Boolean SQLi measurement
+# Third-party SQLi measurement
 
 This directory declares a manual, local-only measurement against DSVW. DSVW is
 independent of Vintar and deliberately vulnerable. Never publish it on a public or
@@ -21,9 +21,16 @@ uv run --locked python scripts/run_third_party_sqli_measurement.py \
 ```
 
 The runner performs `discover -> review-draft -> materialize-case -> verify` for
-both reviewed inputs, once without confirmation and once with confirmation. It
-saves the JSON report before reporting a false negative, false positive, or
-non-decision. Reports are local artifacts and must not be added to the repository.
+the two reviewed Boolean inputs in six-probe and confirmation modes, and for the
+two reviewed Time inputs with the fixed nine-request plan. Boolean and Time
+classifications are aggregated separately. It saves the JSON report before
+reporting a false negative, false positive, or non-decision. Reports are local
+artifacts and must not be added to the repository.
+
+The saved manual measurement artifact uses schema version 2. The runner and its
+documentation drift check reject older or mixed-shape reports. If an existing
+artifact is version 1, rerun the measurement to produce version 2 rather than
+attempting an in-place conversion.
 
 Docker absence, an unavailable loopback binding, a changed archive, a changed local
 image, source-evidence drift, startup failure, or documentation drift produces an

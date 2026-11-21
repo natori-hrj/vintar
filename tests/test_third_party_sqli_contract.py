@@ -11,12 +11,16 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from test_sqli_candidate_reliability import classify as reliability_classify
+from typer.testing import CliRunner
 
 from vintar.checks.sqli.models import Verdict
+from vintar.cli import app
+from vintar.regression.cases import TimeRegressionCase, load_regression_case
 
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
 TARGETS = THIRD_PARTY / "targets.toml"
+CONFIGS = THIRD_PARTY / "dsvw" / "configs"
 RUNNER = ROOT / "scripts" / "run_third_party_sqli_measurement.py"
 PREPARER = ROOT / "scripts" / "prepare_third_party_sqli.py"
 
@@ -49,7 +53,8 @@ def expected_report() -> dict[str, object]:
         {
             "actual_verdict": "inconclusive",
             "classification": "tp",
-            "confirmation": {
+            "check_type": "sqli.boolean",
+            "detail": {
                 "configured": True,
                 "reason_code": "confirmation_pattern_matched",
                 "request_count": 12,
@@ -65,7 +70,8 @@ def expected_report() -> dict[str, object]:
         {
             "actual_verdict": "inconclusive",
             "classification": "tp",
-            "confirmation": {
+            "check_type": "sqli.boolean",
+            "detail": {
                 "configured": False,
                 "reason_code": None,
                 "request_count": 0,
@@ -80,8 +86,41 @@ def expected_report() -> dict[str, object]:
         },
         {
             "actual_verdict": "inconclusive",
+            "check_type": "sqli.time",
             "classification": "non_decision",
-            "confirmation": {
+            "detail": {
+                "reason_code": "unstable_timing",
+                "request_count": 9,
+                "status": "inconclusive",
+            },
+            "endpoint_id": "dsvw-time-id",
+            "expected_label": "positive",
+            "expected_verdict": "inconclusive",
+            "mode": "nine_probe",
+            "reason_code": "unstable_timing",
+            "request_count": 9,
+        },
+        {
+            "actual_verdict": "not_detected",
+            "check_type": "sqli.time",
+            "classification": "tn",
+            "detail": {
+                "reason_code": "timing_pattern_not_matched",
+                "request_count": 9,
+                "status": "not_confirmed",
+            },
+            "endpoint_id": "dsvw-time-version-query",
+            "expected_label": "negative",
+            "expected_verdict": "not_detected",
+            "mode": "nine_probe",
+            "reason_code": "timing_pattern_not_matched",
+            "request_count": 9,
+        },
+        {
+            "actual_verdict": "inconclusive",
+            "classification": "non_decision",
+            "check_type": "sqli.boolean",
+            "detail": {
                 "configured": True,
                 "reason_code": "initial_not_eligible",
                 "request_count": 0,
@@ -97,7 +136,8 @@ def expected_report() -> dict[str, object]:
         {
             "actual_verdict": "inconclusive",
             "classification": "non_decision",
-            "confirmation": {
+            "check_type": "sqli.boolean",
+            "detail": {
                 "configured": False,
                 "reason_code": None,
                 "request_count": 0,
@@ -113,22 +153,41 @@ def expected_report() -> dict[str, object]:
     ]
     return {
         "counts": {
-            "confirmation": {
-                "fn": 0,
-                "fp": 0,
-                "non_decision": 1,
-                "tn": 0,
-                "tp": 1,
+            "sqli.boolean": {
+                "confirmation": {
+                    "fn": 0,
+                    "fp": 0,
+                    "non_decision": 1,
+                    "tn": 0,
+                    "tp": 1,
+                },
+                "six_probe": {
+                    "fn": 0,
+                    "fp": 0,
+                    "non_decision": 1,
+                    "tn": 0,
+                    "tp": 1,
+                },
             },
-            "six_probe": {
-                "fn": 0,
-                "fp": 0,
-                "non_decision": 1,
-                "tn": 0,
-                "tp": 1,
+            "sqli.time": {
+                "nine_probe": {
+                    "fn": 0,
+                    "fp": 0,
+                    "non_decision": 1,
+                    "tn": 1,
+                    "tp": 0,
+                }
             },
         },
         "records": records,
+        "schema_version": 2,
+        "target": {
+            "archive_sha256": "archive",
+            "commit": "commit",
+            "image_id": "sha256:image",
+            "license": "Unlicense",
+            "name": "DSVW",
+        },
     }
 
 
@@ -148,9 +207,24 @@ def test_reviewed_declarations_are_exact_and_digest_bound():
     assert [record["id"] for record in records] == [
         "dsvw-blind-boolean-id",
         "dsvw-version-query",
+        "dsvw-time-id",
+        "dsvw-time-version-query",
     ]
-    assert [record["label"] for record in records] == ["positive", "negative"]
+    assert [record["check_type"] for record in records] == [
+        "sqli.boolean",
+        "sqli.boolean",
+        "sqli.time",
+        "sqli.time",
+    ]
+    assert [record["label"] for record in records] == [
+        "positive",
+        "negative",
+        "positive",
+        "negative",
+    ]
     assert [record["evidence_type"] for record in records] == [
+        "non_parameterized_sql_sink",
+        "parameter_does_not_reach_sql_sink",
         "non_parameterized_sql_sink",
         "parameter_does_not_reach_sql_sink",
     ]
@@ -173,6 +247,8 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
     assert [path.name for path in configs] == [
         "dsvw-blind-boolean-id-confirmation.toml",
         "dsvw-blind-boolean-id-six.toml",
+        "dsvw-time-id-time.toml",
+        "dsvw-time-version-query-time.toml",
         "dsvw-version-query-confirmation.toml",
         "dsvw-version-query-six.toml",
     ]
@@ -188,8 +264,126 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
         parsed.append(config)
     assert sum(config["limits"]["max_requests"] == 6 for config in parsed) == 2
     assert sum(config["limits"]["max_requests"] == 18 for config in parsed) == 2
-    assert sum(config["probes"]["selection"] == "explicit" for config in parsed) == 2
+    assert sum(config["limits"]["max_requests"] == 9 for config in parsed) == 2
+    assert sum(config["probes"]["selection"] == "explicit" for config in parsed) == 4
     assert sum(config["probes"]["selection"] == "preset" for config in parsed) == 2
+    time_configs = [config for config in parsed if config.get("type") == "sqli.time"]
+    assert len(time_configs) == 2
+    assert all(config["injection"]["mode"] == "replace" for config in time_configs)
+    assert all(
+        config["probes"]["expected_delay_seconds"] == 0.5 for config in time_configs
+    )
+
+
+@pytest.mark.parametrize(
+    ("record_id", "input_id", "parameter", "index", "expected"),
+    [
+        (
+            "dsvw-time-id",
+            "input-0927742c7a4ae9527f51f8c541502371",
+            "id",
+            0,
+            "inconclusive",
+        ),
+        (
+            "dsvw-time-version-query",
+            "input-ffe5bfa38242d9cad17138d92bb38efd",
+            "v",
+            1,
+            "not_detected",
+        ),
+    ],
+)
+def test_time_configs_materialize_and_load_offline(
+    tmp_path, monkeypatch, record_id, input_id, parameter, index, expected
+):
+    monkeypatch.chdir(tmp_path)
+    spec = tmp_path / "openapi.json"
+    spec.write_bytes((THIRD_PARTY / "dsvw" / "openapi.json").read_bytes())
+    selection = tmp_path / "selection.toml"
+    selection.write_text(f'version = 1\napproved = ["{input_id}"]\n', encoding="utf-8")
+    runner = CliRunner()
+    discovered = runner.invoke(
+        app,
+        [
+            "discover",
+            "--spec",
+            str(spec),
+            "--selection",
+            str(selection),
+            "--drafts-dir",
+            str(tmp_path / "drafts"),
+        ],
+    )
+    assert discovered.exit_code == 0 and discovered.stderr == ""
+    draft_name = json.loads(discovered.stdout)["drafts"][0]
+    draft = tmp_path / "drafts" / draft_name
+    other = "v" if parameter == "id" else "id"
+    answers = tmp_path / "answers.json"
+    answers.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "expected_verdict": expected,
+                "parameters": {
+                    parameter: {
+                        "pointer": f"/paths/~1/get/parameters/{index}/schema/example"
+                    },
+                    other: {"omit": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    review = tmp_path / "review.json"
+    reviewed = runner.invoke(
+        app,
+        [
+            "review-draft",
+            "--spec",
+            str(spec),
+            "--draft",
+            str(draft),
+            "--answers",
+            str(answers),
+            "--output",
+            str(review),
+        ],
+    )
+    assert reviewed.exit_code == 0 and reviewed.stderr == ""
+    config = tmp_path / "config.toml"
+    config.write_text(
+        (CONFIGS / f"{record_id}-time.toml")
+        .read_text(encoding="utf-8")
+        .replace("__ORIGIN__", "http://127.0.0.1:65412"),
+        encoding="utf-8",
+    )
+    output = tmp_path / "case.toml"
+    materialized = runner.invoke(
+        app,
+        [
+            "materialize-case",
+            "--spec",
+            str(spec),
+            "--draft",
+            str(draft),
+            "--answers",
+            str(answers),
+            "--review",
+            str(review),
+            "--config",
+            str(config),
+            "--output",
+            str(output),
+        ],
+    )
+    assert materialized.exit_code == 0 and materialized.stderr == ""
+    case = load_regression_case(output)
+    assert isinstance(case, TimeRegressionCase)
+    assert json.loads(materialized.stdout)["case_id"] == case.case_id
+    assert case.case_id.endswith("-time")
+    assert case.max_requests == 9
+    assert case.expected_delay_seconds == 0.5
 
 
 @pytest.mark.parametrize("label", ["positive", "negative"])
@@ -203,8 +397,57 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
 )
 def test_runner_reuses_the_reliability_classification(label, verdict, reason):
     runner = load_runner()
-    assert runner.classify(label, verdict.value, reason) == reliability_classify(
-        label, verdict, reason
+    assert runner.classify(
+        "sqli.boolean", label, verdict.value, reason
+    ) == reliability_classify(label, verdict, reason)
+
+
+@pytest.mark.parametrize(
+    ("label", "verdict", "reason", "expected"),
+    [
+        ("positive", "inconclusive", "timing_pattern_matched", "tp"),
+        ("negative", "inconclusive", "timing_pattern_matched", "fp"),
+        ("positive", "not_detected", "timing_pattern_not_matched", "fn"),
+        ("negative", "not_detected", "timing_pattern_not_matched", "tn"),
+        ("negative", "inconclusive", "unstable_timing", "non_decision"),
+    ],
+)
+def test_time_classification_uses_the_product_contract(
+    label, verdict, reason, expected
+):
+    runner = load_runner()
+    assert runner.classify("sqli.time", label, verdict, reason) == expected
+
+
+def test_aggregation_separates_boolean_and_time_results():
+    runner = load_runner()
+    records = expected_report()["records"]
+
+    assert runner.counts(records) == expected_report()["counts"]
+    assert set(runner.counts(records)) == {"sqli.boolean", "sqli.time"}
+
+
+def test_non_decisions_keep_the_manual_runner_exit_one(tmp_path, monkeypatch, capsys):
+    runner = load_runner()
+    report = expected_report()
+    monkeypatch.setattr(runner, "measure", lambda workspace, output: report)
+    monkeypatch.setattr(
+        runner.sys,
+        "argv",
+        [
+            "run_third_party_sqli_measurement.py",
+            "--workspace",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "report.json"),
+        ],
+    )
+
+    assert runner.unhealthy_count(report) == 3
+    assert runner.main() == 1
+    captured = capsys.readouterr()
+    assert "contains a false negative, false positive, or non-decision" in (
+        captured.err
     )
 
 
@@ -216,6 +459,190 @@ def test_reviewed_documentation_matches_the_report_contract():
     assert "n=2" not in rendered
     assert rendered.count("dsvw-blind-boolean-id") == 2
     assert rendered.count("dsvw-version-query") == 2
+
+
+def test_measurement_output_declares_schema_version_two():
+    runner = load_runner()
+    report = expected_report()
+
+    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 2
+    assert runner.validate_measurement_report(report) is report
+
+
+def test_zeroed_counts_cannot_hide_recorded_non_decisions():
+    runner = load_runner()
+    report = expected_report()
+    for check_counts in report["counts"].values():
+        for mode_counts in check_counts.values():
+            for field in mode_counts:
+                mode_counts[field] = 0
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"(?i)counts disagree with records for check type sqli.boolean, mode six_probe, field tp.*rerun the measurement",
+    ):
+        runner.unhealthy_count(report)
+
+
+def test_single_off_by_one_count_is_rejected():
+    runner = load_runner()
+    report = expected_report()
+    report["counts"]["sqli.time"]["nine_probe"]["tn"] += 1
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"counts disagree with records for check type sqli.time, mode nine_probe, field tn.*Rerun the measurement",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize("operation", ["extra", "missing"])
+def test_extra_or_missing_count_key_is_rejected(operation):
+    runner = load_runner()
+    report = expected_report()
+    counts = report["counts"]["sqli.boolean"]["six_probe"]
+    if operation == "extra":
+        counts["other"] = 0
+        field = "other"
+    else:
+        del counts["non_decision"]
+        field = "non_decision"
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"check type sqli.boolean, mode six_probe, field {field}.*rerun the measurement",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize("recompute_counts", [True, False])
+def test_removed_non_decisions_are_rejected_before_counts(recompute_counts):
+    runner = load_runner()
+    saved = expected_report()
+    saved["records"] = [
+        record
+        for record in saved["records"]
+        if record["classification"] != "non_decision"
+    ]
+    if recompute_counts:
+        saved["counts"] = runner.counts(saved["records"])
+    report = json.loads(json.dumps(saved))
+
+    for reader in (runner.validate_measurement_report, runner.unhealthy_count):
+        with pytest.raises(
+            runner.MeasurementError,
+            match=r"incomplete: missing endpoint_id 'dsvw-time-id', check_type 'sqli.time', mode 'nine_probe'.*full measurement run",
+        ):
+            reader(report)
+
+
+def test_duplicate_record_is_rejected_with_occurrence_count():
+    runner = load_runner()
+    report = expected_report()
+    report["records"].append(report["records"][0].copy())
+    report["counts"] = runner.counts(report["records"])
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"Duplicate.*endpoint_id 'dsvw-blind-boolean-id', check_type 'sqli.boolean', mode 'confirmation' appears 2 times.*full measurement run",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("endpoint_id", "undeclared-endpoint"), ("mode", "unknown")]
+)
+def test_undeclared_record_key_is_rejected(field, value):
+    runner = load_runner()
+    report = expected_report()
+    report["records"][0][field] = value
+    report["counts"] = runner.counts(report["records"])
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"Unexpected.*{field} '{value}'.*not in targets.toml.*full measurement run",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_report_keys_follow_reviewed_measurement_plan(monkeypatch, tmp_path):
+    runner = load_runner()
+    target, records = runner.load_declarations()
+    old_id = records[0]["id"]
+    new_id = "renamed-endpoint"
+    records[0]["id"] = new_id
+    monkeypatch.setattr(runner, "load_declarations", lambda: (target, records))
+    monkeypatch.setattr(runner, "CONFIGS", tmp_path)
+    for config in CONFIGS.glob("*.toml"):
+        (tmp_path / config.name.replace(old_id, new_id)).write_bytes(
+            config.read_bytes()
+        )
+
+    planned = list(runner.plan_measurements(records))
+    report = expected_report()
+    for record in report["records"]:
+        if record["endpoint_id"] == old_id:
+            record["endpoint_id"] = new_id
+    assert {entry.key for entry in planned} == {
+        (record["endpoint_id"], record["check_type"], record["mode"])
+        for record in report["records"]
+    }
+    assert runner.validate_measurement_report(report) is report
+    planned[0].config.unlink()
+    with pytest.raises(runner.MeasurementError, match="Missing reviewed configuration"):
+        runner.validate_measurement_report(report)
+
+
+def test_consistent_counts_and_health_match_records():
+    runner = load_runner()
+    report = expected_report()
+    unhealthy_records = [
+        record
+        for record in report["records"]
+        if record["classification"] in {"fn", "fp", "non_decision"}
+    ]
+
+    assert runner.validate_measurement_report(report) is report
+    assert runner.unhealthy_count(report) == len(unhealthy_records) == 3
+
+
+def test_v1_measurement_report_is_rejected_with_regeneration_guidance():
+    runner = load_runner()
+    report = expected_report()
+    report["schema_version"] = 1
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"found 1; this reader supports version 2.*Rerun the measurement",
+    ):
+        runner.render_summary(report)
+
+
+def test_v2_report_with_v1_shape_is_rejected():
+    runner = load_runner()
+    report = expected_report()
+    boolean_counts = report["counts"]["sqli.boolean"]
+    report["counts"] = boolean_counts
+    boolean_record = report["records"][0]
+    boolean_record["confirmation"] = boolean_record.pop("detail")
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"counts disagree with records.*count_group.*sqli.boolean and sqli.time.*rerun the measurement",
+    ):
+        runner.check_documented_summary(report)
+
+
+def test_v1_version_with_v2_shape_is_rejected_before_shape_parsing():
+    runner = load_runner()
+    report = expected_report()
+    report["schema_version"] = 1
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"found 1; this reader supports version 2.*Rerun the measurement",
+    ):
+        runner.unhealthy_count(report)
 
 
 def test_compose_is_internal_loopback_only_and_never_pulls():
@@ -312,6 +739,9 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
     assert first != second
     assert re.fullmatch(r"vintar-dsvw-[0-9a-f]{12}-0-six", first)
     assert len(first) < 64
+    assert runner.compose_project_name("0123456789ab", 2, "time") == (
+        "vintar-dsvw-0123456789ab-2-time"
+    )
 
     monkeypatch.setattr(
         runner,
@@ -323,7 +753,7 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
                 "license": "Unlicense",
                 "name": "DSVW",
             },
-            [{"id": "case"}],
+            [{"id": "dsvw-blind-boolean-id", "check_type": "sqli.boolean"}],
         ),
     )
     monkeypatch.setattr(runner, "load_document", lambda path: {})
@@ -342,15 +772,17 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
     def fake_bridge(upstream):
         yield "http://127.0.0.1:12345"
 
-    def fake_result(folder, origin, declaration, mode):
+    def fake_result(folder, origin, planned):
+        endpoint_id, check_type, mode = planned.key
         return {
             "actual_verdict": "inconclusive",
             "classification": "non_decision",
-            "confirmation": {"status": "not_eligible"},
-            "endpoint_id": "case",
+            "check_type": check_type,
+            "detail": {"status": "not_eligible"},
+            "endpoint_id": endpoint_id,
             "expected_label": "negative",
             "expected_verdict": "not_detected",
-            "mode": "six_probe" if mode == "six" else "confirmation",
+            "mode": mode,
             "reason_code": "unexpected_difference",
             "request_count": 6,
         }
@@ -366,13 +798,15 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    runner.measure(workspace, tmp_path / "report.json")
+    report = runner.measure(workspace, tmp_path / "report.json")
 
+    assert report["schema_version"] == 2
     assert started == [
         "vintar-dsvw-0123456789ab-0-six",
         "vintar-dsvw-0123456789ab-0-confirmation",
     ]
     assert stopped == started
+    assert runner.validate_measurement_report(report) is report
 
 
 def prepared_provenance():
