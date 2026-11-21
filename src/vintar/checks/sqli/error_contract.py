@@ -1,4 +1,9 @@
-"""Product result contract for bounded error-based SQLi analysis."""
+"""Product result contract for bounded error-based SQLi analysis.
+
+A displayed DBMS diagnostic is review evidence, not proof that input changed SQL
+execution. Signature matches therefore remain INCONCLUSIVE until a separately
+designed independent confirmation step exists.
+"""
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -48,7 +53,7 @@ ERROR_RESULT_RULES: Mapping[str, ErrorResultRule] = MappingProxyType(
     {
         "dbms_error_disclosed": _rule(
             ErrorAnalysisStatus.MATCHED,
-            Verdict.VULNERABLE,
+            Verdict.INCONCLUSIVE,
             requires_evidence=True,
         ),
         "dbms_error_not_observed": _rule(
@@ -85,7 +90,7 @@ ERROR_RESULT_RULES: Mapping[str, ErrorResultRule] = MappingProxyType(
 
 @dataclass(frozen=True, slots=True)
 class ErrorProductResult:
-    """Stable product verdict derived from one validated error analysis."""
+    """Stable, non-confirming product verdict from validated error analysis."""
 
     verdict: Verdict
     reason_code: str

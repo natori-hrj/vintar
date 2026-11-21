@@ -142,7 +142,7 @@ def test_each_signature_detects_dynamic_reproducible_probe_pages(signature_id):
     assert analysis.evidence.signature_id == signature_id
     assert analysis.evidence.dbms == ERROR_SIGNATURES[signature_id].dbms
     product = error_product_result(analysis)
-    assert product.verdict is Verdict.VULNERABLE
+    assert product.verdict is Verdict.INCONCLUSIVE
     assert product.reason_code == "dbms_error_disclosed"
     assert product.request_count == 4
     assert analysis.observations[0].body_digest != analysis.observations[2].body_digest
@@ -342,3 +342,13 @@ def test_result_rule_table_matches_every_analyzer_reason_and_product_verdict():
         )
         assert rule.requires_complete_four is True
         assert rule.requires_evidence == (analysis.evidence is not None)
+
+
+def test_no_error_signature_reason_can_confirm_a_vulnerability():
+    assert all(
+        rule.product_verdict is not Verdict.VULNERABLE
+        for rule in ERROR_RESULT_RULES.values()
+    ), (
+        "Displaying a DBMS diagnostic is not proof that input changed SQL execution. "
+        "A VULNERABLE verdict requires an independent confirmation step designed separately."
+    )

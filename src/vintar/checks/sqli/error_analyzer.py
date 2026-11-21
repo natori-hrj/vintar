@@ -91,7 +91,7 @@ class ErrorObservation:
 
 @dataclass(frozen=True, slots=True)
 class ErrorEvidence:
-    """Non-sensitive identity of one reproducible DBMS diagnostic."""
+    """Non-sensitive review evidence, not confirmation of changed SQL execution."""
 
     dbms: str
     signature_id: str
