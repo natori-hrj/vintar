@@ -1,11 +1,13 @@
 """Bounded operational behavior of the Error SQLi request runner."""
 
+from dataclasses import replace
+
 import httpx
 import pytest
 
 from vintar.checks.sqli.error_analyzer import ErrorAnalysis
 from vintar.checks.sqli.error_contract import ErrorAnalysisStatus
-from vintar.checks.sqli.error_runner import verify_error_based_sqli
+from vintar.checks.sqli.error_runner import ErrorRunReport, verify_error_based_sqli
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -55,6 +57,106 @@ def run(
         context=execution_context or context(),
         transport=httpx.MockTransport(handler),
     )
+
+
+def verification_inputs() -> dict[str, object]:
+    return {
+        "template": RequestTemplate(
+            method="GET",
+            url="http://example.test/search",
+            params=(("q", "Pets"),),
+        ),
+        "point": InjectionPoint(
+            location=InjectionLocation.QUERY,
+            name="q",
+            occurrence=0,
+            mode=InjectionMode.APPEND,
+        ),
+        "error_payload": "'",
+        "context": context(),
+        "transport": httpx.MockTransport(
+            lambda request: httpx.Response(200, content=b"stable")
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("template", object(), r"verification template"),
+        ("point", object(), r"injection point"),
+        ("context", object(), r"execution context"),
+        ("transport", object(), r"execution transport"),
+    ],
+)
+def test_runner_rejects_invalid_dependencies_before_http(field, value, message):
+    inputs = verification_inputs()
+    inputs[field] = value
+
+    with pytest.raises(TypeError, match=message):
+        verify_error_based_sqli(**inputs)
+
+
+def test_runner_rejects_probe_identical_to_baseline():
+    inputs = verification_inputs()
+    inputs["point"] = InjectionPoint(
+        location=InjectionLocation.QUERY,
+        name="q",
+        occurrence=0,
+        mode=InjectionMode.REPLACE,
+    )
+    inputs["error_payload"] = "Pets"
+
+    with pytest.raises(
+        ValueError,
+        match=r"probe matches the baseline.*injection target.*explicit payload",
+    ):
+        verify_error_based_sqli(**inputs)
+
+
+def test_runner_rejects_less_than_four_unused_requests():
+    inputs = verification_inputs()
+    inputs["context"] = ExecutionContext(
+        scope=context().scope,
+        budget=RequestBudget(3),
+        timeout=1.0,
+        rate_limiter=RateLimiter(100.0, _sleep=lambda _: None),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"four unused request slots.*fresh four-request budget",
+    ):
+        verify_error_based_sqli(**inputs)
+
+
+def test_error_run_report_rejects_invalid_accounting():
+    valid = run(lambda request: httpx.Response(200, content=b"stable"))
+    invalid = (
+        ({"analysis": object()}, TypeError, r"run analysis"),
+        ({"budget_used": True}, TypeError, r"request accounting"),
+        ({"transport_attempts": True}, TypeError, r"request accounting"),
+        ({"budget_used": 5}, ValueError, r"request accounting"),
+        ({"transport_attempts": 2}, ValueError, r"dispatch accounting"),
+    )
+    for changes, error, message in invalid:
+        with pytest.raises(error, match=message):
+            replace(valid, **changes)
+
+    attempts = 0
+
+    def fail_third(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 3:
+            raise httpx.ReadTimeout("bounded timeout")
+        return httpx.Response(200, content=b"stable")
+
+    partial = run(fail_third)
+    with pytest.raises(ValueError, match=r"budget usage.*recorded attempts"):
+        replace(partial, budget_used=4)
+
+    assert isinstance(valid, ErrorRunReport)
 
 
 @pytest.mark.parametrize(

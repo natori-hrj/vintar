@@ -1,8 +1,9 @@
 """Offline contracts for reviewed error-based SQLi signature analysis."""
 
 import ast
+import re
 import time
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,14 @@ import pytest
 from vintar.checks.sqli.error_analyzer import (
     ErrorAnalysis,
     ErrorAnalysisStatus,
+    ErrorEvidence,
+    ErrorMatch,
+    ErrorObservation,
     ErrorProbeFailure,
     ErrorProbeKind,
     analyze_error_responses,
     error_observation,
+    operational_stop_reason,
     validate_error_probe_payload,
 )
 from vintar.checks.sqli.error_contract import (
@@ -25,6 +30,7 @@ from vintar.checks.sqli.error_signatures import (
     ERROR_SIGNATURE_DBMS_NAMES,
     ERROR_SIGNATURE_IDS,
     ERROR_SIGNATURES,
+    ErrorSignature,
     get_error_signature,
 )
 from vintar.checks.sqli.models import Verdict
@@ -217,6 +223,51 @@ def test_signature_registry_stays_offline_and_data_only():
     )
 
 
+@pytest.mark.parametrize("value", ("", "Upper", "bad-id", 1))
+def test_error_signature_rejects_invalid_identifier(value):
+    with pytest.raises(ValueError, match=r"signature ID.*stable lowercase"):
+        ErrorSignature(
+            value,
+            "sqlite",
+            re.compile(rb"diagnostic", re.ASCII | re.IGNORECASE),
+        )
+
+
+@pytest.mark.parametrize("value", ("", "SQLite", "bad-dbms", 1))
+def test_error_signature_rejects_invalid_dbms(value):
+    with pytest.raises(ValueError, match=r"DBMS family.*stable lowercase"):
+        ErrorSignature(
+            "valid_id",
+            value,
+            re.compile(rb"diagnostic", re.ASCII | re.IGNORECASE),
+        )
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    (
+        "not-compiled",
+        re.compile(r"text", re.ASCII | re.IGNORECASE),
+    ),
+)
+def test_error_signature_requires_compiled_bytes_pattern(pattern):
+    with pytest.raises(TypeError, match=r"compiled bytes pattern"):
+        ErrorSignature("valid_id", "sqlite", pattern)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    (
+        re.compile(rb"diagnostic", re.ASCII),
+        re.compile(rb"diagnostic", re.IGNORECASE),
+        re.compile(rb"diagnostic"),
+    ),
+)
+def test_error_signature_requires_ascii_case_insensitive_flags(pattern):
+    with pytest.raises(ValueError, match=r"ASCII and IGNORECASE"):
+        ErrorSignature("valid_id", "sqlite", pattern)
+
+
 @pytest.mark.parametrize("signature_id", ERROR_SIGNATURE_IDS)
 def test_each_signature_detects_dynamic_reproducible_probe_pages(signature_id):
     diagnostic, _ = SIGNATURE_FIXTURES[signature_id]
@@ -300,6 +351,29 @@ def test_dynamic_signature_free_bodies_remain_not_detected():
     )
     assert analysis.reason_code == "dbms_error_not_observed"
     assert error_product_result(analysis).verdict is Verdict.NOT_DETECTED
+
+
+def test_baseline_signature_drift_is_unstable_error_signal():
+    diagnostic, _ = SIGNATURE_FIXTURES["sqlite_operational_syntax"]
+    analysis = analyze(
+        response(diagnostic),
+        response(b"probe one"),
+        response(b"baseline two"),
+        response(b"probe two"),
+    )
+
+    assert analysis.reason_code == "unstable_error_signal"
+
+
+def test_non_success_baseline_is_inconclusive():
+    analysis = analyze(
+        response(b"baseline one", status=500),
+        response(b"probe one"),
+        response(b"baseline two", status=500),
+        response(b"probe two"),
+    )
+
+    assert analysis.reason_code == "non_success_status"
 
 
 @pytest.mark.parametrize("pair", ["baseline", "probe"])
@@ -458,6 +532,173 @@ def test_not_detected_never_contains_an_operational_condition():
         response(b"probe two"),
     )
     assert error_product_result(stable).verdict is Verdict.NOT_DETECTED
+
+
+def valid_observation() -> ErrorObservation:
+    return error_observation(ErrorProbeKind.BASELINE, 1, response(b"stable"))
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "message"),
+    [
+        ({"kind": "baseline"}, TypeError, r"probe kind"),
+        ({"sequence": True}, ValueError, r"sequence.*positions 1 through 4"),
+        ({"sequence": 0}, ValueError, r"sequence.*positions 1 through 4"),
+        ({"status_code": True}, ValueError, r"HTTP status.*completed HTTP response"),
+        ({"status_code": 600}, ValueError, r"HTTP status.*completed HTTP response"),
+        ({"body_size": True}, ValueError, r"response size.*nonnegative"),
+        ({"body_size": -1}, ValueError, r"response size.*nonnegative"),
+        ({"body_digest": 1}, ValueError, r"digest.*lowercase SHA-256"),
+        ({"body_digest": "0" * 63}, ValueError, r"digest.*lowercase SHA-256"),
+        ({"body_digest": "g" * 64}, ValueError, r"digest.*lowercase SHA-256"),
+        ({"truncated": 0}, TypeError, r"truncation flag.*boolean"),
+        ({"matches": []}, TypeError, r"immutable match tuple"),
+        ({"matches": ("invalid",)}, TypeError, r"immutable match tuple"),
+    ],
+)
+def test_error_observation_rejects_invalid_fields_actionably(changes, error, message):
+    with pytest.raises(error, match=message):
+        replace(valid_observation(), **changes)
+
+
+def test_error_observation_requires_unique_sorted_matches():
+    sqlite = ErrorMatch("sqlite", "sqlite_operational_syntax")
+    mysql = ErrorMatch("mysql", "mysql_syntax_error_1064")
+
+    with pytest.raises(ValueError, match=r"unique sorted matches"):
+        replace(valid_observation(), matches=(sqlite, mysql, sqlite))
+
+
+@pytest.mark.parametrize(
+    ("dbms", "signature_id"),
+    (("sqlite", "unknown"), ("mysql", "sqlite_operational_syntax")),
+)
+def test_error_match_and_evidence_require_registry_pair(dbms, signature_id):
+    with pytest.raises(ValueError, match=r"signature ID and DBMS.*ERROR_SIGNATURES"):
+        ErrorEvidence(dbms, signature_id)
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "message"),
+    [
+        ({"kind": "baseline"}, TypeError, r"failed error probe kind"),
+        ({"sequence": True}, ValueError, r"failed error probe sequence.*positions"),
+        ({"sequence": 5}, ValueError, r"failed error probe sequence.*positions"),
+        (
+            {"reason_code": "unknown"},
+            ValueError,
+            r"operational error reason.*bounded runner",
+        ),
+        ({"reason_code": []}, ValueError, r"operational error reason.*bounded runner"),
+    ],
+)
+def test_error_probe_failure_rejects_invalid_fields_actionably(changes, error, message):
+    failure = ErrorProbeFailure(ErrorProbeKind.BASELINE, 1, "probe_timeout")
+    with pytest.raises(error, match=message):
+        replace(failure, **changes)
+
+
+def test_operational_stop_reason_rejects_unknown_attempt_type():
+    with pytest.raises(TypeError, match=r"recorded observation or probe failure"):
+        operational_stop_reason(object())
+
+
+def test_error_observation_requires_completed_http_result():
+    with pytest.raises(TypeError, match=r"completed HttpResult objects"):
+        error_observation(ErrorProbeKind.BASELINE, 1, object())
+
+
+@pytest.mark.parametrize("responses", ([], (response(b"one"),)))
+def test_analyzer_requires_exact_response_pairs(responses):
+    with pytest.raises(ValueError, match=r"exactly two completed responses"):
+        analyze_error_responses(
+            responses,
+            (response(b"probe one"), response(b"probe two")),
+            probe_payload="'",
+        )
+
+
+def test_error_analysis_rejects_invalid_types_and_unknown_reason():
+    analysis = analyze(
+        response(b"b1"), response(b"p1"), response(b"b2"), response(b"p2")
+    )
+    cases = (
+        ({"status": "not_matched"}, TypeError, r"analysis status"),
+        ({"reason_code": 1}, TypeError, r"analysis reason"),
+        ({"reason_code": "unknown"}, ValueError, r"reason.*ERROR_RESULT_RULES"),
+        ({"observations": []}, TypeError, r"analyzer-produced observations"),
+        ({"failures": []}, TypeError, r"runner-produced failure records"),
+    )
+    for changes, error, message in cases:
+        with pytest.raises(error, match=message):
+            replace(analysis, **changes)
+
+
+def test_error_analysis_rejects_order_status_evidence_and_relation_mismatches():
+    analysis = analyze(
+        response(b"b1"), response(b"p1"), response(b"b2"), response(b"p2")
+    )
+    with pytest.raises(ValueError, match=r"observation order.*baseline, probe"):
+        replace(
+            analysis,
+            observations=(
+                replace(analysis.observations[0], kind=ErrorProbeKind.PROBE),
+                *analysis.observations[1:],
+            ),
+        )
+    with pytest.raises(ValueError, match=r"reason, status, or request count"):
+        replace(analysis, status=ErrorAnalysisStatus.INCONCLUSIVE)
+    with pytest.raises(ValueError, match=r"evidence disagrees.*only for"):
+        replace(
+            analysis,
+            evidence=ErrorEvidence("sqlite", "sqlite_operational_syntax"),
+        )
+    altered = tuple(
+        replace(item, status_code=500) if item.kind is ErrorProbeKind.PROBE else item
+        for item in analysis.observations
+    )
+    with pytest.raises(ValueError, match=r"fields disagree.*analyze_error_responses"):
+        replace(analysis, observations=altered)
+
+
+def test_analytical_reason_rejects_terminal_operational_stop():
+    analysis = analyze(
+        response(b"b1"), response(b"p1"), response(b"b2"), response(b"p2")
+    )
+    stopped = (
+        *analysis.observations[:3],
+        replace(analysis.observations[3], truncated=True),
+    )
+    with pytest.raises(ValueError, match=r"Analytical.*operational stop.*derived"):
+        replace(analysis, observations=stopped)
+
+
+def test_operational_reason_requires_terminal_condition():
+    analysis = analyze(
+        response(b"b1"), response(b"p1"), response(b"b2"), response(b"p2")
+    )
+    with pytest.raises(ValueError, match=r"lacks its declared terminal condition"):
+        ErrorAnalysis(
+            status=ErrorAnalysisStatus.INCONCLUSIVE,
+            reason_code="truncated_response",
+            observations=analysis.observations,
+        )
+
+
+def test_product_mapping_rejects_raw_and_corrupted_analysis():
+    with pytest.raises(TypeError, match=r"requires an ErrorAnalysis.*raw fields"):
+        error_product_result(object())
+
+    corrupted = object.__new__(ErrorAnalysis)
+    object.__setattr__(corrupted, "status", ErrorAnalysisStatus.NOT_MATCHED)
+    object.__setattr__(corrupted, "reason_code", "dbms_error_not_observed")
+    object.__setattr__(corrupted, "observations", ())
+    object.__setattr__(corrupted, "failures", ())
+    object.__setattr__(corrupted, "evidence", None)
+    with pytest.raises(
+        ValueError, match=r"valid ErrorAnalysis.*analyze_error_responses"
+    ):
+        error_product_result(corrupted)
 
 
 def test_matching_is_bounded_to_the_reviewed_scan_limit():

@@ -16,7 +16,6 @@ from vintar.checks.sqli.error_analyzer import (
     validate_error_probe_payload,
 )
 from vintar.checks.sqli.error_contract import ErrorAnalysisStatus
-from vintar.core.budget import RequestBudgetExceededError
 from vintar.core.executor import ExecutionContext
 from vintar.core.injector import inject
 from vintar.core.models import HttpResult
@@ -38,18 +37,28 @@ class ErrorRunReport:
 
     def __post_init__(self) -> None:
         if type(self.analysis) is not ErrorAnalysis:
-            raise TypeError("Invalid error run analysis.")
+            raise TypeError(
+                "Invalid error run analysis. Supply an ErrorAnalysis produced by the analyzer or bounded runner."
+            )
         if (
             type(self.budget_used) is not int
             or type(self.transport_attempts) is not int
         ):
-            raise TypeError("Invalid error run request accounting.")
+            raise TypeError(
+                "Invalid error run request accounting. Supply integer budget and transport-attempt counts."
+            )
         if not 0 <= self.transport_attempts <= self.budget_used <= ERROR_REQUESTS:
-            raise ValueError("Invalid error run request accounting.")
+            raise ValueError(
+                "Invalid error run request accounting. Use counts from zero through the four-request budget, with transport attempts no greater than reserved requests."
+            )
         if self.budget_used != self.analysis.request_count:
-            raise ValueError("Error run budget usage must equal recorded attempts.")
+            raise ValueError(
+                "Error run budget usage must equal recorded attempts. Use the ExecutionContext budget delta for this run."
+            )
         if self.budget_used - self.transport_attempts > 1:
-            raise ValueError("Invalid error run dispatch accounting.")
+            raise ValueError(
+                "Invalid error run dispatch accounting. Record at most one terminal attempt that stopped before transport dispatch."
+            )
 
 
 def _operational_analysis(
@@ -75,13 +84,21 @@ def verify_error_based_sqli(
 ) -> ErrorRunReport:
     """Run baseline, probe, baseline, probe with no retries."""
     if type(template) is not RequestTemplate:
-        raise TypeError("Invalid error verification template.")
+        raise TypeError(
+            "Invalid error verification template. Supply a validated RequestTemplate."
+        )
     if type(point) is not InjectionPoint:
-        raise TypeError("Invalid error injection point.")
+        raise TypeError(
+            "Invalid error injection point. Supply a validated query InjectionPoint."
+        )
     if type(context) is not ExecutionContext:
-        raise TypeError("Invalid error execution context.")
+        raise TypeError(
+            "Invalid error execution context. Supply an ExecutionContext with trusted scope and budget."
+        )
     if transport is not None and not isinstance(transport, httpx.BaseTransport):
-        raise TypeError("Invalid error execution transport.")
+        raise TypeError(
+            "Invalid error execution transport. Supply an httpx BaseTransport or omit it."
+        )
     payload = validate_error_probe_payload(error_payload)
     probe = inject(template, point, payload)
     if probe == template:
@@ -115,14 +132,7 @@ def verify_error_based_sqli(
             transport_attempts=transport_attempts,
         )
 
-    def finish_operational(
-        attempt: ErrorObservation | ErrorProbeFailure,
-    ) -> ErrorRunReport:
-        reason_code = operational_stop_reason(attempt)
-        if reason_code is None:
-            raise RuntimeError(
-                "Error verification attempted to stop without an operational reason. Check the terminal response or runner failure instead."
-            )
+    def finish_operational(reason_code: str) -> ErrorRunReport:
         return finish(_operational_analysis(observations, failures, reason_code))
 
     for sequence, (kind, planned) in enumerate(plan, start=1):
@@ -137,28 +147,25 @@ def verify_error_based_sqli(
                 transport=transport,
                 on_dispatch=observe_dispatch,
             )
-        except RequestBudgetExceededError as exc:
-            raise RuntimeError(
-                "Error verification exhausted its preflighted budget. Check shared budget accounting instead of retrying."
-            ) from exc
         except RateLimitInterruptedError:
             failure = ErrorProbeFailure(kind, sequence, "probe_interrupted")
             failures.append(failure)
-            return finish_operational(failure)
+            return finish_operational(operational_stop_reason(failure))
         except httpx.TimeoutException:
             failure = ErrorProbeFailure(kind, sequence, "probe_timeout")
             failures.append(failure)
-            return finish_operational(failure)
+            return finish_operational(operational_stop_reason(failure))
         except httpx.RequestError:
             failure = ErrorProbeFailure(kind, sequence, "probe_failed")
             failures.append(failure)
-            return finish_operational(failure)
+            return finish_operational(operational_stop_reason(failure))
 
         observation = error_observation(kind, sequence, response)
         observations.append(observation)
         responses[kind].append(response)
-        if operational_stop_reason(observation) is not None:
-            return finish_operational(observation)
+        stop_reason = operational_stop_reason(observation)
+        if stop_reason is not None:
+            return finish_operational(stop_reason)
 
     analysis = analyze_error_responses(
         (

@@ -11,6 +11,7 @@ import hashlib
 import unicodedata
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import overload
 
 from vintar.checks.sqli.error_contract import (
     ERROR_RESULT_RULES,
@@ -64,7 +65,9 @@ class ErrorObservation:
 
     def __post_init__(self) -> None:
         if type(self.kind) is not ErrorProbeKind:
-            raise TypeError("Invalid error probe kind.")
+            raise TypeError(
+                "Invalid error probe kind. Use ErrorProbeKind.BASELINE or ErrorProbeKind.PROBE."
+            )
         if type(self.sequence) is not int or not 1 <= self.sequence <= 4:
             raise ValueError("Invalid error probe sequence. Use positions 1 through 4.")
         if type(self.status_code) is not int or not 100 <= self.status_code <= 599:
@@ -110,24 +113,36 @@ class ErrorProbeFailure:
 
     def __post_init__(self) -> None:
         if type(self.kind) is not ErrorProbeKind:
-            raise TypeError("Invalid failed error probe kind.")
+            raise TypeError(
+                "Invalid failed error probe kind. Use the ErrorProbeKind from the current request-plan position."
+            )
         if type(self.sequence) is not int or not 1 <= self.sequence <= 4:
             raise ValueError(
                 "Invalid failed error probe sequence. Use positions 1 through 4."
             )
-        if self.reason_code not in {
+        if type(self.reason_code) is not str or self.reason_code not in {
             "probe_timeout",
             "probe_failed",
             "probe_interrupted",
         }:
             raise ValueError(
-                "Invalid operational error reason. Use the bounded runner reason."
+                "Invalid operational error reason. Use probe_timeout, probe_failed, or probe_interrupted from the bounded runner."
             )
 
 
-def operational_stop_reason(
-    attempt: ErrorObservation | ErrorProbeFailure,
-) -> str | None:
+@overload
+def operational_stop_reason(attempt: ErrorProbeFailure) -> str: ...
+
+
+@overload
+def operational_stop_reason(attempt: ErrorObservation) -> str | None: ...
+
+
+@overload
+def operational_stop_reason(attempt: object) -> str | None: ...
+
+
+def operational_stop_reason(attempt: object) -> str | None:
     """Derive the single terminal reason, with batch-stop precedence."""
     if type(attempt) is ErrorProbeFailure:
         return attempt.reason_code
@@ -214,9 +229,13 @@ class ErrorAnalysis:
 
     def __post_init__(self) -> None:
         if type(self.status) is not ErrorAnalysisStatus:
-            raise TypeError("Invalid error analysis status.")
+            raise TypeError(
+                "Invalid error analysis status. Use the ErrorAnalysisStatus required by ERROR_RESULT_RULES."
+            )
         if type(self.reason_code) is not str:
-            raise TypeError("Invalid error analysis reason.")
+            raise TypeError(
+                "Invalid error analysis reason. Use a string reason declared in ERROR_RESULT_RULES."
+            )
         rule = ERROR_RESULT_RULES.get(self.reason_code)
         if rule is None:
             raise ValueError(
@@ -249,12 +268,6 @@ class ErrorAnalysis:
                 "Invalid error observation order. Use baseline, probe, baseline, probe."
             )
         implied_reason = _operational_sequence_stop(attempts)
-        if len(self.failures) > 1 or (
-            self.failures and self.failures[0].sequence != len(attempts)
-        ):
-            raise ValueError(
-                "Invalid operational error termination. Stop after the first failed attempt."
-            )
         request_count = len(attempts)
         if (
             self.status is not rule.analysis_status
