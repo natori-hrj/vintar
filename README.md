@@ -6,14 +6,12 @@ Vintar is a Python tool for running authorized web security regression checks in
 
 Vintar supports Boolean-, time-, and error-based SQL injection regression
 checks for `GET` query parameters. OpenAPI 3.0 and 3.1 `discover`,
-`review-draft`, and `materialize-case` support Boolean and Time cases and run
-offline; `verify` runs all three check types against an authorized, configured
-target. Reviewers explicitly select the `string-quoted` or `numeric` probe
-preset for Boolean cases that use presets.
-
-Error SQLi currently starts from a hand-written Schema v1 case and runs with
-`vintar verify`. OpenAPI materialization for Error cases is planned for a later
-phase; Vintar never infers an Error payload or DBMS from an OpenAPI type.
+`review-draft`, and `materialize-case` support Boolean, Time, and Error cases
+and run offline; `verify` runs all three check types against an authorized,
+configured target. Reviewers explicitly select the `string-quoted` or `numeric`
+probe preset for Boolean cases that use presets. Time and Error cases require
+explicit reviewed payloads; Vintar never infers a DBMS, SQL context, or payload
+from an OpenAPI type.
 
 Time cases require explicit reviewed delay and control payloads and a fixed
 nine-request budget. The operator controls the execution deadline with
@@ -351,6 +349,25 @@ expected_delay_seconds = 0.5
 max_requests = 9
 requests_per_second = 2.0
 timeout_seconds = 2.0
+```
+
+To materialize an Error case, select the check type and supply one explicit
+reviewed payload. Error presets are unavailable. The generated case ID adds the
+`-error` suffix; the reviewed base ID must therefore be at most 58 characters.
+
+```toml
+config_version = 1
+type = "sqli.error"
+input_id = "input-24a9c3cf0c3d01709121ac0d09079903"
+
+[probes]
+selection = "explicit"
+error_payload = "'"
+
+[limits]
+max_requests = 4
+requests_per_second = 2.0
+timeout_seconds = 5.0
 ```
 
 The `[target]` and `[injection]` tables are the same explicit tables shown
