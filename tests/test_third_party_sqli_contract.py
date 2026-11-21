@@ -180,6 +180,14 @@ def expected_report() -> dict[str, object]:
             },
         },
         "records": records,
+        "schema_version": 2,
+        "target": {
+            "archive_sha256": "archive",
+            "commit": "commit",
+            "image_id": "sha256:image",
+            "license": "Unlicense",
+            "name": "DSVW",
+        },
     }
 
 
@@ -453,6 +461,53 @@ def test_reviewed_documentation_matches_the_report_contract():
     assert rendered.count("dsvw-version-query") == 2
 
 
+def test_measurement_output_declares_schema_version_two():
+    runner = load_runner()
+    report = expected_report()
+
+    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 2
+    assert runner.validate_measurement_report(report) is report
+
+
+def test_v1_measurement_report_is_rejected_with_regeneration_guidance():
+    runner = load_runner()
+    report = expected_report()
+    report["schema_version"] = 1
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"found 1; this reader supports version 2.*Rerun the measurement",
+    ):
+        runner.render_summary(report)
+
+
+def test_v2_report_with_v1_shape_is_rejected():
+    runner = load_runner()
+    report = expected_report()
+    boolean_counts = report["counts"]["sqli.boolean"]
+    report["counts"] = boolean_counts
+    boolean_record = report["records"][0]
+    boolean_record["confirmation"] = boolean_record.pop("detail")
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"v2 counts.*sqli.boolean and sqli.time.*rerun the measurement",
+    ):
+        runner.check_documented_summary(report)
+
+
+def test_v1_version_with_v2_shape_is_rejected_before_shape_parsing():
+    runner = load_runner()
+    report = expected_report()
+    report["schema_version"] = 1
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"found 1; this reader supports version 2.*Rerun the measurement",
+    ):
+        runner.unhealthy_count(report)
+
+
 def test_compose_is_internal_loopback_only_and_never_pulls():
     compose = (THIRD_PARTY / "dsvw" / "compose.yaml").read_text()
     assert "pull_policy: never" in compose
@@ -605,8 +660,9 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    runner.measure(workspace, tmp_path / "report.json")
+    report = runner.measure(workspace, tmp_path / "report.json")
 
+    assert report["schema_version"] == 2
     assert started == [
         "vintar-dsvw-0123456789ab-0-six",
         "vintar-dsvw-0123456789ab-0-confirmation",

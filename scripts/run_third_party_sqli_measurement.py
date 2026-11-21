@@ -28,10 +28,74 @@ STATE_NAME = "prepared-target.json"
 SUMMARY_START = "<!-- third-party-measurement:start -->"
 SUMMARY_END = "<!-- third-party-measurement:end -->"
 CLASSIFICATIONS = ("tp", "fn", "fp", "tn", "non_decision")
+MEASUREMENT_SCHEMA_VERSION = 2
 
 
 class MeasurementError(RuntimeError):
     """An actionable third-party measurement failure."""
+
+
+def validate_measurement_report(report: object) -> dict[str, object]:
+    """Accept only the current manual measurement report contract."""
+    if type(report) is not dict:
+        raise MeasurementError(
+            "The third-party measurement report is not a JSON object. This reader supports schema version 2; rerun the measurement to regenerate the report."
+        )
+    version = report.get("schema_version")
+    if type(version) is not int or version != MEASUREMENT_SCHEMA_VERSION:
+        found = repr(version) if version is not None else "missing"
+        raise MeasurementError(
+            f"Unsupported third-party measurement report schema version: found {found}; this reader supports version 2. Rerun the measurement to regenerate the report."
+        )
+    if report.keys() != {"counts", "records", "schema_version", "target"}:
+        raise MeasurementError(
+            "Invalid third-party measurement report v2 top-level keys. Use counts grouped by check type, records with detail objects, schema_version, and target; rerun the measurement to regenerate the report."
+        )
+    records = report["records"]
+    counts_value = report["counts"]
+    target = report["target"]
+    if (
+        type(records) is not list
+        or type(counts_value) is not dict
+        or type(target) is not dict
+    ):
+        raise MeasurementError(
+            "Invalid third-party measurement report v2 structure. Use grouped counts, record objects, and target metadata; rerun the measurement to regenerate the report."
+        )
+    expected_modes = {
+        "sqli.boolean": {"six_probe", "confirmation"},
+        "sqli.time": {"nine_probe"},
+    }
+    if counts_value.keys() != expected_modes.keys():
+        raise MeasurementError(
+            "Invalid third-party measurement report v2 counts. Group modes under sqli.boolean and sqli.time; rerun the measurement to regenerate the report."
+        )
+    for check_type, modes in expected_modes.items():
+        type_counts = counts_value[check_type]
+        if type(type_counts) is not dict or type_counts.keys() != modes:
+            raise MeasurementError(
+                "Invalid third-party measurement report v2 mode counts. Use Boolean six_probe/confirmation and Time nine_probe groups; rerun the measurement to regenerate the report."
+            )
+        for values in type_counts.values():
+            if (
+                type(values) is not dict
+                or values.keys() != set(CLASSIFICATIONS)
+                or any(type(value) is not int or value < 0 for value in values.values())
+            ):
+                raise MeasurementError(
+                    "Invalid third-party measurement report v2 classification counts. Supply nonnegative TP, TN, FP, FN, and non-decision counts by mode; rerun the measurement to regenerate the report."
+                )
+    for record in records:
+        if (
+            type(record) is not dict
+            or record.get("check_type") not in expected_modes
+            or type(record.get("detail")) is not dict
+            or "confirmation" in record
+        ):
+            raise MeasurementError(
+                "Invalid third-party measurement report v2 record. Use check_type and the sibling detail object instead of the v1 confirmation field; rerun the measurement to regenerate the report."
+            )
+    return report
 
 
 class _BridgeServer(socketserver.ThreadingTCPServer):
@@ -638,6 +702,7 @@ def counts(
 
 def render_summary(report: dict[str, object]) -> str:
     """Render the exact reviewed Markdown block checked after every run."""
+    validate_measurement_report(report)
     records = report["records"]
     if type(records) is not list:
         raise MeasurementError(
@@ -713,6 +778,7 @@ def check_documented_summary(
 
 def write_report(path: Path, report: dict[str, object]) -> None:
     """Atomically save an actual report outside the repository."""
+    validate_measurement_report(report)
     resolved = path.resolve()
     if resolved == ROOT or ROOT in resolved.parents:
         raise MeasurementError(
@@ -758,7 +824,7 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
     report: dict[str, object] = {
         "counts": counts(records),
         "records": records,
-        "schema_version": 1,
+        "schema_version": MEASUREMENT_SCHEMA_VERSION,
         "target": {
             "archive_sha256": target["archive_sha256"],
             "commit": target["commit"],
@@ -774,6 +840,7 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
 
 def unhealthy_count(report: dict[str, object]) -> int:
     """Count every false decision or abstention across isolated check types."""
+    validate_measurement_report(report)
     report_counts = report.get("counts")
     if type(report_counts) is not dict:
         raise MeasurementError(

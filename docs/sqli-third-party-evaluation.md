@@ -39,6 +39,24 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
+The manual maintainer report uses schema version 2. Compared with version 1:
+
+- `schema_version` changes from `1` to `2`.
+- `counts["six_probe"]` moves to
+  `counts["sqli.boolean"]["six_probe"]`.
+- `counts["confirmation"]` moves to
+  `counts["sqli.boolean"]["confirmation"]`.
+- Time results are separate under `counts["sqli.time"]["nine_probe"]`; they are
+  never combined with Boolean counts.
+- Every record adds `check_type`.
+- A Boolean record's `confirmation` object moves to the common sibling key
+  `detail`. Time records also use `detail` for their timing status, reason, and
+  request count.
+
+Readers accept only version 2 and reject a report whose version or shape differs.
+Version 1 artifacts must be regenerated with the current measurement script; there
+is no silent fallback or dual-shape parsing.
+
 <!-- third-party-measurement:start -->
 | Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |
 | --- | --- | --- | --- | --- | --- | --- | ---: | --- |

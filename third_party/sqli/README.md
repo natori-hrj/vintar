@@ -27,6 +27,11 @@ classifications are aggregated separately. It saves the JSON report before
 reporting a false negative, false positive, or non-decision. Reports are local
 artifacts and must not be added to the repository.
 
+The saved manual measurement artifact uses schema version 2. The runner and its
+documentation drift check reject older or mixed-shape reports. If an existing
+artifact is version 1, rerun the measurement to produce version 2 rather than
+attempting an in-place conversion.
+
 Docker absence, an unavailable loopback binding, a changed archive, a changed local
 image, source-evidence drift, startup failure, or documentation drift produces an
 actionable error. The runner does not skip, retry, pull an image, or contact a remote
