@@ -315,12 +315,24 @@ def test_multiple_reproducible_signatures_are_ambiguous():
 
 def test_truncated_response_is_inconclusive():
     analysis = analyze(
-        response(b"baseline one", truncated=True),
+        response(b"baseline one"),
         response(b"probe one"),
         response(b"baseline two"),
-        response(b"probe two"),
+        response(b"probe two", truncated=True),
     )
     assert analysis.reason_code == "truncated_response"
+
+
+def test_rate_limit_precedes_truncation_in_pure_analysis():
+    analysis = analyze(
+        response(b"baseline one"),
+        response(b"probe one"),
+        response(b"baseline two"),
+        response(b"limited", status=429, truncated=True),
+    )
+
+    assert analysis.reason_code == "rate_limited"
+    assert analysis.request_count == 4
 
 
 def test_matching_is_bounded_to_the_reviewed_scan_limit():
@@ -373,10 +385,10 @@ def test_result_rule_table_matches_every_analyzer_reason_and_product_verdict():
             response(b"error two", status=500),
         ),
         analyze(
-            response(b"b1", truncated=True),
+            response(b"b1"),
             response(b"p1"),
             response(b"b2"),
-            response(b"p2"),
+            response(b"p2", truncated=True),
         ),
     )
     operational = tuple(

@@ -12,6 +12,7 @@ from vintar.checks.sqli.error_analyzer import (
     ErrorProbeKind,
     analyze_error_responses,
     error_observation,
+    operational_stop_reason,
     validate_error_probe_payload,
 )
 from vintar.checks.sqli.error_contract import ErrorAnalysisStatus
@@ -114,6 +115,16 @@ def verify_error_based_sqli(
             transport_attempts=transport_attempts,
         )
 
+    def finish_operational(
+        attempt: ErrorObservation | ErrorProbeFailure,
+    ) -> ErrorRunReport:
+        reason_code = operational_stop_reason(attempt)
+        if reason_code is None:
+            raise RuntimeError(
+                "Error verification attempted to stop without an operational reason. Check the terminal response or runner failure instead."
+            )
+        return finish(_operational_analysis(observations, failures, reason_code))
+
     for sequence, (kind, planned) in enumerate(plan, start=1):
 
         def observe_dispatch() -> None:
@@ -131,28 +142,23 @@ def verify_error_based_sqli(
                 "Error verification exhausted its preflighted budget. Check shared budget accounting instead of retrying."
             ) from exc
         except RateLimitInterruptedError:
-            failures.append(ErrorProbeFailure(kind, sequence, "probe_interrupted"))
-            return finish(
-                _operational_analysis(observations, failures, "probe_interrupted")
-            )
+            failure = ErrorProbeFailure(kind, sequence, "probe_interrupted")
+            failures.append(failure)
+            return finish_operational(failure)
         except httpx.TimeoutException:
-            failures.append(ErrorProbeFailure(kind, sequence, "probe_timeout"))
-            return finish(
-                _operational_analysis(observations, failures, "probe_timeout")
-            )
+            failure = ErrorProbeFailure(kind, sequence, "probe_timeout")
+            failures.append(failure)
+            return finish_operational(failure)
         except httpx.RequestError:
-            failures.append(ErrorProbeFailure(kind, sequence, "probe_failed"))
-            return finish(_operational_analysis(observations, failures, "probe_failed"))
+            failure = ErrorProbeFailure(kind, sequence, "probe_failed")
+            failures.append(failure)
+            return finish_operational(failure)
 
         observation = error_observation(kind, sequence, response)
         observations.append(observation)
         responses[kind].append(response)
-        if response.status_code == 429:
-            return finish(_operational_analysis(observations, failures, "rate_limited"))
-        if response.truncated:
-            return finish(
-                _operational_analysis(observations, failures, "truncated_response")
-            )
+        if operational_stop_reason(observation) is not None:
+            return finish_operational(observation)
 
     analysis = analyze_error_responses(
         (

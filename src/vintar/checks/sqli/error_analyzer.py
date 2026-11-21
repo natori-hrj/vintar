@@ -125,11 +125,29 @@ class ErrorProbeFailure:
             )
 
 
+def operational_stop_reason(
+    attempt: ErrorObservation | ErrorProbeFailure,
+) -> str | None:
+    """Derive the single terminal reason, with batch-stop precedence."""
+    if type(attempt) is ErrorProbeFailure:
+        return attempt.reason_code
+    if type(attempt) is not ErrorObservation:
+        raise TypeError(
+            "Invalid Error SQLi attempt. Supply a recorded observation or probe failure."
+        )
+    if attempt.status_code == 429:
+        return "rate_limited"
+    if attempt.truncated:
+        return "truncated_response"
+    return None
+
+
 def _expected_result(
     observations: tuple[ErrorObservation, ...],
 ) -> tuple[ErrorAnalysisStatus, str, ErrorEvidence | None]:
-    if any(item.truncated for item in observations):
-        return ErrorAnalysisStatus.INCONCLUSIVE, "truncated_response", None
+    terminal_reason = operational_stop_reason(observations[-1])
+    if terminal_reason is not None:
+        return ErrorAnalysisStatus.INCONCLUSIVE, terminal_reason, None
 
     baselines = (observations[0], observations[2])
     probes = (observations[1], observations[3])
@@ -235,27 +253,36 @@ class ErrorAnalysis:
             )
         expected: tuple[ErrorAnalysisStatus, str, ErrorEvidence | None]
         if self.failures:
+            implied_reason = operational_stop_reason(self.failures[0])
+            if implied_reason is None:
+                raise ValueError(
+                    "Operational probe failure lacks a declared reason. Record the runner's timeout, transport, or interruption reason instead."
+                )
             expected = (
                 ErrorAnalysisStatus.INCONCLUSIVE,
-                self.failures[0].reason_code,
+                implied_reason,
                 None,
             )
         elif not rule.requires_complete_four:
             terminal = self.observations[-1]
-            valid_completed_stop = (
-                self.reason_code == "rate_limited" and terminal.status_code == 429
-            ) or (
-                self.reason_code == "truncated_response"
-                and any(item.truncated for item in self.observations)
-                and (request_count == 4 or terminal.truncated)
-            )
-            if not valid_completed_stop:
+            implied_reason = operational_stop_reason(terminal)
+            if implied_reason is None:
                 raise ValueError(
                     "Operational error analysis lacks its declared terminal condition. Stop after HTTP 429 or truncation, or record the runner failure instead."
                 )
+            if self.reason_code != implied_reason:
+                precedence = (
+                    " HTTP 429 takes precedence over truncation because the batch stops on rate limits."
+                    if implied_reason == "rate_limited" and terminal.truncated
+                    else " Use the reason implied by the terminal attempt."
+                )
+                raise ValueError(
+                    "Declared operational reason disagrees with the terminal observation: "
+                    f"it implies {implied_reason}.{precedence}"
+                )
             expected = (
                 ErrorAnalysisStatus.INCONCLUSIVE,
-                self.reason_code,
+                implied_reason,
                 None,
             )
         else:
