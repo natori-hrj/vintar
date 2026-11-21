@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 
+from vintar.checks.sqli.error_analyzer import validate_error_probe_payload
 from vintar.checks.sqli.models import Verdict
 from vintar.checks.sqli.presets import BooleanConfirmationPreset
 from vintar.core.injector import inject
@@ -118,6 +119,10 @@ class TimeCaseValidationError(ValueError):
     """A redacted, actionable time-case validation error."""
 
 
+class ErrorCaseValidationError(ValueError):
+    """A redacted, actionable error-case validation error."""
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class TimeRegressionCase:
     """Validated inputs for one bounded time-based SQLi check."""
@@ -222,8 +227,81 @@ class TimeRegressionCase:
         )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class ErrorRegressionCase:
+    """Validated inputs for one bounded error-signature SQLi check."""
+
+    schema_version: int
+    case_id: str
+    check_type: str
+    template: RequestTemplate
+    point: InjectionPoint
+    error_payload: str
+    expected_verdict: Verdict
+    scope: ScopePolicy
+    max_requests: int
+    max_response_size: int
+    requests_per_second: float
+    timeout_seconds: float
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != CASE_VERSION:
+            raise ErrorCaseValidationError(
+                "Error SQLi cases require Schema v1. Set version = 1."
+            )
+        if type(self.check_type) is not str or self.check_type != "sqli.error":
+            raise ErrorCaseValidationError(
+                'Error SQLi cases require type = "sqli.error". Use that exact check type.'
+            )
+        try:
+            case_id = _string(self.case_id, max_length=64)
+        except ValueError:
+            raise ErrorCaseValidationError(
+                "Invalid error case identifier. Use 1-64 letters, digits, dots, underscores, or hyphens, beginning with a letter or digit."
+            ) from None
+        if _ID_PATTERN.fullmatch(case_id) is None:
+            raise ErrorCaseValidationError(
+                "Invalid error case identifier. Use 1-64 letters, digits, dots, underscores, or hyphens, beginning with a letter or digit."
+            )
+        if type(self.template) is not RequestTemplate:
+            raise TypeError("template must be a RequestTemplate.")
+        if type(self.point) is not InjectionPoint:
+            raise TypeError("point must be an InjectionPoint.")
+        if not isinstance(self.expected_verdict, Verdict):
+            raise TypeError("expected_verdict must be a Verdict.")
+        if type(self.scope) is not ScopePolicy:
+            raise TypeError("scope must be a ScopePolicy.")
+        try:
+            payload = validate_error_probe_payload(self.error_payload)
+        except (TypeError, ValueError):
+            raise ErrorCaseValidationError(
+                "Invalid error_payload. Supply an explicit nonempty reviewed string of at most 512 characters, without control characters or registered DBMS diagnostic text."
+            ) from None
+        if type(self.max_requests) is not int or self.max_requests != 4:
+            raise ErrorCaseValidationError(
+                "Error SQLi cases require exactly 4 requests. Set limits.max_requests = 4."
+            )
+        if (
+            type(self.max_response_size) is not int
+            or self.max_response_size != CASE_MAX_RESPONSE_SIZE
+        ):
+            raise ErrorCaseValidationError(
+                "Error SQLi Schema v1 cases require the fixed response-size limit. Use the Schema v1 loader default."
+            )
+        try:
+            rps = _positive_number(self.requests_per_second, 0.1, 10.0)
+            timeout = _positive_number(self.timeout_seconds, 0.1, 60.0)
+        except ValueError:
+            raise ErrorCaseValidationError(
+                "Error SQLi limits require numeric requests_per_second from 0.1 through 10.0 and timeout_seconds from 0.1 through 60.0, excluding booleans."
+            ) from None
+        object.__setattr__(self, "requests_per_second", rps)
+        object.__setattr__(self, "timeout_seconds", timeout)
+        _validate_error_plan(self.template, self.point, payload, self.scope)
+
+
 BooleanRegressionCase = RegressionCase
-AnyRegressionCase = RegressionCase | TimeRegressionCase
+AnyRegressionCase = RegressionCase | TimeRegressionCase | ErrorRegressionCase
 
 
 def _table(value: object, keys: set[str]) -> dict[str, object]:
@@ -367,6 +445,27 @@ def _validate_time_plan(
         ) from None
 
 
+def _validate_error_plan(
+    template: RequestTemplate,
+    point: InjectionPoint,
+    error_payload: str,
+    scope: ScopePolicy,
+) -> None:
+    """Preflight distinct baseline and error-probe templates without I/O."""
+    try:
+        validate_template(template)
+        validate_scope(template.url, scope)
+        probe = inject(template, point, error_payload)
+        if probe == template:
+            raise ValueError
+        validate_template(probe)
+        validate_scope(probe.url, scope)
+    except (TypeError, ValueError, httpx.HTTPError):
+        raise ErrorCaseValidationError(
+            "Error baseline and injected requests must differ and stay inside the allowed origin. Check the query injection target, occurrence, mode, and explicit error_payload."
+        ) from None
+
+
 class ReviewDraftError(ValueError):
     """A review draft requires human decisions before verification."""
 
@@ -424,7 +523,7 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
             raise ValueError("Invalid check type.")
 
         check_type = root["type"]
-        if check_type not in {"sqli.boolean", "sqli.time"}:
+        if check_type not in {"sqli.boolean", "sqli.time", "sqli.error"}:
             raise ValueError("Unsupported check type.")
 
         case_id = _string(
@@ -461,13 +560,17 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
                 {"true_payload", "false_payload", "confirmation"},
             ):
                 raise ValueError("Invalid regression case schema.")
-        elif probes.keys() != {
+        elif check_type == "sqli.time" and probes.keys() != {
             "delay_payload",
             "control_payload",
             "expected_delay_seconds",
         }:
             raise TimeCaseValidationError(
                 "Time probes require exactly delay_payload, control_payload, and expected_delay_seconds. Remove Boolean or unknown probe keys and supply the explicit time fields."
+            )
+        elif check_type == "sqli.error" and probes.keys() != {"error_payload"}:
+            raise ErrorCaseValidationError(
+                "Error probes require exactly error_payload. Remove Boolean, Time, preset, or unknown probe keys and supply one explicit reviewed payload."
             )
 
         limits = _table(
@@ -485,6 +588,10 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
                 raise TimeCaseValidationError(
                     "Time SQLi cases require exactly 9 requests. Set limits.max_requests = 9 using an integer, not a boolean."
                 )
+            if check_type == "sqli.error":
+                raise ErrorCaseValidationError(
+                    "Error SQLi cases require exactly 4 requests. Set limits.max_requests = 4 using an integer, not a boolean."
+                )
             raise ValueError("Invalid request budget.")
 
         try:
@@ -498,6 +605,10 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
                 raise TimeCaseValidationError(
                     "requests_per_second must be a number from 0.1 through 10.0, excluding booleans. Supply a bounded request rate."
                 ) from None
+            if check_type == "sqli.error":
+                raise ErrorCaseValidationError(
+                    "Error requests_per_second must be a number from 0.1 through 10.0, excluding booleans. Supply a bounded request rate."
+                ) from None
             raise
 
         try:
@@ -510,6 +621,10 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
             if check_type == "sqli.time":
                 raise TimeCaseValidationError(
                     "Time timeout_seconds must be numeric, excluding booleans. Supply at least expected_delay_seconds + 0.5 and no more than 8.0."
+                ) from None
+            if check_type == "sqli.error":
+                raise ErrorCaseValidationError(
+                    "Error timeout_seconds must be a number from 0.1 through 60.0, excluding booleans. Supply a bounded timeout."
                 ) from None
             raise
 
@@ -561,6 +676,10 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
                 raise TimeCaseValidationError(
                     'Time SQLi supports query injection only. Set injection.location = "query".'
                 )
+            if check_type == "sqli.error":
+                raise ErrorCaseValidationError(
+                    'Error SQLi supports query injection only. Set injection.location = "query".'
+                )
             raise ValueError("Unsupported injection location.")
 
         mode = injection["mode"]
@@ -569,6 +688,10 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
                 raise TimeCaseValidationError(
                     'Unsupported time injection mode. Use injection.mode = "append" or "replace".'
                 )
+            if check_type == "sqli.error":
+                raise ErrorCaseValidationError(
+                    'Unsupported error injection mode. Use injection.mode = "append" or "replace".'
+                )
             raise ValueError("Unsupported injection mode.")
 
         occurrence = injection["occurrence"]
@@ -576,6 +699,10 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
             if check_type == "sqli.time":
                 raise TimeCaseValidationError(
                     "Invalid time injection occurrence. Supply a non-negative integer, not a boolean."
+                )
+            if check_type == "sqli.error":
+                raise ErrorCaseValidationError(
+                    "Invalid error injection occurrence. Supply a non-negative integer, not a boolean."
                 )
             raise ValueError("Invalid occurrence.")
 
@@ -614,6 +741,28 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
                 delay_payload=delay_payload,
                 control_payload=control_payload,
                 expected_delay_seconds=expected_delay,
+                expected_verdict=expected_verdict,
+                scope=scope,
+                max_requests=max_requests,
+                max_response_size=CASE_MAX_RESPONSE_SIZE,
+                requests_per_second=rps,
+                timeout_seconds=timeout,
+            )
+
+        if check_type == "sqli.error":
+            try:
+                error_payload = validate_error_probe_payload(probes["error_payload"])
+            except (TypeError, ValueError):
+                raise ErrorCaseValidationError(
+                    "Invalid error_payload. Supply an explicit nonempty reviewed string of at most 512 characters, without control characters or registered DBMS diagnostic text."
+                ) from None
+            return ErrorRegressionCase(
+                schema_version=CASE_VERSION,
+                case_id=case_id,
+                check_type=check_type,
+                template=template,
+                point=point,
+                error_payload=error_payload,
                 expected_verdict=expected_verdict,
                 scope=scope,
                 max_requests=max_requests,
@@ -668,7 +817,7 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
             timeout_seconds=timeout,
         )
 
-    except (ReviewDraftError, TimeCaseValidationError):
+    except (ReviewDraftError, TimeCaseValidationError, ErrorCaseValidationError):
         raise
     except (
         TypeError,

@@ -58,6 +58,36 @@ RELEASED_OUTCOME_FIELDS = (
     "confirmation",
 )
 
+NEW_ERROR_EXPORTS = frozenset(
+    {
+        "ErrorRegressionCase",
+        "ErrorRegressionOutcome",
+    }
+)
+
+ERROR_CASE_FIELDS = (
+    "schema_version",
+    "case_id",
+    "check_type",
+    "template",
+    "point",
+    "error_payload",
+    "expected_verdict",
+    "scope",
+    "max_requests",
+    "max_response_size",
+    "requests_per_second",
+    "timeout_seconds",
+)
+
+ERROR_OUTCOME_FIELDS = (
+    "case_id",
+    "expected_verdict",
+    "error_run",
+    "expectation_match",
+    "status",
+)
+
 
 def test_released_regression_public_names_still_exist():
     assert RELEASED_REGRESSION_NAMES <= frozenset(regression.__all__)
@@ -121,3 +151,14 @@ def test_regression_outcome_remains_the_released_boolean_result_model():
 
 def test_top_level_vintar_public_surface_is_unchanged():
     assert callable(vintar.main)
+
+
+def test_error_case_and_outcome_are_additive_public_exports():
+    assert NEW_ERROR_EXPORTS <= frozenset(regression.__all__)
+    assert all(hasattr(regression, name) for name in NEW_ERROR_EXPORTS)
+    assert tuple(field.name for field in fields(regression.ErrorRegressionCase)) == (
+        ERROR_CASE_FIELDS
+    )
+    assert tuple(field.name for field in fields(regression.ErrorRegressionOutcome)) == (
+        ERROR_OUTCOME_FIELDS
+    )

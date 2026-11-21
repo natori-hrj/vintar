@@ -8,8 +8,12 @@ from pathlib import Path
 import pytest
 
 from vintar.checks.sqli.error_analyzer import (
+    ErrorAnalysis,
     ErrorAnalysisStatus,
+    ErrorProbeFailure,
+    ErrorProbeKind,
     analyze_error_responses,
+    error_observation,
     validate_error_probe_payload,
 )
 from vintar.checks.sqli.error_contract import (
@@ -331,16 +335,42 @@ def test_result_rule_table_matches_every_analyzer_reason_and_product_verdict():
             response(b"p2"),
         ),
     )
-    assert {analysis.reason_code for analysis in examples} == set(ERROR_RESULT_RULES)
-    for analysis in examples:
+    operational = tuple(
+        ErrorAnalysis(
+            status=ErrorAnalysisStatus.INCONCLUSIVE,
+            reason_code=reason,
+            observations=(),
+            failures=(ErrorProbeFailure(ErrorProbeKind.BASELINE, 1, reason),),
+        )
+        for reason in (
+            "probe_timeout",
+            "probe_failed",
+            "probe_interrupted",
+        )
+    )
+    rate_limited = ErrorAnalysis(
+        status=ErrorAnalysisStatus.INCONCLUSIVE,
+        reason_code="rate_limited",
+        observations=(
+            error_observation(
+                ErrorProbeKind.BASELINE,
+                1,
+                response(b"limited", status=429),
+            ),
+        ),
+    )
+    all_examples = (*examples, *operational, rate_limited)
+    assert {analysis.reason_code for analysis in all_examples} == set(
+        ERROR_RESULT_RULES
+    )
+    for analysis in all_examples:
         rule = ERROR_RESULT_RULES[analysis.reason_code]
         product = error_product_result(analysis)
         assert analysis.status is rule.analysis_status
         assert product.verdict is rule.product_verdict
-        assert (
-            rule.minimum_requests == rule.maximum_requests == product.request_count == 4
-        )
-        assert rule.requires_complete_four is True
+        assert rule.minimum_requests <= product.request_count <= rule.maximum_requests
+        if rule.requires_complete_four:
+            assert product.request_count == 4
         assert rule.requires_evidence == (analysis.evidence is not None)
 
 

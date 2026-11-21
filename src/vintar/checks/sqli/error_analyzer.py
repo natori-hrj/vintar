@@ -100,6 +100,31 @@ class ErrorEvidence:
         ErrorMatch(self.dbms, self.signature_id)
 
 
+@dataclass(frozen=True, slots=True)
+class ErrorProbeFailure:
+    """One terminal operational failure in the fixed request plan."""
+
+    kind: ErrorProbeKind
+    sequence: int
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not ErrorProbeKind:
+            raise TypeError("Invalid failed error probe kind.")
+        if type(self.sequence) is not int or not 1 <= self.sequence <= 4:
+            raise ValueError(
+                "Invalid failed error probe sequence. Use positions 1 through 4."
+            )
+        if self.reason_code not in {
+            "probe_timeout",
+            "probe_failed",
+            "probe_interrupted",
+        }:
+            raise ValueError(
+                "Invalid operational error reason. Use the bounded runner reason."
+            )
+
+
 def _expected_result(
     observations: tuple[ErrorObservation, ...],
 ) -> tuple[ErrorAnalysisStatus, str, ErrorEvidence | None]:
@@ -150,6 +175,7 @@ class ErrorAnalysis:
     status: ErrorAnalysisStatus
     reason_code: str
     observations: tuple[ErrorObservation, ...] = field(repr=False)
+    failures: tuple[ErrorProbeFailure, ...] = field(default=(), repr=False)
     evidence: ErrorEvidence | None = None
 
     def __post_init__(self) -> None:
@@ -168,13 +194,33 @@ class ErrorAnalysis:
             raise TypeError(
                 "Invalid error observations. Use analyzer-produced observations."
             )
-        if tuple(item.kind for item in self.observations) != ERROR_PROBE_ORDER or tuple(
-            item.sequence for item in self.observations
-        ) != (1, 2, 3, 4):
+        if type(self.failures) is not tuple or any(
+            type(item) is not ErrorProbeFailure for item in self.failures
+        ):
+            raise TypeError(
+                "Invalid error probe failures. Use runner-produced failure records."
+            )
+        attempts: tuple[ErrorObservation | ErrorProbeFailure, ...] = tuple(
+            sorted(
+                (*self.observations, *self.failures),
+                key=lambda item: item.sequence,
+            )
+        )
+        if tuple(item.kind for item in attempts) != ERROR_PROBE_ORDER[
+            : len(attempts)
+        ] or tuple(item.sequence for item in attempts) != tuple(
+            range(1, len(attempts) + 1)
+        ):
             raise ValueError(
                 "Invalid error observation order. Use baseline, probe, baseline, probe."
             )
-        request_count = len(self.observations)
+        if len(self.failures) > 1 or (
+            self.failures and self.failures[0].sequence != len(attempts)
+        ):
+            raise ValueError(
+                "Invalid operational error termination. Stop after the first failed attempt."
+            )
+        request_count = len(attempts)
         if (
             self.status is not rule.analysis_status
             or not rule.minimum_requests <= request_count <= rule.maximum_requests
@@ -187,11 +233,33 @@ class ErrorAnalysis:
             raise ValueError(
                 "Error analysis evidence disagrees with its reason. Supply evidence only for a reproducible disclosed signature."
             )
-        expected = _expected_result(self.observations)
+        expected: tuple[ErrorAnalysisStatus, str, ErrorEvidence | None]
+        if self.failures:
+            expected = (
+                ErrorAnalysisStatus.INCONCLUSIVE,
+                self.failures[0].reason_code,
+                None,
+            )
+        elif request_count < 4:
+            terminal = self.observations[-1]
+            reason = (
+                "rate_limited" if terminal.status_code == 429 else "truncated_response"
+            )
+            if not terminal.truncated and terminal.status_code != 429:
+                raise ValueError(
+                    "Incomplete error analysis lacks a terminal condition. Complete all four requests instead."
+                )
+            expected = (ErrorAnalysisStatus.INCONCLUSIVE, reason, None)
+        else:
+            expected = _expected_result(self.observations)
         if (self.status, self.reason_code, self.evidence) != expected:
             raise ValueError(
                 "Error analysis fields disagree with the recorded responses. Construct results through analyze_error_responses."
             )
+
+    @property
+    def request_count(self) -> int:
+        return len(self.observations) + len(self.failures)
 
 
 def _matches(body: bytes) -> tuple[ErrorMatch, ...]:
@@ -222,7 +290,7 @@ def validate_error_probe_payload(payload: object) -> str:
     return payload
 
 
-def _observation(
+def error_observation(
     kind: ErrorProbeKind,
     sequence: int,
     response: HttpResult,
@@ -265,7 +333,7 @@ def analyze_error_responses(
         probe_responses[1],
     )
     observations = tuple(
-        _observation(kind, sequence, response)
+        error_observation(kind, sequence, response)
         for sequence, (kind, response) in enumerate(
             zip(ERROR_PROBE_ORDER, ordered, strict=True), start=1
         )

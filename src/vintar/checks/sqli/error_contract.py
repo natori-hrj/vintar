@@ -37,14 +37,17 @@ def _rule(
     analysis_status: ErrorAnalysisStatus,
     product_verdict: Verdict,
     *,
+    minimum_requests: int = 4,
+    maximum_requests: int = 4,
+    requires_complete_four: bool = True,
     requires_evidence: bool = False,
 ) -> ErrorResultRule:
     return ErrorResultRule(
         analysis_status=analysis_status,
         product_verdict=product_verdict,
-        minimum_requests=4,
-        maximum_requests=4,
-        requires_complete_four=True,
+        minimum_requests=minimum_requests,
+        maximum_requests=maximum_requests,
+        requires_complete_four=requires_complete_four,
         requires_evidence=requires_evidence,
     )
 
@@ -83,6 +86,37 @@ ERROR_RESULT_RULES: Mapping[str, ErrorResultRule] = MappingProxyType(
         "truncated_response": _rule(
             ErrorAnalysisStatus.INCONCLUSIVE,
             Verdict.INCONCLUSIVE,
+            minimum_requests=1,
+            maximum_requests=4,
+            requires_complete_four=False,
+        ),
+        "probe_timeout": _rule(
+            ErrorAnalysisStatus.INCONCLUSIVE,
+            Verdict.INCONCLUSIVE,
+            minimum_requests=1,
+            maximum_requests=4,
+            requires_complete_four=False,
+        ),
+        "probe_failed": _rule(
+            ErrorAnalysisStatus.INCONCLUSIVE,
+            Verdict.INCONCLUSIVE,
+            minimum_requests=1,
+            maximum_requests=4,
+            requires_complete_four=False,
+        ),
+        "probe_interrupted": _rule(
+            ErrorAnalysisStatus.INCONCLUSIVE,
+            Verdict.INCONCLUSIVE,
+            minimum_requests=1,
+            maximum_requests=4,
+            requires_complete_four=False,
+        ),
+        "rate_limited": _rule(
+            ErrorAnalysisStatus.INCONCLUSIVE,
+            Verdict.INCONCLUSIVE,
+            minimum_requests=1,
+            maximum_requests=4,
+            requires_complete_four=False,
         ),
     }
 )
@@ -110,6 +144,7 @@ def error_product_result(analysis: object) -> ErrorProductResult:
             status=analysis.status,
             reason_code=analysis.reason_code,
             observations=analysis.observations,
+            failures=analysis.failures,
             evidence=analysis.evidence,
         )
     except (AttributeError, TypeError, ValueError, OverflowError):
@@ -120,5 +155,5 @@ def error_product_result(analysis: object) -> ErrorProductResult:
     return ErrorProductResult(
         verdict=rule.product_verdict,
         reason_code=validated.reason_code,
-        request_count=len(validated.observations),
+        request_count=validated.request_count,
     )

@@ -13,6 +13,7 @@ from vintar.regression import cases as cases_module
 from vintar.regression.cases import (
     CASE_MAX_RESPONSE_SIZE,
     MAX_CASE_BYTES,
+    ErrorRegressionCase,
     TimeRegressionCase,
     load_regression_case,
     parse_regression_case,
@@ -92,6 +93,35 @@ requests_per_second = 10.0
 timeout_seconds = 0.75
 """
 
+ERROR_CASE = """
+version = 1
+id = "product-search-error-sqli"
+type = "sqli.error"
+expected_verdict = "inconclusive"
+
+[target]
+url = "http://localhost:8000/products"
+allowed_origin = "http://localhost:8000"
+
+[[target.params]]
+name = "category"
+value = "Pets"
+
+[injection]
+location = "query"
+name = "category"
+occurrence = 0
+mode = "append"
+
+[probes]
+error_payload = "'"
+
+[limits]
+max_requests = 4
+requests_per_second = 10.0
+timeout_seconds = 1.0
+"""
+
 
 def test_valid_case_is_parsed():
     case = parse_regression_case(VALID_CASE)
@@ -136,6 +166,82 @@ def test_valid_time_case_is_parsed_at_lower_boundaries():
     assert case.expected_delay_seconds == 0.25
     assert case.max_requests == 9
     assert case.timeout_seconds == 0.75
+
+
+def test_valid_error_case_is_parsed():
+    case = parse_regression_case(ERROR_CASE)
+
+    assert isinstance(case, ErrorRegressionCase)
+    assert isinstance(case, AnyRegressionCase)
+    assert not isinstance(case, RegressionCase)
+    assert case.check_type == "sqli.error"
+    assert case.error_payload == "'"
+    assert case.max_requests == 4
+    assert case.max_response_size == CASE_MAX_RESPONSE_SIZE
+
+
+@pytest.mark.parametrize("value", ["3", "5", "true"])
+def test_error_case_requires_exact_four_request_budget(value):
+    source = ERROR_CASE.replace("max_requests = 4", f"max_requests = {value}")
+
+    with pytest.raises(ValueError, match=r"exactly 4.*max_requests = 4"):
+        parse_regression_case(source)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        'error_payload = ""',
+        f'error_payload = "{"x" * 513}"',
+        'error_payload = "bad\\u0001value"',
+        'error_payload = "sqlite3.OperationalError: unrecognized token:"',
+    ],
+)
+def test_error_case_rejects_invalid_or_signature_bearing_payload(replacement):
+    source = ERROR_CASE.replace('error_payload = "\'"', replacement)
+
+    with pytest.raises(
+        ValueError,
+        match=r"error_payload.*nonempty.*512.*registered DBMS diagnostic",
+    ):
+        parse_regression_case(source)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        'true_payload = "x"',
+        'delay_payload = "x"',
+        'error_payload = "\'"\npreset = "sqlite"',
+    ],
+)
+def test_error_case_rejects_mixed_or_unknown_probe_keys(replacement):
+    source = ERROR_CASE.replace('error_payload = "\'"', replacement)
+
+    with pytest.raises(
+        ValueError,
+        match=r"exactly error_payload.*Remove Boolean, Time, preset, or unknown",
+    ):
+        parse_regression_case(source)
+
+
+def test_error_case_rejects_non_query_injection():
+    source = ERROR_CASE.replace('location = "query"', 'location = "body"')
+
+    with pytest.raises(ValueError, match=r"query injection only.*location = \"query\""):
+        parse_regression_case(source)
+
+
+def test_error_case_requires_distinct_baseline_and_probe():
+    source = ERROR_CASE.replace('mode = "append"', 'mode = "replace"').replace(
+        'error_payload = "\'"', 'error_payload = "Pets"'
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"baseline and injected requests must differ.*injection target",
+    ):
+        parse_regression_case(source)
 
 
 def test_valid_time_case_is_parsed_at_upper_boundaries():

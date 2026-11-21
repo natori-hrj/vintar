@@ -11,6 +11,7 @@ from vintar.regression.cases import (
     MAX_CASE_BYTES,
     AnyRegressionCase,
     BooleanRegressionCase,
+    ErrorRegressionCase,
     RegressionCase,
     TimeRegressionCase,
     load_regression_case,
@@ -26,6 +27,7 @@ from vintar.regression.report import (
 )
 from vintar.regression.runner import (
     AnyRegressionOutcome,
+    ErrorRegressionOutcome,
     RegressionOutcome,
     RegressionStatus,
     TimeRegressionOutcome,
@@ -44,6 +46,8 @@ __all__ = [
     "AnyRegressionOutcome",
     "BooleanRegressionCase",
     "CIExitCode",
+    "ErrorRegressionCase",
+    "ErrorRegressionOutcome",
     "RegressionBatchResult",
     "RegressionCase",
     "RegressionOutcome",
