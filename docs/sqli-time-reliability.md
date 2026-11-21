@@ -385,6 +385,6 @@ Recommended next investigations:
 - Hard execution deadline enforcement
 - Independent vulnerability confirmation
 
-Production Verdict.VULNERABLE and CI security gates
-must remain disconnected from the experimental
-time-based classification.
+The shipped CI gate uses the
+[product result contract](sqli-time-contract.md#product-result-contract),
+which reports timing candidates as `INCONCLUSIVE` and never as `VULNERABLE`.
