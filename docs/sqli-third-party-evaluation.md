@@ -97,10 +97,12 @@ there is no silent fallback or dual-shape parsing.
 This Time run was measured on an AMD Ryzen AI 5 PRO 340 (12 logical CPUs) with
 Docker Engine 29.9.2 and Docker Compose 5.6.1. The positive completed all nine
 requests and was `INCONCLUSIVE / timing_pattern_matched`; the reflected negative
-was `NOT_DETECTED / timing_pattern_not_matched`. An earlier run on the same model
-produced `unstable_timing`, illustrating that this CPU-bound result can change with
-host performance or scheduling. Neither outcome is a reason to tune the fixed
-inputs or threshold.
+was `NOT_DETECTED / timing_pattern_not_matched`. An earlier run on the same model,
+under the pre-Phase 15-2 analyzer, produced `unstable_timing` solely because the
+CPU-bound Delay samples varied with host performance or scheduling. Phase 15-2 no
+longer treats Delay variance alone as instability; it requires the Delay samples
+to remain separated from the Control band. Neither historical outcome is a reason
+to tune the fixed inputs or threshold.
 
 The first Phase 12-1 run exposed a query-encoding integration defect. DSVW applies
 RFC 3986 percent decoding but does not convert `+` to a space. Vintar previously

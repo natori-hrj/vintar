@@ -248,7 +248,8 @@ The analysis uses:
 - Delay median
 - Median delay excess
 - Baseline and Control median difference
-- Within-category spans
+- Baseline and Control within-category spans
+- Delay span as reported evidence only
 - Baseline and Control endpoint drift
 - Minimum Delay versus maximum Control margin
 
@@ -271,7 +272,17 @@ The NOT_CONFIRMED rule requires:
 median_excess <= expected_delay_seconds * 0.25
 ```
 
-Stability failures take precedence over candidate classification.
+Baseline or Control stability failures take precedence over candidate
+classification. Delay span is not a stability signal: CPU-bound delay work can
+vary substantially with scheduling and host load while every Delay response
+remains separated from the Control band. The analyzer therefore reports Delay
+span as evidence but does not use it to produce `unstable_timing`.
+
+After the Baseline and Control stability checks, classification is
+relation-first. Both the median-excess threshold and the minimum Delay-to-Control
+margin must be met for CANDIDATE. If median excess reaches the candidate threshold
+but any Delay sample overlaps the required Control margin, the result is
+`INCONCLUSIVE / ambiguous_timing`.
 
 Intermediate or otherwise ambiguous measurements are INCONCLUSIVE.
 

@@ -407,7 +407,6 @@ def _classify_evidence(
     unstable = (
         _greater_than(evidence.baseline_span, stability_limit)
         or _greater_than(evidence.control_span, stability_limit)
-        or _greater_than(evidence.delay_span, stability_limit)
         or _greater_than(
             evidence.baseline_control_difference,
             stability_limit,

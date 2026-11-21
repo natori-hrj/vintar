@@ -165,13 +165,36 @@ def test_control_instability_is_inconclusive():
     assert result.reason_code == "unstable_timing"
 
 
-def test_delay_instability_is_inconclusive():
+@pytest.mark.parametrize(
+    "delay",
+    [
+        (1.20, 2.00, 3.10),
+        (3.10, 1.20, 2.00),
+        (2.00, 3.10, 1.20),
+    ],
+)
+def test_separated_delay_variance_stays_candidate(delay):
     result = run_analysis(
-        delay=(1.1, 1.8, 1.12),
+        delay=delay,
     )
 
-    assert result.status is TimeAnalysisStatus.INCONCLUSIVE
-    assert result.reason_code == "unstable_timing"
+    assert result.status is TimeAnalysisStatus.CANDIDATE
+    assert result.reason_code == "timing_pattern_matched"
+    assert result.evidence is not None
+    assert result.evidence.delay_span == pytest.approx(1.90)
+
+
+def test_loaded_cpu_bound_delay_shape_is_candidate():
+    result = run_analysis(
+        baseline=(0.010, 0.014, 0.019),
+        control=(0.012, 0.016, 0.021),
+        delay=(1.180, 1.795, 2.075),
+    )
+
+    assert result.status is TimeAnalysisStatus.CANDIDATE
+    assert result.reason_code == "timing_pattern_matched"
+    assert result.evidence is not None
+    assert result.evidence.delay_span == pytest.approx(0.895)
 
 
 def test_baseline_control_difference_is_inconclusive():
@@ -206,28 +229,53 @@ def test_intermediate_delay_is_ambiguous():
     assert result.evidence is not None
 
 
-def test_candidate_requires_non_overlapping_delay_margin():
+def test_delay_sample_inside_control_band_is_ambiguous():
     result = run_analysis(
         baseline=(0.10, 0.10, 0.10),
         control=(0.10, 0.10, 0.20),
-        delay=(0.69, 0.85, 0.85),
+        delay=(0.19, 0.85, 0.85),
     )
 
     assert result.evidence is not None
     assert result.evidence.median_excess == pytest.approx(0.75)
-    assert result.evidence.minimum_delay_margin == pytest.approx(0.49)
+    assert result.evidence.minimum_delay_margin == pytest.approx(-0.01)
     assert result.status is TimeAnalysisStatus.INCONCLUSIVE
     assert result.reason_code == "ambiguous_timing"
 
 
-def test_exact_candidate_threshold_is_inclusive():
+@pytest.mark.parametrize(
+    ("delay", "expected_status", "expected_reason"),
+    [
+        (
+            (0.60, 0.85, 0.85),
+            TimeAnalysisStatus.CANDIDATE,
+            "timing_pattern_matched",
+        ),
+        (
+            (0.599, 0.85, 0.85),
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "ambiguous_timing",
+        ),
+        (
+            (0.60, 0.849, 0.849),
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "ambiguous_timing",
+        ),
+    ],
+)
+def test_candidate_threshold_and_margin_boundaries(
+    delay,
+    expected_status,
+    expected_reason,
+):
     result = run_analysis(
         baseline=(0.10, 0.10, 0.10),
         control=(0.10, 0.10, 0.10),
-        delay=(0.60, 0.85, 0.85),
+        delay=delay,
     )
 
-    assert result.status is TimeAnalysisStatus.CANDIDATE
+    assert result.status is expected_status
+    assert result.reason_code == expected_reason
 
 
 def test_exact_no_delay_threshold_is_not_confirmed():
@@ -250,11 +298,23 @@ def test_exact_stability_threshold_is_not_unstable():
     assert result.status is TimeAnalysisStatus.CANDIDATE
 
 
-def test_instability_takes_priority_over_candidate_pattern():
+@pytest.mark.parametrize(
+    ("baseline", "control"),
+    [
+        ((0.10, 0.40, 0.12), (0.10, 0.11, 0.12)),
+        ((0.10, 0.11, 0.12), (0.10, 0.40, 0.12)),
+        ((0.10, 0.11, 0.50), (0.10, 0.11, 0.12)),
+        ((0.10, 0.11, 0.12), (0.10, 0.11, 0.50)),
+    ],
+)
+def test_baseline_or_control_instability_precedes_huge_delay(
+    baseline,
+    control,
+):
     result = run_analysis(
-        baseline=(0.10, 0.11, 0.12),
-        control=(0.10, 0.11, 0.12),
-        delay=(0.60, 1.10, 1.60),
+        baseline=baseline,
+        control=control,
+        delay=(2.00, 3.00, 4.00),
     )
 
     assert result.status is TimeAnalysisStatus.INCONCLUSIVE
