@@ -85,6 +85,50 @@ def analyze(
     )
 
 
+def operational_analysis(reason: str, request_count: int) -> ErrorAnalysis:
+    observations = tuple(
+        error_observation(
+            ErrorProbeKind(kind),
+            sequence,
+            response(
+                b"terminal" if sequence == request_count else b"completed",
+                status=(
+                    429
+                    if reason == "rate_limited" and sequence == request_count
+                    else 200
+                ),
+                truncated=(
+                    reason == "truncated_response" and sequence == request_count
+                ),
+            ),
+        )
+        for sequence, kind in enumerate(
+            ("baseline", "probe", "baseline", "probe")[:request_count],
+            start=1,
+        )
+        if reason in {"rate_limited", "truncated_response"} or sequence < request_count
+    )
+    failures = (
+        ()
+        if reason in {"rate_limited", "truncated_response"}
+        else (
+            ErrorProbeFailure(
+                ErrorProbeKind(
+                    ("baseline", "probe", "baseline", "probe")[request_count - 1]
+                ),
+                request_count,
+                reason,
+            ),
+        )
+    )
+    return ErrorAnalysis(
+        status=ErrorAnalysisStatus.INCONCLUSIVE,
+        reason_code=reason,
+        observations=observations,
+        failures=failures,
+    )
+
+
 def test_signature_registry_is_exact_sorted_and_immutable():
     assert ERROR_SIGNATURE_IDS == tuple(sorted(SIGNATURE_FIXTURES))
     assert ERROR_SIGNATURE_DBMS_NAMES == (
@@ -336,29 +380,14 @@ def test_result_rule_table_matches_every_analyzer_reason_and_product_verdict():
         ),
     )
     operational = tuple(
-        ErrorAnalysis(
-            status=ErrorAnalysisStatus.INCONCLUSIVE,
-            reason_code=reason,
-            observations=(),
-            failures=(ErrorProbeFailure(ErrorProbeKind.BASELINE, 1, reason),),
-        )
+        operational_analysis(reason, 1)
         for reason in (
             "probe_timeout",
             "probe_failed",
             "probe_interrupted",
         )
     )
-    rate_limited = ErrorAnalysis(
-        status=ErrorAnalysisStatus.INCONCLUSIVE,
-        reason_code="rate_limited",
-        observations=(
-            error_observation(
-                ErrorProbeKind.BASELINE,
-                1,
-                response(b"limited", status=429),
-            ),
-        ),
-    )
+    rate_limited = operational_analysis("rate_limited", 1)
     all_examples = (*examples, *operational, rate_limited)
     assert {analysis.reason_code for analysis in all_examples} == set(
         ERROR_RESULT_RULES
@@ -372,6 +401,54 @@ def test_result_rule_table_matches_every_analyzer_reason_and_product_verdict():
         if rule.requires_complete_four:
             assert product.request_count == 4
         assert rule.requires_evidence == (analysis.evidence is not None)
+
+
+@pytest.mark.parametrize("reason", ERROR_RESULT_RULES)
+def test_every_result_rule_accepts_its_request_count_boundaries(reason):
+    rule = ERROR_RESULT_RULES[reason]
+    if rule.requires_complete_four:
+        sqlite, _ = SIGNATURE_FIXTURES["sqlite_operational_syntax"]
+        mysql, _ = SIGNATURE_FIXTURES["mysql_syntax_error_1064"]
+        examples = {
+            "dbms_error_disclosed": analyze(
+                response(b"b1"), response(sqlite), response(b"b2"), response(sqlite)
+            ),
+            "dbms_error_not_observed": analyze(
+                response(b"b1"), response(b"p1"), response(b"b2"), response(b"p2")
+            ),
+            "baseline_dbms_error": analyze(
+                response(sqlite), response(b"p1"), response(sqlite), response(b"p2")
+            ),
+            "unstable_response": analyze(
+                response(b"b1"),
+                response(b"p1"),
+                response(b"b2", status=201),
+                response(b"p2"),
+            ),
+            "unstable_error_signal": analyze(
+                response(b"b1"), response(sqlite), response(b"b2"), response(b"p2")
+            ),
+            "ambiguous_dbms_error": analyze(
+                response(b"b1"),
+                response(sqlite + mysql),
+                response(b"b2"),
+                response(sqlite + mysql),
+            ),
+            "non_success_status": analyze(
+                response(b"b1"),
+                response(b"p1", status=500),
+                response(b"b2"),
+                response(b"p2", status=500),
+            ),
+        }
+        analysis = examples[reason]
+        assert analysis.request_count == rule.minimum_requests == rule.maximum_requests
+        return
+
+    for boundary in {rule.minimum_requests, rule.maximum_requests}:
+        analysis = operational_analysis(reason, boundary)
+        assert analysis.reason_code == reason
+        assert analysis.request_count == boundary
 
 
 def test_no_error_signature_reason_can_confirm_a_vulnerability():

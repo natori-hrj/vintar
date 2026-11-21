@@ -240,16 +240,24 @@ class ErrorAnalysis:
                 self.failures[0].reason_code,
                 None,
             )
-        elif request_count < 4:
+        elif not rule.requires_complete_four:
             terminal = self.observations[-1]
-            reason = (
-                "rate_limited" if terminal.status_code == 429 else "truncated_response"
+            valid_completed_stop = (
+                self.reason_code == "rate_limited" and terminal.status_code == 429
+            ) or (
+                self.reason_code == "truncated_response"
+                and any(item.truncated for item in self.observations)
+                and (request_count == 4 or terminal.truncated)
             )
-            if not terminal.truncated and terminal.status_code != 429:
+            if not valid_completed_stop:
                 raise ValueError(
-                    "Incomplete error analysis lacks a terminal condition. Complete all four requests instead."
+                    "Operational error analysis lacks its declared terminal condition. Stop after HTTP 429 or truncation, or record the runner failure instead."
                 )
-            expected = (ErrorAnalysisStatus.INCONCLUSIVE, reason, None)
+            expected = (
+                ErrorAnalysisStatus.INCONCLUSIVE,
+                self.reason_code,
+                None,
+            )
         else:
             expected = _expected_result(self.observations)
         if (self.status, self.reason_code, self.evidence) != expected:

@@ -114,3 +114,71 @@ def test_interrupted_rate_wait_stops_before_second_transport_dispatch():
     assert report.analysis.request_count == 2
     assert report.budget_used == 2
     assert report.transport_attempts == 1
+
+
+def test_fourth_http_rate_limit_is_a_four_attempt_operational_result():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429 if calls == 4 else 200, content=b"response")
+
+    report = run(handler)
+
+    assert report.analysis.reason_code == "rate_limited"
+    assert report.analysis.request_count == 4
+    assert report.budget_used == 4
+    assert report.transport_attempts == 4
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "rate_limited",
+        "truncated_response",
+        "probe_timeout",
+        "probe_failed",
+        "probe_interrupted",
+    ),
+)
+@pytest.mark.parametrize("position", (1, 2, 3, 4))
+def test_each_operational_reason_is_valid_at_every_attempt(reason, position):
+    dispatches = 0
+    execution_context = context(max_response_size=4)
+
+    if reason == "probe_interrupted":
+        waits = 0
+
+        def interrupted_sleep(delay: float) -> None:
+            nonlocal waits
+            waits += 1
+            if waits == position:
+                raise RuntimeError("simulated operator interruption")
+
+        limiter = RateLimiter(1.0, _clock=lambda: 0.0, _sleep=interrupted_sleep)
+        limiter.acquire()
+        execution_context = context(max_response_size=4, rate_limiter=limiter)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal dispatches
+        dispatches += 1
+        if dispatches == position:
+            if reason == "probe_timeout":
+                raise httpx.ReadTimeout("bounded timeout")
+            if reason == "probe_failed":
+                raise httpx.ConnectError("bounded failure")
+            if reason == "rate_limited":
+                return httpx.Response(429, content=b"stop")
+            if reason == "truncated_response":
+                return httpx.Response(200, content=b"too long")
+        return httpx.Response(200, content=b"ok")
+
+    report = run(handler, execution_context=execution_context)
+
+    assert report.analysis.reason_code == reason
+    assert report.analysis.request_count == position
+    assert report.budget_used == position
+    assert report.transport_attempts == (
+        position - 1 if reason == "probe_interrupted" else position
+    )
