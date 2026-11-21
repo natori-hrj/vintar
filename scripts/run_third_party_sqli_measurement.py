@@ -63,38 +63,91 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             "Invalid third-party measurement report v2 structure. Use grouped counts, record objects, and target metadata; rerun the measurement to regenerate the report."
         )
     expected_modes = {
-        "sqli.boolean": {"six_probe", "confirmation"},
-        "sqli.time": {"nine_probe"},
+        "sqli.boolean": ("six_probe", "confirmation"),
+        "sqli.time": ("nine_probe",),
     }
     if counts_value.keys() != expected_modes.keys():
+        changed = min(counts_value.keys() ^ expected_modes.keys(), key=str)
         raise MeasurementError(
-            "Invalid third-party measurement report v2 counts. Group modes under sqli.boolean and sqli.time; rerun the measurement to regenerate the report."
+            f"Measurement counts disagree with records for check type {changed}, mode all, field count_group. Include exactly sqli.boolean and sqli.time counts and rerun the measurement to regenerate the report."
         )
     for check_type, modes in expected_modes.items():
         type_counts = counts_value[check_type]
-        if type(type_counts) is not dict or type_counts.keys() != modes:
+        if type(type_counts) is not dict:
             raise MeasurementError(
-                "Invalid third-party measurement report v2 mode counts. Use Boolean six_probe/confirmation and Time nine_probe groups; rerun the measurement to regenerate the report."
+                f"Measurement counts disagree with records for check type {check_type}, mode all, field mode_group. Supply a mode-count object and rerun the measurement to regenerate the report."
             )
-        for values in type_counts.values():
-            if (
-                type(values) is not dict
-                or values.keys() != set(CLASSIFICATIONS)
-                or any(type(value) is not int or value < 0 for value in values.values())
-            ):
+        if set(type_counts) != set(modes):
+            changed = min(set(type_counts) ^ set(modes), key=str)
+            raise MeasurementError(
+                f"Measurement counts disagree with records for check type {check_type}, mode {changed}, field mode_group. Use exactly the supported mode keys and rerun the measurement to regenerate the report."
+            )
+        for mode, values in type_counts.items():
+            if type(values) is not dict:
                 raise MeasurementError(
-                    "Invalid third-party measurement report v2 classification counts. Supply nonnegative TP, TN, FP, FN, and non-decision counts by mode; rerun the measurement to regenerate the report."
+                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field classification_group. Supply classification counts and rerun the measurement to regenerate the report."
                 )
+            if values.keys() != set(CLASSIFICATIONS):
+                changed = min(values.keys() ^ set(CLASSIFICATIONS), key=str)
+                raise MeasurementError(
+                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field {changed}. Use exactly TP, TN, FP, FN, and non-decision counts and rerun the measurement to regenerate the report."
+                )
+            if any(type(value) is not int or value < 0 for value in values.values()):
+                raise MeasurementError(
+                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field value. Supply nonnegative integer counts and rerun the measurement to regenerate the report."
+                )
+    recomputed = {
+        check_type: {
+            mode: {classification: 0 for classification in CLASSIFICATIONS}
+            for mode in modes
+        }
+        for check_type, modes in expected_modes.items()
+    }
+    record_totals = {
+        check_type: {mode: 0 for mode in modes}
+        for check_type, modes in expected_modes.items()
+    }
     for record in records:
         if (
             type(record) is not dict
-            or record.get("check_type") not in expected_modes
             or type(record.get("detail")) is not dict
             or "confirmation" in record
         ):
             raise MeasurementError(
                 "Invalid third-party measurement report v2 record. Use check_type and the sibling detail object instead of the v1 confirmation field; rerun the measurement to regenerate the report."
             )
+        check_type = record.get("check_type")
+        mode = record.get("mode")
+        classification = record.get("classification")
+        if (
+            type(check_type) is not str
+            or check_type not in expected_modes
+            or type(mode) is not str
+            or mode not in expected_modes[check_type]
+        ):
+            raise MeasurementError(
+                f"Measurement records have no matching count entry for check type {check_type}, mode {mode}, field mode. Use a declared check-type/mode pair and rerun the measurement to regenerate the report."
+            )
+        if classification not in CLASSIFICATIONS:
+            raise MeasurementError(
+                f"Measurement records have no matching count entry for check type {check_type}, mode {mode}, field classification. Use TP, TN, FP, FN, or non-decision and rerun the measurement to regenerate the report."
+            )
+        recomputed[check_type][mode][classification] += 1
+        record_totals[check_type][mode] += 1
+    for check_type, modes in expected_modes.items():
+        for mode in modes:
+            if record_totals[check_type][mode] == 0:
+                raise MeasurementError(
+                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field records. Remove count keys with no matching records or rerun the measurement to regenerate the report."
+                )
+            for field in CLASSIFICATIONS:
+                if (
+                    counts_value[check_type][mode][field]
+                    != recomputed[check_type][mode][field]
+                ):
+                    raise MeasurementError(
+                        f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field {field}. Rerun the measurement to regenerate the report."
+                    )
     return report
 
 
@@ -841,30 +894,17 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
 def unhealthy_count(report: dict[str, object]) -> int:
     """Count every false decision or abstention across isolated check types."""
     validate_measurement_report(report)
-    report_counts = report.get("counts")
-    if type(report_counts) is not dict:
+    records = report["records"]
+    if type(records) is not list:
         raise MeasurementError(
-            "The measurement report has invalid counts. Check the runner before treating the result as healthy."
+            "The validated measurement report lost its records. Rerun the measurement to regenerate the report."
         )
-    total = 0
-    for check_counts in report_counts.values():
-        if type(check_counts) is not dict:
-            raise MeasurementError(
-                "The measurement report has invalid check-type counts. Check the runner before treating the result as healthy."
-            )
-        for values in check_counts.values():
-            if type(values) is not dict:
-                raise MeasurementError(
-                    "The measurement report has invalid mode counts. Check the runner before treating the result as healthy."
-                )
-            for key in ("fn", "fp", "non_decision"):
-                value = values.get(key)
-                if type(value) is not int or value < 0:
-                    raise MeasurementError(
-                        "The measurement report has invalid classification counts. Check the runner before treating the result as healthy."
-                    )
-                total += value
-    return total
+    return sum(
+        1
+        for record in records
+        if type(record) is dict
+        and record.get("classification") in {"fn", "fp", "non_decision"}
+    )
 
 
 def main() -> int:

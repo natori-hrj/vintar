@@ -469,6 +469,91 @@ def test_measurement_output_declares_schema_version_two():
     assert runner.validate_measurement_report(report) is report
 
 
+def test_zeroed_counts_cannot_hide_recorded_non_decisions():
+    runner = load_runner()
+    report = expected_report()
+    for check_counts in report["counts"].values():
+        for mode_counts in check_counts.values():
+            for field in mode_counts:
+                mode_counts[field] = 0
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"(?i)counts disagree with records for check type sqli.boolean, mode six_probe, field tp.*rerun the measurement",
+    ):
+        runner.unhealthy_count(report)
+
+
+def test_single_off_by_one_count_is_rejected():
+    runner = load_runner()
+    report = expected_report()
+    report["counts"]["sqli.time"]["nine_probe"]["tn"] += 1
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"counts disagree with records for check type sqli.time, mode nine_probe, field tn.*Rerun the measurement",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize("operation", ["extra", "missing"])
+def test_extra_or_missing_count_key_is_rejected(operation):
+    runner = load_runner()
+    report = expected_report()
+    counts = report["counts"]["sqli.boolean"]["six_probe"]
+    if operation == "extra":
+        counts["other"] = 0
+        field = "other"
+    else:
+        del counts["non_decision"]
+        field = "non_decision"
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"check type sqli.boolean, mode six_probe, field {field}.*rerun the measurement",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_count_mode_without_matching_records_is_rejected():
+    runner = load_runner()
+    report = expected_report()
+    report["records"] = [
+        record for record in report["records"] if record["check_type"] != "sqli.time"
+    ]
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"check type sqli.time, mode nine_probe, field records.*no matching records.*rerun the measurement",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_record_without_matching_count_mode_is_rejected():
+    runner = load_runner()
+    report = expected_report()
+    report["records"][0]["mode"] = "unknown"
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"no matching count entry for check type sqli.boolean, mode unknown, field mode.*rerun the measurement",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_consistent_counts_and_health_match_records():
+    runner = load_runner()
+    report = expected_report()
+    unhealthy_records = [
+        record
+        for record in report["records"]
+        if record["classification"] in {"fn", "fp", "non_decision"}
+    ]
+
+    assert runner.validate_measurement_report(report) is report
+    assert runner.unhealthy_count(report) == len(unhealthy_records) == 3
+
+
 def test_v1_measurement_report_is_rejected_with_regeneration_guidance():
     runner = load_runner()
     report = expected_report()
@@ -491,7 +576,7 @@ def test_v2_report_with_v1_shape_is_rejected():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"v2 counts.*sqli.boolean and sqli.time.*rerun the measurement",
+        match=r"counts disagree with records.*count_group.*sqli.boolean and sqli.time.*rerun the measurement",
     ):
         runner.check_documented_summary(report)
 
