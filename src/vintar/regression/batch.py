@@ -9,6 +9,7 @@ from vintar.core.budget import RequestBudget
 from vintar.core.rate_limit import RateLimiter
 from vintar.core.scope import ScopePolicy
 from vintar.regression.cases import AnyRegressionCase
+from vintar.regression.errors import BatchRequestBudgetError
 from vintar.regression.runner import (
     _CASE_ID_PATTERN,
     AnyRegressionOutcome,
@@ -20,10 +21,6 @@ from vintar.regression.runner import (
 )
 
 MAX_BATCH_CASES = 128
-
-
-class BatchRequestBudgetError(ValueError):
-    """The trusted aggregate budget cannot cover the selected cases."""
 
 
 @dataclass(frozen=True, slots=True, repr=False)

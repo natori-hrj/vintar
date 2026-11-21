@@ -78,6 +78,35 @@ requests_per_second = 10.0
 timeout_seconds = 3.0
 """
 
+ERROR_CASE_SOURCE = """
+version = 1
+id = "error-case"
+type = "sqli.error"
+expected_verdict = "inconclusive"
+
+[target]
+url = "http://placeholder.invalid:8000/products"
+allowed_origin = "http://placeholder.invalid:8000"
+
+[[target.params]]
+name = "category"
+value = "Pets"
+
+[injection]
+location = "query"
+name = "category"
+occurrence = 0
+mode = "append"
+
+[probes]
+error_payload = "'"
+
+[limits]
+max_requests = 4
+requests_per_second = 10.0
+timeout_seconds = 3.0
+"""
+
 ENV = {
     "VINTAR_TARGET_ORIGIN": "http://127.0.0.1:8765",
     "VINTAR_ALLOWED_ORIGIN": "http://127.0.0.1:8765",
@@ -118,6 +147,30 @@ def write_time_case(directory: Path) -> Path:
     file = directory / "time-case.toml"
     file.write_text(TIME_CASE_SOURCE, encoding="utf-8")
     return file
+
+
+def write_error_case(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    file = directory / "error-case.toml"
+    file.write_text(ERROR_CASE_SOURCE, encoding="utf-8")
+    return file
+
+
+def test_error_case_is_rejected_before_http_until_report_support(tmp_path, monkeypatch):
+    case = write_error_case(tmp_path)
+
+    def unexpected_batch(*args, **kwargs):
+        raise AssertionError("Error cases must stop before batch execution")
+
+    monkeypatch.setattr(regression_cli, "run_regression_batch", unexpected_batch)
+    result = cli.invoke(app, args_for(case, max_requests=4), env=ENV)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "Error: Error SQLi cases are not yet supported in CI batch reports. "
+        "Run the Python single-case API for development, or wait for Phase 14-3 report support.\n"
+    )
 
 
 def args_for(

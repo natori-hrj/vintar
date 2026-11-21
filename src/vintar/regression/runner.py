@@ -12,6 +12,12 @@ from vintar.checks.sqli.confirmation_runner import (
     ConfirmationStatus,
     verify_boolean_sqli_with_confirmation,
 )
+from vintar.checks.sqli.error_contract import error_product_result
+from vintar.checks.sqli.error_runner import (
+    ERROR_REQUESTS,
+    ErrorRunReport,
+    verify_error_based_sqli,
+)
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
 from vintar.checks.sqli.time_contract import time_product_result
@@ -26,8 +32,10 @@ from vintar.core.template import validate_template
 from vintar.regression.cases import (
     AnyRegressionCase,
     BooleanRegressionCase,
+    ErrorRegressionCase,
     TimeRegressionCase,
 )
+from vintar.regression.errors import BatchRequestBudgetError
 
 _CASE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
@@ -222,7 +230,52 @@ class TimeRegressionOutcome:
         return time_product_result(self.time_run.analysis).request_count
 
 
-AnyRegressionOutcome = RegressionOutcome | TimeRegressionOutcome
+@dataclass(frozen=True, slots=True, repr=False)
+class ErrorRegressionOutcome:
+    """Observed result for one error-signature regression case."""
+
+    case_id: str
+    expected_verdict: Verdict
+    error_run: ErrorRunReport
+    expectation_match: bool
+    status: RegressionStatus
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.case_id) is not str
+            or _CASE_ID_PATTERN.fullmatch(self.case_id) is None
+        ):
+            raise ValueError("Invalid case identifier.")
+        if not isinstance(self.expected_verdict, Verdict):
+            raise TypeError("Invalid expected verdict.")
+        if type(self.error_run) is not ErrorRunReport:
+            raise TypeError("Invalid error run result.")
+        if type(self.expectation_match) is not bool:
+            raise TypeError("Invalid expectation match.")
+        if not isinstance(self.status, RegressionStatus):
+            raise TypeError("Invalid regression status.")
+        match = self.final_verdict is self.expected_verdict
+        if self.expectation_match != match:
+            raise ValueError("Inconsistent expectation match.")
+        if self.status is not _classify(self.final_verdict, match):
+            raise ValueError("Inconsistent regression status.")
+
+    @property
+    def final_verdict(self) -> Verdict:
+        return error_product_result(self.error_run.analysis).verdict
+
+    @property
+    def final_reason_code(self) -> str:
+        return error_product_result(self.error_run.analysis).reason_code
+
+    @property
+    def request_count(self) -> int:
+        return error_product_result(self.error_run.analysis).request_count
+
+
+AnyRegressionOutcome = (
+    RegressionOutcome | TimeRegressionOutcome | ErrorRegressionOutcome
+)
 
 
 def _classify(
@@ -265,11 +318,16 @@ def _effective_scope(
             inject(case.template, case.point, case.true_payload),
             inject(case.template, case.point, case.false_payload),
         ]
-    else:
+    elif isinstance(case, TimeRegressionCase):
         templates = [
             case.template,
             inject(case.template, case.point, case.control_payload),
             inject(case.template, case.point, case.delay_payload),
+        ]
+    else:
+        templates = [
+            case.template,
+            inject(case.template, case.point, case.error_payload),
         ]
     if isinstance(case, BooleanRegressionCase) and case.confirmation is not None:
         templates.extend(
@@ -284,11 +342,7 @@ def _effective_scope(
             )
         )
 
-    if (
-        templates[0] == templates[1]
-        or templates[0] == templates[2]
-        or templates[1] == templates[2]
-    ):
+    if len(set(templates)) != len(templates):
         raise ValueError("Invalid regression probe plan.")
 
     for template in templates:
@@ -328,6 +382,11 @@ def _run_with_resources(
     if isinstance(case, TimeRegressionCase) and budget.remaining < TIME_REQUESTS:
         raise TimeRequestBudgetError(
             "Trusted batch request budget has fewer than nine requests remaining for the time case. Increase policy.max_requests to cover every selected case, or run fewer cases."
+        )
+
+    if isinstance(case, ErrorRegressionCase) and budget.remaining < ERROR_REQUESTS:
+        raise BatchRequestBudgetError(
+            "Trusted batch request budget has fewer than four requests remaining for the error case. Increase policy.max_requests to cover every selected case, or run fewer cases."
         )
 
     execution_budget = (
@@ -370,6 +429,24 @@ def _run_with_resources(
             time_run=time_run,
             expectation_match=expectation_match,
             status=_classify(product.verdict, expectation_match),
+        )
+
+    if isinstance(case, ErrorRegressionCase):
+        error_run = verify_error_based_sqli(
+            template=case.template,
+            point=case.point,
+            error_payload=case.error_payload,
+            context=context,
+            transport=transport,
+        )
+        error_product = error_product_result(error_run.analysis)
+        expectation_match = error_product.verdict is case.expected_verdict
+        return ErrorRegressionOutcome(
+            case_id=case.case_id,
+            expected_verdict=case.expected_verdict,
+            error_run=error_run,
+            expectation_match=expectation_match,
+            status=_classify(error_product.verdict, expectation_match),
         )
 
     confirmation: ConfirmationOutcome | None = None
