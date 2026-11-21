@@ -297,6 +297,33 @@ With `selection = "explicit"`, the reviewer may either omit confirmation and use
 `max_requests = 18`. Explicit payloads are never matched to or completed from a
 preset.
 
+To materialize an explicit time-based case, add `type = "sqli.time"` beside
+`config_version` and use the Time probe shape:
+
+```toml
+config_version = 1
+type = "sqli.time"
+input_id = "input-24a9c3cf0c3d01709121ac0d09079903"
+
+[probes]
+selection = "explicit"
+delay_payload = "reviewed-delay-expression"
+control_payload = "reviewed-control-expression"
+expected_delay_seconds = 0.5
+
+[limits]
+max_requests = 9
+requests_per_second = 2.0
+timeout_seconds = 2.0
+```
+
+The `[target]` and `[injection]` tables are the same explicit tables shown
+above, and Time injection is query-only. Time presets are not available:
+reviewers must provide both payloads explicitly. Materialization never infers a
+DBMS, SQL context, or Time payload from an OpenAPI parameter type. Time limits
+use the Schema v1 bounds documented in the
+[Time SQLi contract](docs/sqli-time-contract.md#schema-v1-time-case).
+
 ## Other CLI Commands
 
 - `vintar --help` lists commands, and `vintar version` prints the current project version.

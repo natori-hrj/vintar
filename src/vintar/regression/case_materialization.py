@@ -14,7 +14,11 @@ from vintar.checks.sqli.presets import (
     get_boolean_confirmation_preset,
     get_boolean_probe_preset,
 )
-from vintar.regression.cases import load_regression_case
+from vintar.regression.cases import (
+    TimeRegressionCase,
+    load_regression_case,
+    parse_regression_case,
+)
 from vintar.regression.discovery import JSON, DiscoveryError, Source, _read, _read_json
 from vintar.regression.discovery_review import (
     ReviewMaterial,
@@ -118,18 +122,31 @@ def _load_config(path: Path) -> dict[str, object]:
         raise CaseMaterializationError(
             "Cannot read materialization config. Supply bounded UTF-8 TOML with the documented version 1 fields."
         ) from exc
-    return _table(
-        parsed,
-        {
-            "config_version",
-            "input_id",
-            "target",
-            "injection",
-            "probes",
-            "limits",
-        },
-        "Invalid materialization config keys. Use only config_version, input_id, target, injection, probes, and limits.",
+    message = (
+        "Invalid materialization config keys. Use only config_version, optional "
+        "type, input_id, target, injection, probes, and limits."
     )
+    result = _mapping(parsed, message)
+    required = {
+        "config_version",
+        "input_id",
+        "target",
+        "injection",
+        "probes",
+        "limits",
+    }
+    if result.keys() not in (required, required | {"type"}):
+        raise CaseMaterializationError(message)
+    return result
+
+
+def _materialization_type(config: dict[str, object]) -> str:
+    value = config.get("type", "sqli.boolean")
+    if type(value) is not str or value not in {"sqli.boolean", "sqli.time"}:
+        raise CaseMaterializationError(
+            'Invalid materialization type. Omit type for Boolean SQLi, or set type = "sqli.time" for an explicit time case.'
+        )
+    return value
 
 
 def _load_review(path: Path) -> dict[str, JSON]:
@@ -232,6 +249,39 @@ def _probe_payloads(
     return preset.true_payload, preset.false_payload, confirmation
 
 
+def _time_probe_payloads(value: object) -> tuple[str, str, float]:
+    message = (
+        'Invalid time probes config. Use selection = "explicit" with only '
+        "delay_payload, control_payload, and expected_delay_seconds. Time presets "
+        "are not available; write explicit reviewed payloads instead."
+    )
+    probes = _mapping(value, message)
+    selection = probes.get("selection")
+    if type(selection) is not str or selection != "explicit":
+        raise CaseMaterializationError(
+            'Unsupported time probe selection. Use selection = "explicit" and supply delay_payload, control_payload, and expected_delay_seconds; presets are not available for time cases.'
+        )
+    if probes.keys() != {
+        "selection",
+        "delay_payload",
+        "control_payload",
+        "expected_delay_seconds",
+    }:
+        raise CaseMaterializationError(message)
+    delay_payload = _text(probes["delay_payload"], "time delay payload")
+    control_payload = _text(probes["control_payload"], "time control payload")
+    if delay_payload == control_payload:
+        raise CaseMaterializationError(
+            "Time probe payloads are identical. Supply distinct explicit delay_payload and control_payload values in --config."
+        )
+    expected_delay = _number(probes["expected_delay_seconds"], "expected_delay_seconds")
+    if not 0.25 <= expected_delay <= 2.0:
+        raise CaseMaterializationError(
+            "Invalid expected_delay_seconds. Supply a number from 0.25 through 2.0, excluding booleans."
+        )
+    return delay_payload, control_payload, float(expected_delay)
+
+
 def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
     version = config["config_version"]
     if type(version) is not int or version != 1:
@@ -254,7 +304,7 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
         {"location", "name", "occurrence", "mode"},
         "Invalid injection config. Supply location, name, occurrence, and mode.",
     )
-    true_payload, false_payload, confirmation = _probe_payloads(config["probes"])
+    check_type = _materialization_type(config)
     limits = _table(
         config["limits"],
         {"max_requests", "requests_per_second", "timeout_seconds"},
@@ -296,13 +346,38 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
     url = _text(target["url"], "target URL")
     allowed_origin = _text(target["allowed_origin"], "allowed origin")
     max_requests = limits["max_requests"]
-    expected_requests = 18 if confirmation is not None else 6
-    if type(max_requests) is not int or max_requests != expected_requests:
-        raise CaseMaterializationError(
-            f"Invalid request limit. Set max_requests = {expected_requests} for this confirmation configuration."
-        )
     requests_per_second = _number(limits["requests_per_second"], "requests_per_second")
     timeout_seconds = _number(limits["timeout_seconds"], "timeout_seconds")
+    confirmation: BooleanConfirmationPreset | None = None
+    true_payload = ""
+    false_payload = ""
+    delay_payload = ""
+    control_payload = ""
+    expected_delay = 0.0
+    if check_type == "sqli.time":
+        delay_payload, control_payload, expected_delay = _time_probe_payloads(
+            config["probes"]
+        )
+        expected_requests = 9
+        if type(max_requests) is not int or max_requests != expected_requests:
+            raise CaseMaterializationError(
+                "Invalid time request limit. Set max_requests = 9 for Schema v1 time cases."
+            )
+        if not 0.1 <= requests_per_second <= 10.0:
+            raise CaseMaterializationError(
+                "Invalid time requests_per_second. Supply a number from 0.1 through 10.0, excluding booleans."
+            )
+        if not expected_delay + 0.5 <= timeout_seconds <= 8.0:
+            raise CaseMaterializationError(
+                "Invalid time timeout_seconds. Set it to at least expected_delay_seconds + 0.5 and no more than 8.0."
+            )
+    else:
+        true_payload, false_payload, confirmation = _probe_payloads(config["probes"])
+        expected_requests = 18 if confirmation is not None else 6
+        if type(max_requests) is not int or max_requests != expected_requests:
+            raise CaseMaterializationError(
+                f"Invalid request limit. Set max_requests = {expected_requests} for this confirmation configuration."
+            )
     expected = material.report["expected_verdict"]
     if not isinstance(expected, str):
         raise CaseMaterializationError(
@@ -312,7 +387,7 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
     lines = [
         "version = 1",
         f"id = {_toml_string(material.case_id)}",
-        'type = "sqli.boolean"',
+        f"type = {_toml_string(check_type)}",
         f"expected_verdict = {_toml_string(expected)}",
         "",
         "[target]",
@@ -340,10 +415,26 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
             f"mode = {_toml_string(mode)}",
             "",
             "[probes]",
-            f"true_payload = {_toml_string(true_payload)}",
-            f"false_payload = {_toml_string(false_payload)}",
         )
     )
+    if check_type == "sqli.time":
+        lines.extend(
+            (
+                f"delay_payload = {_toml_string(delay_payload)}",
+                f"control_payload = {_toml_string(control_payload)}",
+                (
+                    "expected_delay_seconds = "
+                    f"{json.dumps(expected_delay, allow_nan=False)}"
+                ),
+            )
+        )
+    else:
+        lines.extend(
+            (
+                f"true_payload = {_toml_string(true_payload)}",
+                f"false_payload = {_toml_string(false_payload)}",
+            )
+        )
     if confirmation is not None:
         lines.extend(
             (
@@ -390,6 +481,24 @@ def materialize_case(
         )
     loaded_config = _load_config(config)
     content = _render(material, loaded_config)
+    check_type = _materialization_type(loaded_config)
+    if check_type == "sqli.time":
+        try:
+            loaded = parse_regression_case(content.decode("utf-8"))
+        except (UnicodeError, ValueError) as exc:
+            raise CaseMaterializationError(
+                "Generated time case failed Schema v1 validation. Check the explicit target, query injection, time probes, and nine-request limits in --config."
+            ) from exc
+        if not isinstance(loaded, TimeRegressionCase):
+            raise CaseMaterializationError(
+                'Generated case type is inconsistent. Set type = "sqli.time" and supply only time probe fields.'
+            )
+        return MaterializedCase(
+            content=content,
+            case_id=material.case_id,
+            confirmation_configured=False,
+            max_requests=loaded.max_requests,
+        )
     _, _, confirmation = _probe_payloads(loaded_config["probes"])
     return MaterializedCase(
         content=content,

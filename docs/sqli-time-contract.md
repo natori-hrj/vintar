@@ -161,6 +161,36 @@ All case and trusted-policy checks finish before the first HTTP request.
 Diagnostics explain which setting is invalid and what bound or field to use,
 without echoing URLs, payloads, or baseline values.
 
+### OpenAPI materialization config
+
+The offline `materialize-case` pipeline uses the existing reviewed OpenAPI
+draft and answers. To request a Time case, the target config explicitly adds
+`type = "sqli.time"` and supplies:
+
+```toml
+config_version = 1
+type = "sqli.time"
+input_id = "input-reviewed-id"
+
+[probes]
+selection = "explicit"
+delay_payload = "reviewed-delay-expression"
+control_payload = "reviewed-control-expression"
+expected_delay_seconds = 0.5
+
+[limits]
+max_requests = 9
+requests_per_second = 2.0
+timeout_seconds = 2.0
+```
+
+The config also requires the same explicit `[target]` and query `[injection]`
+tables as Boolean materialization. `selection = "preset"` is not supported for
+Time cases; reviewers must write both reviewed payloads explicitly. OpenAPI
+scalar types do not select a DBMS, SQL context, payload, or check type. The
+generated TOML expands only the Schema v1 probe fields and is validated by the
+unchanged case loader before any destination file is written.
+
 ## Timing Observation
 
 Each TimeObservation records:
