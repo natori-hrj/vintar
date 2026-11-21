@@ -2,7 +2,8 @@
 
 This manual measurement exercises the complete Vintar pipeline against DSVW, an
 independent deliberately vulnerable project. It demonstrates end-to-end behavior
-for two reviewed inputs per check type (`n=2` Boolean and `n=2` Time); it is not a
+for two reviewed inputs per check type (`n=2` Boolean, `n=2` Time, and `n=2`
+Error); it is not a
 statistical precision claim and is not combined with Vintar's synthetic or
 repository-owned SQLite measurements.
 
@@ -23,6 +24,14 @@ line ranges and SHA-256 digests are recorded in `third_party/sqli/targets.toml`.
   `dsvw.py:10`.
 - `dsvw-time-version-query` uses the same reflected-only `v` negative. It remains a
   weaker negative than a parameterized-safe endpoint.
+- `dsvw-error-id` is positive because the handler concatenates `id` into SQLite
+  and returns the caught `sqlite3.OperationalError` traceback in the response.
+  The reviewed source reference spans both the sink and exception response.
+- `dsvw-error-version-query` uses the same reflected-only `v` negative. It does
+  not reach SQL and is weaker evidence than a parameterized-safe endpoint.
+
+Both Error records use the same explicit single-quote payload fixed before
+measurement. It was not changed after observing either result.
 
 The Time threshold was fixed before measurement at `expected_delay_seconds = 0.5`
 with a five-second per-request timeout. DSVW's delay is CPU-bound, so this choice
@@ -39,7 +48,8 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
-The manual maintainer report uses schema version 2. Compared with version 1:
+The manual maintainer report uses schema version 3. Version 2 introduced the
+following changes from version 1:
 
 - `schema_version` changes from `1` to `2`.
 - `counts["six_probe"]` moves to
@@ -53,33 +63,44 @@ The manual maintainer report uses schema version 2. Compared with version 1:
   `detail`. Time records also use `detail` for their timing status, reason, and
   request count.
 
-Readers accept only version 2 and reject a report whose version or shape differs.
-Version 1 artifacts must be regenerated with the current measurement script; there
-is no silent fallback or dual-shape parsing.
+Version 3 adds `counts["sqli.error"]["error_probe"]`, Error records whose `detail`
+contains the redacted Error result evidence, and the Error-only `candidate`
+classification. A candidate means the positive ground-truth record produced
+`INCONCLUSIVE / dbms_error_disclosed` with the reviewed DBMS evidence. It is not a
+TP or a `VULNERABLE` verdict. Error negatives retain TN/FP/FN/non-decision under
+the existing decision contract.
+
+Readers accept only version 3 and reject a report whose version or shape differs.
+Version 1 and 2 artifacts must be regenerated with the current measurement script;
+there is no silent fallback or dual-shape parsing.
 
 <!-- third-party-measurement:start -->
 | Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |
 | --- | --- | --- | --- | --- | --- | --- | ---: | --- |
 | sqli.boolean | dsvw-blind-boolean-id | confirmation | positive | inconclusive | boolean_candidate | matched | 18 | tp |
 | sqli.boolean | dsvw-blind-boolean-id | six_probe | positive | inconclusive | boolean_candidate | not_configured | 6 | tp |
-| sqli.time | dsvw-time-id | nine_probe | positive | inconclusive | unstable_timing | inconclusive | 9 | non_decision |
+| sqli.error | dsvw-error-id | error_probe | positive | inconclusive | dbms_error_disclosed | matched | 4 | candidate |
+| sqli.error | dsvw-error-version-query | error_probe | negative | not_detected | dbms_error_not_observed | not_matched | 4 | tn |
+| sqli.time | dsvw-time-id | nine_probe | positive | inconclusive | timing_pattern_matched | candidate | 9 | tp |
 | sqli.time | dsvw-time-version-query | nine_probe | negative | not_detected | timing_pattern_not_matched | not_confirmed | 9 | tn |
 | sqli.boolean | dsvw-version-query | confirmation | negative | inconclusive | unexpected_difference | not_eligible | 6 | non_decision |
 | sqli.boolean | dsvw-version-query | six_probe | negative | inconclusive | unexpected_difference | not_configured | 6 | non_decision |
 
-| Check type | Mode | TP | TN | FP | FN | Non-decision |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| sqli.boolean | six_probe | 1 | 0 | 0 | 0 | 1 |
-| sqli.boolean | confirmation | 1 | 0 | 0 | 0 | 1 |
-| sqli.time | nine_probe | 0 | 1 | 0 | 0 | 1 |
+| Check type | Mode | Candidate | TP | TN | FP | FN | Non-decision |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sqli.boolean | six_probe | - | 1 | 0 | 0 | 0 | 1 |
+| sqli.boolean | confirmation | - | 1 | 0 | 0 | 0 | 1 |
+| sqli.time | nine_probe | - | 1 | 1 | 0 | 0 | 0 |
+| sqli.error | error_probe | 1 | - | 1 | 0 | 0 | 0 |
 <!-- third-party-measurement:end -->
 
 This Time run was measured on an AMD Ryzen AI 5 PRO 340 (12 logical CPUs) with
 Docker Engine 29.9.2 and Docker Compose 5.6.1. The positive completed all nine
-requests but was `INCONCLUSIVE / unstable_timing`; this is a recorded non-decision,
-not a reason to tune the fixed inputs and not an acceptance failure. The reflected
-negative was `NOT_DETECTED / timing_pattern_not_matched`. Results can differ on
-hosts with different CPU performance or scheduling.
+requests and was `INCONCLUSIVE / timing_pattern_matched`; the reflected negative
+was `NOT_DETECTED / timing_pattern_not_matched`. An earlier run on the same model
+produced `unstable_timing`, illustrating that this CPU-bound result can change with
+host performance or scheduling. Neither outcome is a reason to tune the fixed
+inputs or threshold.
 
 The first Phase 12-1 run exposed a query-encoding integration defect. DSVW applies
 RFC 3986 percent decoding but does not convert `+` to a space. Vintar previously
@@ -103,4 +124,8 @@ turn a result into `NOT_DETECTED` or `VULNERABLE`.
 
 For Time, `INCONCLUSIVE / timing_pattern_matched` is the positive decision and
 `NOT_DETECTED / timing_pattern_not_matched` is the negative decision. Other Time
-results are non-decisions. Boolean and Time counts are never combined.
+results are non-decisions. For Error, a reproducible signature is reported as a
+candidate rather than TP because its product verdict remains `INCONCLUSIVE`;
+`NOT_DETECTED / dbms_error_not_observed` is the negative decision. Counts for all
+three check types are never combined, and this small sample makes no precision
+claim.

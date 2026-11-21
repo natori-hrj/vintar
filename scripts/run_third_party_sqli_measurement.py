@@ -28,11 +28,16 @@ DOCS = ROOT / "docs" / "sqli-third-party-evaluation.md"
 STATE_NAME = "prepared-target.json"
 SUMMARY_START = "<!-- third-party-measurement:start -->"
 SUMMARY_END = "<!-- third-party-measurement:end -->"
-CLASSIFICATIONS = ("tp", "fn", "fp", "tn", "non_decision")
-MEASUREMENT_SCHEMA_VERSION = 2
+CLASSIFICATIONS = {
+    "sqli.boolean": ("tp", "fn", "fp", "tn", "non_decision"),
+    "sqli.time": ("tp", "fn", "fp", "tn", "non_decision"),
+    "sqli.error": ("candidate", "fn", "fp", "tn", "non_decision"),
+}
+MEASUREMENT_SCHEMA_VERSION = 3
 PROBE_MODES = {
     "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
     "sqli.time": {"time": "nine_probe"},
+    "sqli.error": {"error": "error_probe"},
 }
 
 
@@ -52,24 +57,24 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     """Accept only the current manual measurement report contract."""
     if type(report) is not dict:
         raise MeasurementError(
-            "The third-party measurement report is not a JSON object. This reader supports schema version 2; rerun the measurement to regenerate the report."
+            "The third-party measurement report is not a JSON object. This reader supports schema version 3; rerun the measurement to regenerate the report."
         )
     version = report.get("schema_version")
     if type(version) is not int or version != MEASUREMENT_SCHEMA_VERSION:
         found = repr(version) if version is not None else "missing"
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema version: found {found}; this reader supports version 2. Rerun the measurement to regenerate the report."
+            f"Unsupported third-party measurement report schema version: found {found}; this reader supports version 3. Rerun the measurement to regenerate the report."
         )
     if report.keys() != {"counts", "records", "schema_version", "target"}:
         raise MeasurementError(
-            "Invalid third-party measurement report v2 top-level keys. Use counts grouped by check type, records with detail objects, schema_version, and target; rerun the measurement to regenerate the report."
+            "Invalid third-party measurement report v3 top-level keys. Use counts grouped by check type, records with detail objects, schema_version, and target; rerun the measurement to regenerate the report."
         )
     records = report["records"]
     counts_value = report["counts"]
     target = report["target"]
     if type(records) is not list or type(target) is not dict:
         raise MeasurementError(
-            "Invalid third-party measurement report v2 structure. Use grouped counts, record objects, and target metadata; rerun the measurement to regenerate the report."
+            "Invalid third-party measurement report v3 structure. Use grouped counts, record objects, and target metadata; rerun the measurement to regenerate the report."
         )
     _, declarations = load_declarations()
     expected_keys = {planned.key for planned in plan_measurements(declarations)}
@@ -110,12 +115,12 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     }
     if type(counts_value) is not dict:
         raise MeasurementError(
-            "Invalid third-party measurement report v2 counts. Use counts grouped by check type and mode; rerun the measurement to regenerate the report."
+            "Invalid third-party measurement report v3 counts. Use counts grouped by check type and mode; rerun the measurement to regenerate the report."
         )
     if counts_value.keys() != expected_modes.keys():
         changed = min(counts_value.keys() ^ expected_modes.keys(), key=str)
         raise MeasurementError(
-            f"Measurement counts disagree with records for check type {changed}, mode all, field count_group. Include exactly sqli.boolean and sqli.time counts and rerun the measurement to regenerate the report."
+            f"Measurement counts disagree with records for check type {changed}, mode all, field count_group. Include exactly sqli.boolean, sqli.time, and sqli.error counts and rerun the measurement to regenerate the report."
         )
     for check_type, modes in expected_modes.items():
         type_counts = counts_value[check_type]
@@ -133,10 +138,11 @@ def validate_measurement_report(report: object) -> dict[str, object]:
                 raise MeasurementError(
                     f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field classification_group. Supply classification counts and rerun the measurement to regenerate the report."
                 )
-            if values.keys() != set(CLASSIFICATIONS):
-                changed = min(values.keys() ^ set(CLASSIFICATIONS), key=str)
+            classifications = set(CLASSIFICATIONS[check_type])
+            if values.keys() != classifications:
+                changed = min(values.keys() ^ classifications, key=str)
                 raise MeasurementError(
-                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field {changed}. Use exactly TP, TN, FP, FN, and non-decision counts and rerun the measurement to regenerate the report."
+                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field {changed}. Use exactly the classifications defined for that check type and rerun the measurement to regenerate the report."
                 )
             if any(type(value) is not int or value < 0 for value in values.values()):
                 raise MeasurementError(
@@ -145,16 +151,20 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     for record in records:
         if type(record.get("detail")) is not dict or "confirmation" in record:
             raise MeasurementError(
-                "Invalid third-party measurement report v2 record. Use check_type and the sibling detail object instead of the v1 confirmation field; rerun the measurement to regenerate the report."
+                "Invalid third-party measurement report v3 record. Use check_type and the sibling detail object instead of the v1 confirmation field; rerun the measurement to regenerate the report."
             )
-        if record.get("classification") not in CLASSIFICATIONS:
+        check_type = record.get("check_type")
+        if (
+            check_type not in CLASSIFICATIONS
+            or record.get("classification") not in CLASSIFICATIONS[check_type]
+        ):
             raise MeasurementError(
-                f"Measurement record for check type {record['check_type']}, mode {record['mode']} has an invalid classification. Use TP, TN, FP, FN, or non-decision and rerun the measurement to regenerate the report."
+                f"Measurement record for check type {record['check_type']}, mode {record['mode']} has an invalid classification. Use the classifications defined for that check type and rerun the measurement to regenerate the report."
             )
     recomputed = counts(records)
     for check_type, modes in expected_modes.items():
         for mode in modes:
-            for field in CLASSIFICATIONS:
+            for field in CLASSIFICATIONS[check_type]:
                 if (
                     counts_value[check_type][mode][field]
                     != recomputed[check_type][mode][field]
@@ -241,12 +251,15 @@ def classify(check_type: str, expected: str, verdict: str, reason: str) -> str:
     positive_reason = {
         "sqli.boolean": "boolean_candidate",
         "sqli.time": "timing_pattern_matched",
+        "sqli.error": "dbms_error_disclosed",
     }.get(check_type)
     if positive_reason is None:
         raise MeasurementError(
-            "The record has an unsupported check type. Use sqli.boolean or sqli.time."
+            "The record has an unsupported check type. Use sqli.boolean, sqli.time, or sqli.error."
         )
     if verdict == "inconclusive" and reason == positive_reason:
+        if check_type == "sqli.error" and expected == "positive":
+            return "candidate"
         return "tp" if expected == "positive" else "fp"
     if verdict == "not_detected":
         return "fn" if expected == "positive" else "tn"
@@ -291,9 +304,9 @@ def load_declarations() -> tuple[dict[str, object], list[dict[str, object]]]:
         )
     target = document["target"]
     records = document["records"]
-    if type(target) is not dict or type(records) is not list or len(records) != 4:
+    if type(target) is not dict or type(records) is not list or len(records) != 6:
         raise MeasurementError(
-            "The third-party declaration must contain the reviewed DSVW target and exactly four Boolean/Time records."
+            "The third-party declaration must contain the reviewed DSVW target and exactly six Boolean/Time/Error records."
         )
     typed_records: list[dict[str, object]] = []
     for record in records:
@@ -305,9 +318,9 @@ def load_declarations() -> tuple[dict[str, object], list[dict[str, object]]]:
     check_types = [
         required_text(record, "check_type", "record") for record in typed_records
     ]
-    if check_types.count("sqli.boolean") != 2 or check_types.count("sqli.time") != 2:
+    if any(check_types.count(check_type) != 2 for check_type in PROBE_MODES):
         raise MeasurementError(
-            "The third-party declaration must contain exactly two sqli.boolean and two sqli.time records. Review targets.toml instead of changing labels after measurement."
+            "The third-party declaration must contain exactly two records for each of sqli.boolean, sqli.time, and sqli.error. Review targets.toml instead of changing labels after measurement."
         )
     return target, typed_records
 
@@ -500,7 +513,7 @@ def compose_project_name(run_id: str, case_index: int, mode: str) -> str:
         or any(character not in "0123456789abcdef" for character in run_id)
         or type(case_index) is not int
         or case_index < 0
-        or mode not in {"six", "confirmation", "time"}
+        or mode not in {"six", "confirmation", "time", "error"}
     ):
         raise MeasurementError(
             "The measurement project identity is invalid. Use the generated run ID, nonnegative case index, and supported probe mode instead."
@@ -702,7 +715,7 @@ def run_pipeline_case(
         ],
         cwd=folder,
     )
-    max_requests = {"six": 6, "confirmation": 18, "time": 9}[mode]
+    max_requests = {"six": 6, "confirmation": 18, "time": 9, "error": 4}[mode]
     expected_confirmation = "configured" if mode == "confirmation" else "not configured"
     if (
         materialized.get("max_requests") != max_requests
@@ -744,7 +757,11 @@ def run_pipeline_case(
     verdict = required_text(outcome, "actual_verdict", "verification outcome")
     reason = required_text(outcome, "actual_reason_code", "verification outcome")
     request_count = outcome.get("request_count")
-    detail_key = "timing" if check_type == "sqli.time" else "confirmation"
+    detail_key = {
+        "sqli.boolean": "confirmation",
+        "sqli.time": "timing",
+        "sqli.error": "error",
+    }[check_type]
     detail = outcome.get(detail_key)
     if type(request_count) is not int or type(detail) is not dict:
         raise MeasurementError(
@@ -777,7 +794,9 @@ def counts(
                 for record in records
                 if record["check_type"] == check_type and record["mode"] == mode
             )
-            result[check_type][mode] = {key: phase[key] for key in CLASSIFICATIONS}
+            result[check_type][mode] = {
+                key: phase[key] for key in CLASSIFICATIONS[check_type]
+            }
     return result
 
 
@@ -814,13 +833,14 @@ def render_summary(report: dict[str, object]) -> str:
     lines.extend(
         (
             "",
-            "| Check type | Mode | TP | TN | FP | FN | Non-decision |",
-            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Check type | Mode | Candidate | TP | TN | FP | FN | Non-decision |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
         )
     )
     for check_type, modes in (
         ("sqli.boolean", ("six_probe", "confirmation")),
         ("sqli.time", ("nine_probe",)),
+        ("sqli.error", ("error_probe",)),
     ):
         type_counts = report_counts.get(check_type)
         if type(type_counts) is not dict:
@@ -834,7 +854,7 @@ def render_summary(report: dict[str, object]) -> str:
                     "The measurement report is missing phase counts. Check the runner before updating documentation."
                 )
             lines.append(
-                f"| {check_type} | {mode} | {values.get('tp')} | {values.get('tn')} | {values.get('fp')} | {values.get('fn')} | {values.get('non_decision')} |"
+                f"| {check_type} | {mode} | {values.get('candidate', '-')} | {values.get('tp', '-')} | {values.get('tn')} | {values.get('fp')} | {values.get('fn')} | {values.get('non_decision')} |"
             )
     lines.append(SUMMARY_END)
     return "\n".join(lines)

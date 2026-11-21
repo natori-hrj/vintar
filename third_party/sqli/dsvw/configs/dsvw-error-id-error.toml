@@ -1,0 +1,24 @@
+# The reviewed single quote makes DSVW's concatenated SQLite statement invalid.
+# It was fixed before measurement and is also used for the reflected-only negative.
+config_version = 1
+type = "sqli.error"
+input_id = "input-0927742c7a4ae9527f51f8c541502371"
+
+[target]
+url = "__ORIGIN__/"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "id"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "explicit"
+error_payload = "'"
+
+[limits]
+max_requests = 4
+requests_per_second = 10.0
+timeout_seconds = 5.0
