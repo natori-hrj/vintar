@@ -15,7 +15,11 @@ from typer.testing import CliRunner
 
 from vintar.checks.sqli.models import Verdict
 from vintar.cli import app
-from vintar.regression.cases import TimeRegressionCase, load_regression_case
+from vintar.regression.cases import (
+    ErrorRegressionCase,
+    TimeRegressionCase,
+    load_regression_case,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
@@ -87,17 +91,17 @@ def expected_report() -> dict[str, object]:
         {
             "actual_verdict": "inconclusive",
             "check_type": "sqli.time",
-            "classification": "non_decision",
+            "classification": "tp",
             "detail": {
-                "reason_code": "unstable_timing",
+                "reason_code": "timing_pattern_matched",
                 "request_count": 9,
-                "status": "inconclusive",
+                "status": "candidate",
             },
             "endpoint_id": "dsvw-time-id",
             "expected_label": "positive",
             "expected_verdict": "inconclusive",
             "mode": "nine_probe",
-            "reason_code": "unstable_timing",
+            "reason_code": "timing_pattern_matched",
             "request_count": 9,
         },
         {
@@ -150,7 +154,42 @@ def expected_report() -> dict[str, object]:
             "reason_code": "unexpected_difference",
             "request_count": 6,
         },
+        {
+            "actual_verdict": "inconclusive",
+            "classification": "candidate",
+            "check_type": "sqli.error",
+            "detail": {
+                "dbms": "sqlite",
+                "reason_code": "dbms_error_disclosed",
+                "request_count": 4,
+                "signature_id": "sqlite_operational_syntax",
+                "status": "matched",
+            },
+            "endpoint_id": "dsvw-error-id",
+            "expected_label": "positive",
+            "expected_verdict": "inconclusive",
+            "mode": "error_probe",
+            "reason_code": "dbms_error_disclosed",
+            "request_count": 4,
+        },
+        {
+            "actual_verdict": "not_detected",
+            "classification": "tn",
+            "check_type": "sqli.error",
+            "detail": {
+                "reason_code": "dbms_error_not_observed",
+                "request_count": 4,
+                "status": "not_matched",
+            },
+            "endpoint_id": "dsvw-error-version-query",
+            "expected_label": "negative",
+            "expected_verdict": "not_detected",
+            "mode": "error_probe",
+            "reason_code": "dbms_error_not_observed",
+            "request_count": 4,
+        },
     ]
+    records.sort(key=lambda row: (str(row["endpoint_id"]), str(row["mode"])))
     return {
         "counts": {
             "sqli.boolean": {
@@ -173,14 +212,23 @@ def expected_report() -> dict[str, object]:
                 "nine_probe": {
                     "fn": 0,
                     "fp": 0,
-                    "non_decision": 1,
+                    "non_decision": 0,
                     "tn": 1,
-                    "tp": 0,
+                    "tp": 1,
+                }
+            },
+            "sqli.error": {
+                "error_probe": {
+                    "candidate": 1,
+                    "fn": 0,
+                    "fp": 0,
+                    "non_decision": 0,
+                    "tn": 1,
                 }
             },
         },
         "records": records,
-        "schema_version": 2,
+        "schema_version": 3,
         "target": {
             "archive_sha256": "archive",
             "commit": "commit",
@@ -209,14 +257,20 @@ def test_reviewed_declarations_are_exact_and_digest_bound():
         "dsvw-version-query",
         "dsvw-time-id",
         "dsvw-time-version-query",
+        "dsvw-error-id",
+        "dsvw-error-version-query",
     ]
     assert [record["check_type"] for record in records] == [
         "sqli.boolean",
         "sqli.boolean",
         "sqli.time",
         "sqli.time",
+        "sqli.error",
+        "sqli.error",
     ]
     assert [record["label"] for record in records] == [
+        "positive",
+        "negative",
         "positive",
         "negative",
         "positive",
@@ -226,6 +280,8 @@ def test_reviewed_declarations_are_exact_and_digest_bound():
         "non_parameterized_sql_sink",
         "parameter_does_not_reach_sql_sink",
         "non_parameterized_sql_sink",
+        "parameter_does_not_reach_sql_sink",
+        "non_parameterized_sql_sink_with_exposed_exception",
         "parameter_does_not_reach_sql_sink",
     ]
     assert all(record["source_path"] == "dsvw.py" for record in records)
@@ -247,6 +303,8 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
     assert [path.name for path in configs] == [
         "dsvw-blind-boolean-id-confirmation.toml",
         "dsvw-blind-boolean-id-six.toml",
+        "dsvw-error-id-error.toml",
+        "dsvw-error-version-query-error.toml",
         "dsvw-time-id-time.toml",
         "dsvw-time-version-query-time.toml",
         "dsvw-version-query-confirmation.toml",
@@ -265,7 +323,8 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
     assert sum(config["limits"]["max_requests"] == 6 for config in parsed) == 2
     assert sum(config["limits"]["max_requests"] == 18 for config in parsed) == 2
     assert sum(config["limits"]["max_requests"] == 9 for config in parsed) == 2
-    assert sum(config["probes"]["selection"] == "explicit" for config in parsed) == 4
+    assert sum(config["limits"]["max_requests"] == 4 for config in parsed) == 2
+    assert sum(config["probes"]["selection"] == "explicit" for config in parsed) == 6
     assert sum(config["probes"]["selection"] == "preset" for config in parsed) == 2
     time_configs = [config for config in parsed if config.get("type") == "sqli.time"]
     assert len(time_configs) == 2
@@ -273,13 +332,17 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
     assert all(
         config["probes"]["expected_delay_seconds"] == 0.5 for config in time_configs
     )
+    error_configs = [config for config in parsed if config.get("type") == "sqli.error"]
+    assert len(error_configs) == 2
+    assert all(config["probes"]["error_payload"] == "'" for config in error_configs)
 
 
 @pytest.mark.parametrize(
-    ("record_id", "input_id", "parameter", "index", "expected"),
+    ("record_id", "config_mode", "input_id", "parameter", "index", "expected"),
     [
         (
             "dsvw-time-id",
+            "time",
             "input-0927742c7a4ae9527f51f8c541502371",
             "id",
             0,
@@ -287,6 +350,23 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
         ),
         (
             "dsvw-time-version-query",
+            "time",
+            "input-ffe5bfa38242d9cad17138d92bb38efd",
+            "v",
+            1,
+            "not_detected",
+        ),
+        (
+            "dsvw-error-id",
+            "error",
+            "input-0927742c7a4ae9527f51f8c541502371",
+            "id",
+            0,
+            "inconclusive",
+        ),
+        (
+            "dsvw-error-version-query",
+            "error",
             "input-ffe5bfa38242d9cad17138d92bb38efd",
             "v",
             1,
@@ -294,8 +374,15 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
         ),
     ],
 )
-def test_time_configs_materialize_and_load_offline(
-    tmp_path, monkeypatch, record_id, input_id, parameter, index, expected
+def test_time_and_error_configs_materialize_and_load_offline(
+    tmp_path,
+    monkeypatch,
+    record_id,
+    config_mode,
+    input_id,
+    parameter,
+    index,
+    expected,
 ):
     monkeypatch.chdir(tmp_path)
     spec = tmp_path / "openapi.json"
@@ -353,7 +440,7 @@ def test_time_configs_materialize_and_load_offline(
     assert reviewed.exit_code == 0 and reviewed.stderr == ""
     config = tmp_path / "config.toml"
     config.write_text(
-        (CONFIGS / f"{record_id}-time.toml")
+        (CONFIGS / f"{record_id}-{config_mode}.toml")
         .read_text(encoding="utf-8")
         .replace("__ORIGIN__", "http://127.0.0.1:65412"),
         encoding="utf-8",
@@ -379,11 +466,17 @@ def test_time_configs_materialize_and_load_offline(
     )
     assert materialized.exit_code == 0 and materialized.stderr == ""
     case = load_regression_case(output)
-    assert isinstance(case, TimeRegressionCase)
     assert json.loads(materialized.stdout)["case_id"] == case.case_id
-    assert case.case_id.endswith("-time")
-    assert case.max_requests == 9
-    assert case.expected_delay_seconds == 0.5
+    if config_mode == "time":
+        assert isinstance(case, TimeRegressionCase)
+        assert case.case_id.endswith("-time")
+        assert case.max_requests == 9
+        assert case.expected_delay_seconds == 0.5
+    else:
+        assert isinstance(case, ErrorRegressionCase)
+        assert case.case_id.endswith("-error")
+        assert case.max_requests == 4
+        assert case.error_payload == "'"
 
 
 @pytest.mark.parametrize("label", ["positive", "negative"])
@@ -419,12 +512,235 @@ def test_time_classification_uses_the_product_contract(
     assert runner.classify("sqli.time", label, verdict, reason) == expected
 
 
-def test_aggregation_separates_boolean_and_time_results():
+@pytest.mark.parametrize(
+    ("label", "verdict", "reason", "expected"),
+    [
+        ("positive", "inconclusive", "dbms_error_disclosed", "candidate"),
+        ("negative", "inconclusive", "dbms_error_disclosed", "fp"),
+        ("positive", "not_detected", "dbms_error_not_observed", "fn"),
+        ("negative", "not_detected", "dbms_error_not_observed", "tn"),
+        ("positive", "inconclusive", "unstable_error_signal", "non_decision"),
+    ],
+)
+def test_error_classification_keeps_candidates_distinct_from_tp(
+    label, verdict, reason, expected
+):
+    runner = load_runner()
+    assert runner.classify("sqli.error", label, verdict, reason) == expected
+
+
+def test_aggregation_separates_boolean_time_and_error_results():
     runner = load_runner()
     records = expected_report()["records"]
 
     assert runner.counts(records) == expected_report()["counts"]
-    assert set(runner.counts(records)) == {"sqli.boolean", "sqli.time"}
+    assert set(runner.counts(records)) == {
+        "sqli.boolean",
+        "sqli.time",
+        "sqli.error",
+    }
+
+
+def test_error_acceptance_contract_keeps_candidate_distinct_from_vulnerability():
+    report = expected_report()
+    records = {
+        record["endpoint_id"]: record
+        for record in report["records"]
+        if record["check_type"] == "sqli.error"
+    }
+    assert records["dsvw-error-id"] == {
+        "actual_verdict": "inconclusive",
+        "classification": "candidate",
+        "check_type": "sqli.error",
+        "detail": {
+            "dbms": "sqlite",
+            "reason_code": "dbms_error_disclosed",
+            "request_count": 4,
+            "signature_id": "sqlite_operational_syntax",
+            "status": "matched",
+        },
+        "endpoint_id": "dsvw-error-id",
+        "expected_label": "positive",
+        "expected_verdict": "inconclusive",
+        "mode": "error_probe",
+        "reason_code": "dbms_error_disclosed",
+        "request_count": 4,
+    }
+    assert records["dsvw-error-version-query"]["actual_verdict"] == "not_detected"
+    assert records["dsvw-error-version-query"]["reason_code"] == (
+        "dbms_error_not_observed"
+    )
+    assert records["dsvw-error-version-query"]["request_count"] == 4
+    assert report["counts"]["sqli.error"]["error_probe"] == {
+        "candidate": 1,
+        "fn": 0,
+        "fp": 0,
+        "non_decision": 0,
+        "tn": 1,
+    }
+
+
+def _report_record(report, endpoint_id):
+    return next(
+        record for record in report["records"] if record["endpoint_id"] == endpoint_id
+    )
+
+
+def test_error_candidate_without_detail_is_rejected_with_regeneration_guidance():
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, "dsvw-error-id")["detail"] = {}
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-error-id.*detail fields contradict ERROR_RESULT_RULES: missing .*dbms.*reason_code.*request_count.*signature_id.*status.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize(
+    "missing_field", ["status", "reason_code", "request_count", "dbms", "signature_id"]
+)
+def test_error_candidate_requires_every_contract_field(missing_field):
+    runner = load_runner()
+    report = expected_report()
+    del _report_record(report, "dsvw-error-id")["detail"][missing_field]
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"dsvw-error-id.*detail fields contradict ERROR_RESULT_RULES: missing \['{missing_field}'\].*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_error_candidate_rejects_unreviewed_dbms_signature_pair():
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, "dsvw-error-id")["detail"]["dbms"] = "mysql"
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-error-id.*unreviewed DBMS/signature pair.*Remeasure.*ERROR_SIGNATURES.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("status", "inconclusive", "status 'inconclusive' contradicts reason"),
+        ("reason_code", "unstable_response", "detail contradicts its top-level"),
+        ("request_count", 3, "request_count contradicts reason"),
+    ],
+)
+def test_error_candidate_values_follow_error_result_rules(field, value, message):
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, "dsvw-error-id")["detail"][field] = value
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"dsvw-error-id.*{message}.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize("evidence_value", [None, "sqlite"])
+def test_error_non_candidate_rejects_forbidden_evidence_fields(evidence_value):
+    runner = load_runner()
+    report = expected_report()
+    detail = _report_record(report, "dsvw-error-version-query")["detail"]
+    detail["dbms"] = evidence_value
+    detail["signature_id"] = evidence_value
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-error-version-query.*detail fields contradict ERROR_RESULT_RULES: unexpected .*dbms.*signature_id.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize(
+    ("endpoint_id", "stored_classification", "ground_truth", "result", "expected"),
+    [
+        (
+            "dsvw-error-version-query",
+            "candidate",
+            "negative",
+            "not_detected/dbms_error_not_observed",
+            "tn",
+        ),
+        (
+            "dsvw-error-id",
+            "tn",
+            "positive",
+            "inconclusive/dbms_error_disclosed",
+            "candidate",
+        ),
+        (
+            "dsvw-error-id",
+            "fn",
+            "positive",
+            "inconclusive/dbms_error_disclosed",
+            "candidate",
+        ),
+        (
+            "dsvw-blind-boolean-id",
+            "fn",
+            "positive",
+            "inconclusive/boolean_candidate",
+            "tp",
+        ),
+        (
+            "dsvw-time-id",
+            "fn",
+            "positive",
+            "inconclusive/timing_pattern_matched",
+            "tp",
+        ),
+    ],
+)
+def test_reaggregated_counts_cannot_hide_classification_relabeling(
+    endpoint_id, stored_classification, ground_truth, result, expected
+):
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, endpoint_id)["classification"] = stored_classification
+    report["counts"] = runner.counts(report["records"])
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"{endpoint_id}.*stored classification '{stored_classification}' contradicts ground truth '{ground_truth}' with {result}; expected '{expected}'.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize(
+    ("endpoint_id", "replacement", "ground_truth", "expected"),
+    [
+        ("dsvw-error-version-query", "vulnerable", "negative", "not_detected"),
+        ("dsvw-blind-boolean-id", "not_detected", "positive", "inconclusive"),
+    ],
+)
+def test_expected_verdict_must_follow_declared_ground_truth(
+    endpoint_id, replacement, ground_truth, expected
+):
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, endpoint_id)["expected_verdict"] = replacement
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"{endpoint_id}.*stored expected_verdict '{replacement}' contradicts ground-truth label '{ground_truth}'; expected '{expected}'.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_stored_v3_report_fixture_still_validates_unchanged():
+    runner = load_runner()
+    report = expected_report()
+
+    assert runner.validate_measurement_report(report) is report
 
 
 def test_non_decisions_keep_the_manual_runner_exit_one(tmp_path, monkeypatch, capsys):
@@ -443,7 +759,7 @@ def test_non_decisions_keep_the_manual_runner_exit_one(tmp_path, monkeypatch, ca
         ],
     )
 
-    assert runner.unhealthy_count(report) == 3
+    assert runner.unhealthy_count(report) == 2
     assert runner.main() == 1
     captured = capsys.readouterr()
     assert "contains a false negative, false positive, or non-decision" in (
@@ -461,11 +777,11 @@ def test_reviewed_documentation_matches_the_report_contract():
     assert rendered.count("dsvw-version-query") == 2
 
 
-def test_measurement_output_declares_schema_version_two():
+def test_measurement_output_declares_schema_version_three():
     runner = load_runner()
     report = expected_report()
 
-    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 2
+    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 3
     assert runner.validate_measurement_report(report) is report
 
 
@@ -531,7 +847,7 @@ def test_removed_non_decisions_are_rejected_before_counts(recompute_counts):
     for reader in (runner.validate_measurement_report, runner.unhealthy_count):
         with pytest.raises(
             runner.MeasurementError,
-            match=r"incomplete: missing endpoint_id 'dsvw-time-id', check_type 'sqli.time', mode 'nine_probe'.*full measurement run",
+            match=r"incomplete: missing endpoint_id 'dsvw-version-query', check_type 'sqli.boolean', mode 'confirmation'.*full measurement run",
         ):
             reader(report)
 
@@ -603,22 +919,23 @@ def test_consistent_counts_and_health_match_records():
     ]
 
     assert runner.validate_measurement_report(report) is report
-    assert runner.unhealthy_count(report) == len(unhealthy_records) == 3
+    assert runner.unhealthy_count(report) == len(unhealthy_records) == 2
 
 
-def test_v1_measurement_report_is_rejected_with_regeneration_guidance():
+@pytest.mark.parametrize("old_version", [1, 2])
+def test_old_measurement_report_is_rejected_with_regeneration_guidance(old_version):
     runner = load_runner()
     report = expected_report()
-    report["schema_version"] = 1
+    report["schema_version"] = old_version
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"found 1; this reader supports version 2.*Rerun the measurement",
+        match=rf"found {old_version}; this reader supports version 3.*Rerun the measurement",
     ):
         runner.render_summary(report)
 
 
-def test_v2_report_with_v1_shape_is_rejected():
+def test_v3_report_with_v2_shape_is_rejected():
     runner = load_runner()
     report = expected_report()
     boolean_counts = report["counts"]["sqli.boolean"]
@@ -628,19 +945,19 @@ def test_v2_report_with_v1_shape_is_rejected():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"counts disagree with records.*count_group.*sqli.boolean and sqli.time.*rerun the measurement",
+        match=r"counts disagree with records.*count_group.*sqli.boolean, sqli.time, and sqli.error.*rerun the measurement",
     ):
         runner.check_documented_summary(report)
 
 
-def test_v1_version_with_v2_shape_is_rejected_before_shape_parsing():
+def test_v2_version_with_v3_shape_is_rejected_before_shape_parsing():
     runner = load_runner()
     report = expected_report()
-    report["schema_version"] = 1
+    report["schema_version"] = 2
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"found 1; this reader supports version 2.*Rerun the measurement",
+        match=r"found 2; this reader supports version 3.*Rerun the measurement",
     ):
         runner.unhealthy_count(report)
 
@@ -753,7 +1070,13 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
                 "license": "Unlicense",
                 "name": "DSVW",
             },
-            [{"id": "dsvw-blind-boolean-id", "check_type": "sqli.boolean"}],
+            [
+                {
+                    "id": "dsvw-blind-boolean-id",
+                    "check_type": "sqli.boolean",
+                    "label": "negative",
+                }
+            ],
         ),
     )
     monkeypatch.setattr(runner, "load_document", lambda path: {})
@@ -800,7 +1123,7 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
     workspace.mkdir()
     report = runner.measure(workspace, tmp_path / "report.json")
 
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert started == [
         "vintar-dsvw-0123456789ab-0-six",
         "vintar-dsvw-0123456789ab-0-confirmation",

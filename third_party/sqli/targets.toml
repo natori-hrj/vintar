@@ -63,3 +63,31 @@ source_start_line = 24
 source_end_line = 25
 source_fragment_sha256 = "8681e2b82b67d8f252482fee5088985a1b722069c02591c33a2154356b0b365d"
 reviewer_note = "The reviewed upstream handler reflects v without using a SQL sink. This is weaker evidence than a parameterized twin. The explicit payload is derived from DSVW's documented time attack at dsvw.py line 10."
+
+[[records]]
+id = "dsvw-error-id"
+check_type = "sqli.error"
+input_id = "input-0927742c7a4ae9527f51f8c541502371"
+parameter = "id"
+initial_value = "2"
+label = "positive"
+evidence_type = "non_parameterized_sql_sink_with_exposed_exception"
+source_path = "dsvw.py"
+source_start_line = 21
+source_end_line = 67
+source_fragment_sha256 = "f750a3222637edb39a9cc111ad685199723a0b2196b89cae64ff54be8896647d"
+reviewer_note = "The reviewed upstream handler concatenates id into SQLite and returns the caught exception traceback in the HTTP response; the label and explicit payload were fixed before Vintar measurement."
+
+[[records]]
+id = "dsvw-error-version-query"
+check_type = "sqli.error"
+input_id = "input-ffe5bfa38242d9cad17138d92bb38efd"
+parameter = "v"
+initial_value = "0.5"
+label = "negative"
+evidence_type = "parameter_does_not_reach_sql_sink"
+source_path = "dsvw.py"
+source_start_line = 24
+source_end_line = 25
+source_fragment_sha256 = "8681e2b82b67d8f252482fee5088985a1b722069c02591c33a2154356b0b365d"
+reviewer_note = "The reviewed upstream handler reflects v without using a SQL sink. This is weaker evidence than a parameterized-safe endpoint; the label and explicit payload were fixed before Vintar measurement."

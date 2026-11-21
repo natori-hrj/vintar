@@ -13,6 +13,12 @@
   DBMS diagnostic remains `INCONCLUSIVE / dbms_error_disclosed` and blocks CI;
   it never claims a confirmed vulnerability without independent confirmation.
 
+**Internal**
+
+- Extend the pinned-source manual DSVW evaluation with separate four-request
+  Error SQLi candidate and reflected-only negative measurements. Error candidates
+  remain `INCONCLUSIVE` and are never counted as confirmed vulnerabilities.
+
 ## [0.3.0] - 2026-11-21
 
 **Internal**

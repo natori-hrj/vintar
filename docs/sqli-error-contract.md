@@ -53,3 +53,19 @@ The existing CI exit contract is unchanged: a matching `NOT_DETECTED` result
 passes with exit 0, expectation mismatch uses exit 1, invalid execution or input
 uses exit 2, and every Error candidate or other inconclusive result blocks with
 exit 3.
+
+## Independent DSVW evaluation
+
+The manual pinned-source DSVW evaluation contains two Error records. The reviewed
+`id` positive concatenates input into SQLite and exposes the caught
+`sqlite3.OperationalError`; it produces an Error candidate only when the expected
+four-request disclosure relation and SQLite evidence are present. The reviewed
+`v` negative is reflected but never reaches SQL and is therefore weaker than a
+parameterized-safe endpoint. Its negative decision requires four requests with
+`dbms_error_not_observed`.
+
+The report calls the positive result a `candidate`, not TP or `VULNERABLE`, because
+a stable diagnostic display still does not independently prove changed SQL
+execution. Boolean, Time, and Error aggregates remain separate, `n=2` is not a
+precision claim, and the ground-truth labels and explicit payload are fixed before
+measurement.
