@@ -11,7 +11,8 @@
 
 - Materialize reviewed OpenAPI decisions into explicit Schema v1 `sqli.time`
   cases with query-only injection, fixed nine-request limits, and no inferred
-  DBMS, SQL context, or probe preset.
+  DBMS, SQL context, or probe preset. Time materialization appends a deterministic
+  `-time` case-ID suffix so Boolean and Time cases from one draft can share a batch.
 - Run explicit Schema v1 `sqli.time` cases through the Python API and the
   `vintar verify` CLI with a fixed nine-request plan and an operator-owned execution
   deadline. Schema v1 CI reports now carry redacted time status, reason, and

@@ -324,6 +324,11 @@ DBMS, SQL context, or Time payload from an OpenAPI parameter type. Time limits
 use the Schema v1 bounds documented in the
 [Time SQLi contract](docs/sqli-time-contract.md#schema-v1-time-case).
 
+Boolean materialization keeps the discovery draft's existing deterministic case
+ID. Time materialization appends `-time` to that ID, so both check types from the
+same reviewed draft can run in one batch. Materialization fails instead of
+truncating if the suffixed ID would exceed the Schema v1 64-character limit.
+
 ## Other CLI Commands
 
 - `vintar --help` lists commands, and `vintar version` prints the current project version.

@@ -41,6 +41,17 @@ class MaterializedCase:
     max_requests: int
 
 
+def _materialized_case_id(material: ReviewMaterial, check_type: str) -> str:
+    if check_type == "sqli.boolean":
+        return material.case_id
+    candidate = material.case_id + "-time"
+    if len(candidate) > 64:
+        raise CaseMaterializationError(
+            "Time case ID exceeds the 64-character Schema v1 limit after adding the -time suffix. Use reviewed material with a base case ID of at most 59 characters."
+        )
+    return candidate
+
+
 def _table(value: object, keys: set[str], message: str) -> dict[str, object]:
     result = _mapping(value, message)
     if result.keys() != keys:
@@ -282,7 +293,11 @@ def _time_probe_payloads(value: object) -> tuple[str, str, float]:
     return delay_payload, control_payload, float(expected_delay)
 
 
-def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
+def _render(
+    material: ReviewMaterial,
+    config: dict[str, object],
+    case_id: str,
+) -> bytes:
     version = config["config_version"]
     if type(version) is not int or version != 1:
         raise CaseMaterializationError(
@@ -386,7 +401,7 @@ def _render(material: ReviewMaterial, config: dict[str, object]) -> bytes:
 
     lines = [
         "version = 1",
-        f"id = {_toml_string(material.case_id)}",
+        f"id = {_toml_string(case_id)}",
         f"type = {_toml_string(check_type)}",
         f"expected_verdict = {_toml_string(expected)}",
         "",
@@ -480,8 +495,9 @@ def materialize_case(
             "The review report no longer matches the current spec, draft, or answers. Rerun review-draft and supply its current --review output."
         )
     loaded_config = _load_config(config)
-    content = _render(material, loaded_config)
     check_type = _materialization_type(loaded_config)
+    case_id = _materialized_case_id(material, check_type)
+    content = _render(material, loaded_config, case_id)
     if check_type == "sqli.time":
         try:
             loaded = parse_regression_case(content.decode("utf-8"))
@@ -495,14 +511,14 @@ def materialize_case(
             )
         return MaterializedCase(
             content=content,
-            case_id=material.case_id,
+            case_id=case_id,
             confirmation_configured=False,
             max_requests=loaded.max_requests,
         )
     _, _, confirmation = _probe_payloads(loaded_config["probes"])
     return MaterializedCase(
         content=content,
-        case_id=material.case_id,
+        case_id=case_id,
         confirmation_configured=confirmation is not None,
         max_requests=18 if confirmation is not None else 6,
     )

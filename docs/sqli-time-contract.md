@@ -191,6 +191,12 @@ scalar types do not select a DBMS, SQL context, payload, or check type. The
 generated TOML expands only the Schema v1 probe fields and is validated by the
 unchanged case loader before any destination file is written.
 
+Boolean cases retain the reviewed material's existing deterministic case ID.
+Time cases append `-time` to the same base ID. This makes Boolean and Time cases
+from one reviewed draft distinct in a mixed batch. The suffix is never silently
+truncated; materialization rejects a base ID longer than 59 characters because
+the resulting ID would exceed the Schema v1 64-character limit.
+
 ## Timing Observation
 
 Each TimeObservation records:

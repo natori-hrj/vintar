@@ -3,6 +3,7 @@
 import json
 import socket
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,13 +15,14 @@ from vintar.cli import app
 from vintar.core import executor
 from vintar.regression.case_materialization import (
     CaseMaterializationError,
+    _materialized_case_id,
     materialize_case,
     write_materialized_case,
 )
 from vintar.regression.cases import TimeRegressionCase, load_regression_case
 from vintar.regression.discovery import input_id, load_inventory
 from vintar.regression.discovery_drafts import draft_files
-from vintar.regression.discovery_review import build_review
+from vintar.regression.discovery_review import build_review, resolve_review
 
 ORIGIN = "http://materialize-fixture.invalid"
 TRUE_PAYLOAD = "true-payload-sentinel"
@@ -218,6 +220,7 @@ def test_materializes_loadable_case_and_is_idempotent(tmp_path, monkeypatch):
     assert result.exit_code == 0 and result.stderr == ""
     summary = json.loads(result.stdout)
     case = load_regression_case(inputs["output"])
+    material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
     assert summary == {
         "case_id": case.case_id,
         "report_type": "regression_case_materialization_summary",
@@ -226,6 +229,7 @@ def test_materializes_loadable_case_and_is_idempotent(tmp_path, monkeypatch):
         "max_requests": 6,
     }
     assert case.template.url == ORIGIN + "/fixture-route"
+    assert case.case_id == material.case_id
     assert case.template.params == (("q", "baseline-value-sentinel"),)
     before = inputs["output"].stat()
     assert invoke(inputs).exit_code == 0
@@ -240,7 +244,9 @@ def test_materializes_explicit_time_case_and_round_trips_loader(tmp_path, monkey
 
     assert result.exit_code == 0 and result.stderr == ""
     case = load_regression_case(inputs["output"])
+    material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
     assert isinstance(case, TimeRegressionCase)
+    assert case.case_id == material.case_id + "-time"
     assert case.check_type == "sqli.time"
     assert case.delay_payload == DELAY_PAYLOAD
     assert case.control_payload == CONTROL_PAYLOAD
@@ -262,6 +268,24 @@ def test_materializes_explicit_time_case_and_round_trips_loader(tmp_path, monkey
         "expected_delay_seconds": 0.25,
     }
     assert "selection" not in parsed["probes"]
+    first = build(inputs)
+    second = build(inputs)
+    assert first.case_id == second.case_id == case.case_id
+    assert first.content == second.content
+
+
+def test_time_case_id_suffix_length_limit_is_actionable(tmp_path, monkeypatch):
+    inputs = make_time_inputs(tmp_path, monkeypatch)
+    material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
+    oversized = replace(material, case_id="a" * 60)
+
+    with pytest.raises(
+        CaseMaterializationError,
+        match=r"64-character.*base case ID of at most 59",
+    ):
+        _materialized_case_id(oversized, "sqli.time")
+
+    assert _materialized_case_id(oversized, "sqli.boolean") == "a" * 60
 
 
 def test_time_selection_is_explicit_even_for_integer_openapi_parameter(

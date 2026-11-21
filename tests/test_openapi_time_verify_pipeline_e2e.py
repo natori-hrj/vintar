@@ -57,6 +57,13 @@ class PipelineState:
     delay_calls: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
+    def reset(self) -> None:
+        with self.lock:
+            self.received.clear()
+            self.statuses.clear()
+            self.sql_calls = 0
+            self.delay_calls = 0
+
     def record_request(self, value: str) -> None:
         with self.lock:
             self.received.append(value)
@@ -409,3 +416,136 @@ timeout_seconds = 3.0
         assert statuses == (200,) * 9
         assert sql_calls == 9
         assert delay_calls == (6 if mode == "vulnerable" else 0)
+
+        if mode == "safe":
+            batch_dir = Path("batch")
+            batch_dir.mkdir()
+            time_batch_case = batch_dir / "time.toml"
+            time_summary = invoke_success(
+                runner,
+                [
+                    "materialize-case",
+                    "--spec",
+                    str(spec),
+                    "--draft",
+                    str(draft),
+                    "--answers",
+                    str(answers),
+                    "--review",
+                    str(review),
+                    "--config",
+                    str(config),
+                    "--output",
+                    str(time_batch_case),
+                ],
+            )
+            boolean_config = Path("boolean-config.toml")
+            boolean_config.write_text(
+                f"""config_version = 1
+input_id = {json.dumps(input_id)}
+
+[target]
+url = {json.dumps(origin + "/safe")}
+allowed_origin = {json.dumps(origin)}
+
+[injection]
+location = "query"
+name = "category"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "explicit"
+true_payload = "true-probe"
+false_payload = "false-probe"
+
+[limits]
+max_requests = 6
+requests_per_second = 10.0
+timeout_seconds = 3.0
+""",
+                encoding="utf-8",
+            )
+            boolean_batch_case = batch_dir / "boolean.toml"
+            boolean_summary = invoke_success(
+                runner,
+                [
+                    "materialize-case",
+                    "--spec",
+                    str(spec),
+                    "--draft",
+                    str(draft),
+                    "--answers",
+                    str(answers),
+                    "--review",
+                    str(review),
+                    "--config",
+                    str(boolean_config),
+                    "--output",
+                    str(boolean_batch_case),
+                ],
+            )
+            time_batch = load_regression_case(time_batch_case)
+            boolean_batch = load_regression_case(boolean_batch_case)
+            assert isinstance(time_batch, TimeRegressionCase)
+            assert time_batch.case_id == case.case_id
+            assert time_summary["case_id"] == time_batch.case_id
+            assert boolean_summary["case_id"] == boolean_batch.case_id
+            assert boolean_batch.case_id == case.case_id.removesuffix("-time")
+            assert time_batch.case_id == boolean_batch.case_id + "-time"
+
+            state.reset()
+            mixed = runner.invoke(
+                app,
+                [
+                    "verify",
+                    "--cases",
+                    str(batch_dir),
+                    "--max-requests",
+                    "15",
+                    "--rps",
+                    "10",
+                    "--timeout",
+                    "3",
+                    "--time-deadline",
+                    "30",
+                    "--authorized",
+                ],
+                env={
+                    "VINTAR_TARGET_ORIGIN": origin,
+                    "VINTAR_ALLOWED_ORIGIN": origin,
+                },
+            )
+            assert mixed.exit_code == 0, (
+                f"Mixed Boolean/Time verification failed. Check generated case IDs, fixture stability, and loopback transport setup. {mixed.stderr}"
+            )
+            assert mixed.stderr == ""
+            mixed_report = json.loads(mixed.stdout)
+            mixed_path = Path("mixed-report.json")
+            mixed_path.write_text(json.dumps(mixed_report), encoding="utf-8")
+            _VALIDATE(mixed_path, 0)
+            assert mixed_report["requests_used"] == 15
+            assert mixed_report["executed_case_ids"] == [
+                boolean_batch.case_id,
+                time_batch.case_id,
+            ]
+            assert len(set(mixed_report["executed_case_ids"])) == 2
+            boolean_outcome, time_outcome = mixed_report["outcomes"]
+            assert "check_type" not in boolean_outcome
+            assert boolean_outcome["verification"]["check_type"] == "sqli_boolean"
+            assert time_outcome["check_type"] == "sqli.time"
+            mixed_received, mixed_statuses, mixed_sql_calls, mixed_delay_calls = (
+                state.snapshot()
+            )
+            assert mixed_received == (
+                "Pets",
+                "Petstrue-probe",
+                "Petsfalse-probe",
+                "Pets",
+                "Petsfalse-probe",
+                "Petstrue-probe",
+                *EXPECTED_ORDER,
+            )
+            assert mixed_statuses == (200,) * 15
+            assert mixed_sql_calls == 15
+            assert mixed_delay_calls == 0
