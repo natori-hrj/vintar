@@ -1,0 +1,44 @@
+{
+  "exit_code": 3,
+  "stderr": "",
+  "stdout_json": {
+    "complete": true,
+    "counts": {
+      "fail": 0,
+      "inconclusive": 1,
+      "not_run": 0,
+      "pass": 0
+    },
+    "executed_case_ids": [
+      "time-case"
+    ],
+    "executed_count": 1,
+    "exit_code": 3,
+    "not_run_case_ids": [],
+    "outcomes": [
+      {
+        "actual_reason_code": "timing_pattern_matched",
+        "actual_verdict": "inconclusive",
+        "case_id": "time-case",
+        "check_type": "sqli.time",
+        "expectation_match": true,
+        "expected_verdict": "inconclusive",
+        "request_count": 9,
+        "status": "inconclusive",
+        "timing": {
+          "reason_code": "timing_pattern_matched",
+          "request_count": 9,
+          "status": "candidate"
+        }
+      }
+    ],
+    "planned_case_ids": [
+      "time-case"
+    ],
+    "planned_count": 1,
+    "report_type": "regression_batch",
+    "requests_used": 9,
+    "schema_version": 1,
+    "status": "inconclusive"
+  }
+}

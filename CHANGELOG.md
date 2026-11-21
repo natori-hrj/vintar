@@ -4,9 +4,11 @@
 
 **Added**
 
-- Accept explicit Schema v1 `sqli.time` cases through the Python single-case
-  regression API with a fixed nine-request plan and an operator-owned execution
-  deadline. Batch JSON reporting and CLI output remain out of scope.
+- Run explicit Schema v1 `sqli.time` cases through the Python API and the
+  `vintar verify` CLI with a fixed nine-request plan and an operator-owned execution
+  deadline. Schema v1 CI reports now carry redacted time status, reason, and
+  request counts, including mixed Boolean/time batches, while existing Boolean
+  and legacy reports remain compatible.
 
 ## [0.2.1] - 2026-11-21
 

@@ -14,10 +14,18 @@ import httpx
 from typer.testing import CliRunner
 
 from vintar import sqli_cli
+from vintar.checks.sqli.time_analyzer import (
+    TimeObservation,
+    TimeProbeOutcome,
+    analyze_time_probes,
+)
+from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER, prepare_time_plan
+from vintar.checks.sqli.time_runner import TimeRunReport
 from vintar.cli import app
 from vintar.core import executor, http
 from vintar.core.rate_limit import RateLimiter
 from vintar.regression import batch
+from vintar.regression import runner as regression_runner
 from vintar.regression.cases import load_regression_case
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +33,35 @@ GOLDEN_DIR = ROOT / "tests" / "golden" / "cli"
 UPDATE_COMMAND = "uv run python scripts/update_cli_goldens.py --write"
 ORIGIN = "http://cli-fixture.invalid"
 CASE_TEMPLATE = runpy.run_path(str(ROOT / "scripts" / "run_ci_e2e.py"))["CASE_TEMPLATE"]
+TIME_CASE_TEMPLATE = """version = 1
+id = "time-case"
+type = "sqli.time"
+expected_verdict = "{expected}"
+
+[target]
+url = "http://cli-fixture.invalid/time"
+allowed_origin = "http://cli-fixture.invalid"
+
+[[target.params]]
+name = "id"
+value = "1"
+
+[injection]
+location = "query"
+name = "id"
+occurrence = 0
+mode = "append"
+
+[probes]
+delay_payload = "-delay"
+control_payload = "-control"
+expected_delay_seconds = 0.25
+
+[limits]
+max_requests = 9
+requests_per_second = 10.0
+timeout_seconds = 3.0
+"""
 
 
 @dataclass(frozen=True)
@@ -34,6 +71,8 @@ class Scenario:
     expected_verdict: str = "not_detected"
     rate_limited: bool = False
     timeout_on_second_request: bool = False
+    time_result: str | None = None
+    mixed: bool = False
 
 
 SCENARIOS = {
@@ -44,6 +83,21 @@ SCENARIOS = {
     "verify/fail.json": Scenario(1, 6, expected_verdict="vulnerable"),
     "verify/partial-inconclusive.json": Scenario(3, 1, rate_limited=True),
     "verify/authorization-required.json": Scenario(2, 0),
+    "verify/time-not-detected.json": Scenario(
+        0, 0, time_result="timing_pattern_not_matched"
+    ),
+    "verify/time-candidate.json": Scenario(
+        3,
+        0,
+        expected_verdict="inconclusive",
+        time_result="timing_pattern_matched",
+    ),
+    "verify/mixed-boolean-time.json": Scenario(
+        3,
+        6,
+        time_result="timing_pattern_matched",
+        mixed=True,
+    ),
     "discover/success.json": Scenario(0, 0),
     "review-draft/success.json": Scenario(0, 0),
     "review-draft/null-baseline.json": Scenario(2, 0),
@@ -79,16 +133,41 @@ def cli_args(name: str, scenario: Scenario, folder: Path) -> list[str]:
             "false-probe",
         ]
     else:
-        cases = (
-            (("a-case", "/limited"), ("b-case", "/ok"))
-            if scenario.rate_limited
-            else (("a-case", "/ok"),)
-        )
-        for case_id, path in cases:
-            source = CASE_TEMPLATE.format(expected=scenario.expected_verdict, path=path)
-            source = source.replace('id = "fixture-case"', f'id = "{case_id}"')
-            (folder / f"{case_id}.toml").write_text(source, encoding="utf-8")
-        args = ["verify", "--cases", str(folder), "--max-requests", str(6 * len(cases))]
+        if scenario.time_result is not None:
+            time_expected = (
+                "inconclusive"
+                if scenario.time_result == "timing_pattern_matched"
+                else "not_detected"
+            )
+            (folder / "time-case.toml").write_text(
+                TIME_CASE_TEMPLATE.format(expected=time_expected),
+                encoding="utf-8",
+            )
+            if scenario.mixed:
+                source = CASE_TEMPLATE.format(expected="not_detected", path="/ok")
+                source = source.replace('id = "fixture-case"', 'id = "boolean-case"')
+                (folder / "boolean-case.toml").write_text(source, encoding="utf-8")
+            budget = 15 if scenario.mixed else 9
+            args = ["verify", "--cases", str(folder), "--max-requests", str(budget)]
+        else:
+            cases = (
+                (("a-case", "/limited"), ("b-case", "/ok"))
+                if scenario.rate_limited
+                else (("a-case", "/ok"),)
+            )
+            for case_id, path in cases:
+                source = CASE_TEMPLATE.format(
+                    expected=scenario.expected_verdict, path=path
+                )
+                source = source.replace('id = "fixture-case"', f'id = "{case_id}"')
+                (folder / f"{case_id}.toml").write_text(source, encoding="utf-8")
+            args = [
+                "verify",
+                "--cases",
+                str(folder),
+                "--max-requests",
+                str(6 * len(cases)),
+            ]
     if scenario.exit_code != 2:
         args.append("--authorized")
     return args
@@ -428,6 +507,50 @@ def capture(
             requests_per_second=requests_per_second, _clock=clock, _sleep=sleep
         )
 
+    def fixed_time_run(**kwargs):
+        reason = scenario.time_result
+        if reason is None:
+            raise ValueError("A time golden requires an explicit fixed result.")
+        context = kwargs["context"]
+        plan = prepare_time_plan(
+            template=kwargs["template"],
+            point=kwargs["point"],
+            payloads=kwargs["payloads"],
+            expected_delay_seconds=kwargs["expected_delay_seconds"],
+            context=context,
+        )
+        groups = {
+            "baseline": iter((0.10, 0.11, 0.12)),
+            "control": iter((0.11, 0.12, 0.13)),
+            "delay": iter(
+                (0.10, 0.11, 0.12)
+                if reason == "timing_pattern_not_matched"
+                else (1.11, 1.12, 1.13)
+            ),
+        }
+        observations = []
+        for sequence, kind in enumerate(TIME_PROBE_ORDER, start=1):
+            context.budget.consume()
+            observations.append(
+                TimeObservation(
+                    kind=kind,
+                    sequence=sequence,
+                    outcome=TimeProbeOutcome.COMPLETED,
+                    elapsed_seconds=next(groups[kind.value]),
+                    status_code=200,
+                )
+            )
+        analysis = analyze_time_probes(plan=plan, observations=tuple(observations))
+        if analysis.reason_code != reason:
+            raise ValueError("Fixed time golden produced an unexpected result.")
+        return TimeRunReport(
+            analysis=analysis,
+            budget_used=9,
+            transport_attempts=9,
+            total_elapsed_seconds=0.0,
+            deadline_exceeded=False,
+        )
+
     with (
         patch.object(
             executor.httpx,
@@ -437,6 +560,7 @@ def capture(
         patch.object(http, "time", SimpleNamespace(perf_counter=clock)),
         patch.object(sqli_cli, "RateLimiter", virtual_limiter),
         patch.object(batch, "RateLimiter", virtual_limiter),
+        patch.object(regression_runner, "verify_time_based_sqli", fixed_time_run),
     ):
         result = CliRunner().invoke(
             app,

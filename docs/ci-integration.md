@@ -6,17 +6,16 @@ security verification workflow.
 
 ## Supported Scope
 
-Vintar supports Boolean-based SQL injection regression checks for
+Vintar supports Boolean- and time-based SQL injection regression checks for
 `GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
 materialization run offline. The workflow is
 `discover → review-draft → materialize-case → verify`. Reviewers explicitly
 select the `string-quoted` or `numeric` probe preset when using presets.
 Verification runs against an authorized, configured target.
 
-Deferred to v0.2 and later are confirmed `VULNERABLE` verdicts and CLI integration
-of 12-probe confirmation, time-based, error-based, and UNION-based SQL injection
-checks, POST form and JSON body injection, cookie and header injection, and
-authenticated workflows.
+Deferred are confirmed `VULNERABLE` verdicts, error-based and UNION-based SQL
+injection checks, POST form and JSON body injection, cookie and header injection,
+and authenticated workflows.
 
 ## Requirements
 
@@ -78,6 +77,11 @@ for an operational reason. A matched confirmation retains the established final
 reason code `boolean_candidate`; mismatch and operational reasons remain
 INCONCLUSIVE and block the gate with exit code 3.
 
+Schema v1 `sqli.time` cases use exactly nine requests. The operator-owned
+`--time-deadline` option defaults to 45 seconds and cannot be increased by a
+case. Preflight rejects a case whose per-request timeout and rate cannot fit
+within that deadline before any HTTP request is sent.
+
 ## Execution
 
 Go to:
@@ -100,6 +104,7 @@ It does not run automatically on pull requests.
 | --- | --- | --- |
 | `NOT_DETECTED` matches the reviewed expectation for every case in a complete batch | `0` | **PASS.** No Boolean differential was detected under the tested probes and conditions. This does not prove SQL injection is absent. |
 | `INCONCLUSIVE` with reason `boolean_candidate` | `3` | **BLOCK / Review required.** A SQLi-like Boolean response differential was observed. This is a candidate signal and requires independent evidence before anyone can call it a confirmed vulnerability. |
+| `INCONCLUSIVE` with reason `timing_pattern_matched` | `3` | **BLOCK / Review required.** A bounded timing pattern was reproduced. This is a candidate signal, never a confirmed vulnerability. |
 | Other `INCONCLUSIVE` reasons or an incomplete batch | `3` | **BLOCK / Investigation required.** Verification was insufficient. Check the budget, rate limits, transport or HTTP status, and response stability. |
 | `FAIL` | `1` | **FAIL.** A `NOT_DETECTED` result did not match the reviewed expectation. |
 | `ERROR` | `2` | **ERROR.** Invalid input, configuration, execution, or output prevented a usable result. |
@@ -126,9 +131,12 @@ Containing:
 
 The artifact retention period is seven days.
 
-The report does not contain raw HTTP request payloads, URLs,
-or credentials. However, case IDs, response digests, sizes,
-and related metadata may still disclose information.
+The report does not contain raw HTTP request payloads, URLs, or credentials.
+`sqli.time` outcomes contain no elapsed timing durations or medians: they contain
+only the final verdict, reason, request count, and a sibling `timing` object with
+analysis status, reason, and request count. Boolean outcomes retain their
+per-observation `elapsed` values, response digests, and sizes. Case IDs and this
+Boolean response metadata may still disclose information.
 
 Access to artifacts must be restricted appropriately.
 Anyone with read access to the repository can normally download its
@@ -187,7 +195,7 @@ use an external target merely to test these paths.
   corresponding `string-quoted` and `numeric` presets. The observed candidate
   counts were **TP=2, TN=2, FP=0, FN=0** for those fixtures. PostgreSQL and MySQL
   integration tests are opt-in and do not run in default CI.
-- Global execution deadlines are not enforced by the engine;
-  the workflow uses a job-level timeout.
+- Time checks use a cooperative operator-owned execution deadline. Synchronous
+  HTTP I/O can still overrun that deadline; retain a job-level timeout.
 - An interrupted or failed execution may produce no report.
 - Report validation does not make untrusted case definitions safe.

@@ -19,9 +19,10 @@ from vintar.regression import (
     regression_batch_report_json,
     run_regression_batch,
 )
+from vintar.regression.batch import BatchRequestBudgetError
 from vintar.regression.binding import bind_runtime_target, parse_runtime_origin
-from vintar.regression.cases import ReviewDraftError, TimeRegressionCase
-from vintar.regression.report import UnsupportedTimeBatchReportError
+from vintar.regression.cases import ReviewDraftError
+from vintar.regression.runner import TimeExecutionPolicyError, TimeRequestBudgetError
 
 _GENERIC_ERROR = "Error: regression verification could not be completed."
 _AUTH_ERROR = "Error: explicit testing authorization is required."
@@ -126,6 +127,15 @@ def verify_command(
         float,
         typer.Option("--timeout", min=0.1, max=60.0),
     ] = 10.0,
+    time_deadline: Annotated[
+        float,
+        typer.Option(
+            "--time-deadline",
+            min=0.1,
+            max=120.0,
+            help="Trusted overall deadline in seconds for each time SQLi case.",
+        ),
+    ] = 45.0,
     max_response_size: Annotated[
         int,
         typer.Option(
@@ -182,6 +192,7 @@ def verify_command(
             max_requests=max_requests,
             max_requests_per_second=rps,
             max_timeout_seconds=timeout,
+            max_time_execution_seconds=time_deadline,
             max_response_size=max_response_size,
         )
 
@@ -190,11 +201,6 @@ def verify_command(
             target=target,
             trusted_scope=trusted_scope,
         )
-
-        if any(isinstance(case, TimeRegressionCase) for case in selected):
-            raise UnsupportedTimeBatchReportError(
-                "Time SQLi cases are not yet supported in batch reports. Use the Python single-case regression API until Phase 13-3 adds report support."
-            )
 
         # The batch runner preflights all cases and limits
         # before the first HTTP request.
@@ -213,8 +219,21 @@ def verify_command(
         _abort(_CANCEL_ERROR, code=130)
     except ReviewDraftError as exc:
         _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
-    except UnsupportedTimeBatchReportError as exc:
-        _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
+    except BatchRequestBudgetError:
+        _abort(
+            "Error: the trusted batch request budget cannot cover every selected case. Increase --max-requests to the sum of the case budgets, or run fewer cases.",
+            code=int(CIExitCode.ERROR),
+        )
+    except TimeRequestBudgetError:
+        _abort(
+            "Error: fewer than nine trusted requests remain for the time case. Increase --max-requests to cover every selected case, or run fewer cases.",
+            code=int(CIExitCode.ERROR),
+        )
+    except TimeExecutionPolicyError:
+        _abort(
+            "Error: the trusted time deadline cannot accommodate the case timeout and request rate. Increase --time-deadline, increase --rps, or use a shorter valid --timeout.",
+            code=int(CIExitCode.ERROR),
+        )
     except (OSError, ValueError):
         _abort(_GENERIC_ERROR, code=int(CIExitCode.ERROR))
     except Exception as exc:

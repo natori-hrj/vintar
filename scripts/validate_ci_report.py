@@ -23,6 +23,7 @@ from vintar.checks.sqli.models import (
     Verdict,
     VerificationResult,
 )
+from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
 
 _SCHEMA = (
     Path(__file__).resolve().parents[1]
@@ -40,6 +41,10 @@ _EXTENDED_OUTCOME_FIELDS = {
     "actual_reason_code",
     "request_count",
     "confirmation",
+}
+_TIME_OUTCOME_FIELDS = {
+    "check_type",
+    "timing",
 }
 _CONFIRMATION_RULES = CONFIRMATION_RESULT_RULES
 _OPERATIONAL_CONFIRMATION_REASONS = frozenset(
@@ -175,8 +180,13 @@ def _validate(path: Path, exit_code: int) -> None:
         for item in report["outcomes"]:
             if not isinstance(item, dict):
                 continue
+            time_fields = _TIME_OUTCOME_FIELDS & item.keys()
+            if time_fields and time_fields != _TIME_OUTCOME_FIELDS:
+                raise ValueError(
+                    "Invalid time outcome fields. Supply check_type and timing together for a time outcome, or omit both for a Boolean outcome."
+                )
             present = _EXTENDED_OUTCOME_FIELDS & item.keys()
-            if present and present != _EXTENDED_OUTCOME_FIELDS:
+            if "timing" not in item and present and present != _EXTENDED_OUTCOME_FIELDS:
                 raise ValueError(
                     "Invalid extended outcome fields. Supply actual_reason_code, request_count, and confirmation together, or omit all three for a legacy v1 report."
                 )
@@ -285,7 +295,10 @@ def _validate(path: Path, exit_code: int) -> None:
             raise ValueError("Inconsistent status count.")
 
     used = sum(
-        item.get("request_count", item["verification"]["request_count"])
+        item.get(
+            "request_count",
+            item.get("verification", {}).get("request_count", 0),
+        )
         for item in outcomes
     )
     if report["requests_used"] != used:
@@ -301,6 +314,46 @@ def _validate(path: Path, exit_code: int) -> None:
     for item in outcomes:
         verdict = item["actual_verdict"]
         matched = item["expectation_match"]
+        if item.get("check_type") == "sqli.time":
+            timing = item["timing"]
+            reason = timing["reason_code"]
+            rule = TIME_RESULT_RULES.get(reason)
+            if rule is None:
+                raise ValueError(
+                    "Invalid time outcome reason. Use a reason declared in TIME_RESULT_RULES."
+                )
+            if timing["status"] != rule.analysis_status.value:
+                raise ValueError(
+                    "Invalid time outcome status. Use the analysis status required by TIME_RESULT_RULES."
+                )
+            if item["actual_verdict"] != rule.product_verdict.value:
+                raise ValueError(
+                    "Invalid time outcome verdict. Use the product verdict required by TIME_RESULT_RULES."
+                )
+            request_count = timing["request_count"]
+            if not rule.minimum_requests <= request_count <= rule.maximum_requests:
+                raise ValueError(
+                    "Invalid time outcome request count. Use the bounded request range required by TIME_RESULT_RULES."
+                )
+            if (
+                item["actual_reason_code"] != reason
+                or item["request_count"] != request_count
+            ):
+                raise ValueError(
+                    "Invalid time outcome summary. Match the top-level reason and request count to the timing result."
+                )
+            if verdict == "inconclusive":
+                expected_status = "inconclusive"
+            elif matched:
+                expected_status = "pass"
+            else:
+                expected_status = "fail"
+            if item["status"] != expected_status:
+                raise ValueError(
+                    "Inconsistent time case status. Use the existing regression status mapping for the final verdict and expectation match."
+                )
+            continue
+
         verification = item["verification"]
         observations = verification["observations"]
         failures = verification["failures"]
