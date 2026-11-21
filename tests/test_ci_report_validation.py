@@ -11,6 +11,11 @@ import pytest
 from jsonschema import Draft202012Validator, ValidationError
 
 from vintar.checks.sqli import confirmation_runner
+from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
+from vintar.checks.sqli.error_signatures import (
+    ERROR_SIGNATURE_DBMS_NAMES,
+    ERROR_SIGNATURE_IDS,
+)
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
 from vintar.regression.batch import RegressionBatchResult
@@ -143,6 +148,162 @@ def make_time_report(reason: str):
             }
         ],
     }
+
+
+def make_error_report(reason: str):
+    rule = ERROR_RESULT_RULES[reason]
+    request_count = rule.minimum_requests
+    verdict = rule.product_verdict.value
+    status = "inconclusive" if verdict == "inconclusive" else "pass"
+    error = {
+        "status": rule.analysis_status.value,
+        "reason_code": reason,
+        "request_count": request_count,
+    }
+    if rule.requires_evidence:
+        error.update(
+            dbms="sqlite",
+            signature_id="sqlite_operational_syntax",
+        )
+    return {
+        "schema_version": 1,
+        "report_type": "regression_batch",
+        "status": status,
+        "complete": True,
+        "exit_code": 3 if status == "inconclusive" else 0,
+        "planned_case_ids": ["error-case"],
+        "executed_case_ids": ["error-case"],
+        "not_run_case_ids": [],
+        "planned_count": 1,
+        "executed_count": 1,
+        "requests_used": request_count,
+        "counts": {
+            "pass": int(status == "pass"),
+            "fail": 0,
+            "inconclusive": int(status == "inconclusive"),
+            "not_run": 0,
+        },
+        "outcomes": [
+            {
+                "case_id": "error-case",
+                "check_type": "sqli.error",
+                "expected_verdict": verdict,
+                "actual_verdict": verdict,
+                "actual_reason_code": reason,
+                "request_count": request_count,
+                "expectation_match": True,
+                "status": status,
+                "error": error,
+            }
+        ],
+    }
+
+
+def test_error_schema_and_validator_derive_contract_tables():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    assert set(schema["$defs"]["error"]["properties"]["reason_code"]["enum"]) == set(
+        ERROR_RESULT_RULES
+    )
+    assert set(schema["$defs"]["error"]["properties"]["dbms"]["enum"]) == set(
+        ERROR_SIGNATURE_DBMS_NAMES
+    )
+    assert set(schema["$defs"]["error"]["properties"]["signature_id"]["enum"]) == set(
+        ERROR_SIGNATURE_IDS
+    )
+    assert _VALIDATOR_MODULE["ERROR_RESULT_RULES"] is ERROR_RESULT_RULES
+
+
+@pytest.mark.parametrize("reason", ERROR_RESULT_RULES)
+def test_every_error_result_rule_is_accepted_by_schema_and_validator(tmp_path, reason):
+    report = make_error_report(reason)
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(report)
+
+    _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize("reason", ERROR_RESULT_RULES)
+@pytest.mark.parametrize(
+    "field", ("verdict", "count_below", "count_above", "status", "reason")
+)
+def test_error_result_rule_mismatches_are_rejected(tmp_path, reason, field):
+    report = make_error_report(reason)
+    outcome = report["outcomes"][0]
+    if field == "verdict":
+        outcome["actual_verdict"] = (
+            "not_detected"
+            if outcome["actual_verdict"] == "inconclusive"
+            else "inconclusive"
+        )
+    elif field in {"count_below", "count_above"}:
+        rule = ERROR_RESULT_RULES[reason]
+        invalid = (
+            rule.minimum_requests - 1
+            if field == "count_below"
+            else rule.maximum_requests + 1
+        )
+        outcome["request_count"] = invalid
+        outcome["error"]["request_count"] = invalid
+        report["requests_used"] = invalid
+    elif field == "status":
+        outcome["error"]["status"] = (
+            "matched" if outcome["error"]["status"] != "matched" else "inconclusive"
+        )
+    else:
+        replacement = next(item for item in ERROR_RESULT_RULES if item != reason)
+        outcome["error"]["reason_code"] = replacement
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize("missing", ("check_type", "error"))
+def test_error_outcome_fields_are_all_or_nothing(tmp_path, missing):
+    report = make_error_report("dbms_error_not_observed")
+    del report["outcomes"][0][missing]
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 0)
+
+
+@pytest.mark.parametrize("field", ("dbms", "signature_id"))
+def test_error_evidence_is_all_or_nothing(tmp_path, field):
+    report = make_error_report("dbms_error_disclosed")
+    del report["outcomes"][0]["error"][field]
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 3)
+
+
+def test_error_evidence_is_forbidden_when_rule_does_not_require_it(tmp_path):
+    report = make_error_report("dbms_error_not_observed")
+    report["outcomes"][0]["error"].update(
+        dbms="sqlite", signature_id="sqlite_operational_syntax"
+    )
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 0)
+
+
+def test_error_evidence_requires_reviewed_dbms_signature_pair(tmp_path):
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"]["dbms"] = "mysql"
+
+    with pytest.raises(ValueError, match=r"reviewed DBMS and signature ID pair"):
+        _validate(write_report(tmp_path, report), 3)
+
+
+def test_boolean_outcome_rejects_error_object(tmp_path):
+    report = make_report()
+    report["outcomes"][0]["error"] = {
+        "status": "inconclusive",
+        "reason_code": "probe_timeout",
+        "request_count": 1,
+    }
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 3)
 
 
 def test_time_schema_reason_enum_matches_product_contract():

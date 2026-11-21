@@ -62,6 +62,33 @@ max_requests = 9
 requests_per_second = 10.0
 timeout_seconds = 3.0
 """
+ERROR_CASE_TEMPLATE = """version = 1
+id = "{case_id}"
+type = "sqli.error"
+expected_verdict = "{expected}"
+
+[target]
+url = "http://cli-fixture.invalid/{path}"
+allowed_origin = "http://cli-fixture.invalid"
+
+[[target.params]]
+name = "id"
+value = "1"
+
+[injection]
+location = "query"
+name = "id"
+occurrence = 0
+mode = "append"
+
+[probes]
+error_payload = "'"
+
+[limits]
+max_requests = 4
+requests_per_second = 10.0
+timeout_seconds = 3.0
+"""
 
 
 @dataclass(frozen=True)
@@ -73,6 +100,8 @@ class Scenario:
     timeout_on_second_request: bool = False
     time_result: str | None = None
     mixed: bool = False
+    error_result: str | None = None
+    mixed_error: bool = False
 
 
 SCENARIOS = {
@@ -97,6 +126,23 @@ SCENARIOS = {
         6,
         time_result="timing_pattern_matched",
         mixed=True,
+    ),
+    "verify/error-not-detected.json": Scenario(
+        0, 4, error_result="dbms_error_not_observed"
+    ),
+    "verify/error-disclosed.json": Scenario(
+        3,
+        4,
+        expected_verdict="inconclusive",
+        error_result="dbms_error_disclosed",
+    ),
+    "verify/mixed-boolean-time-error.json": Scenario(
+        3,
+        10,
+        time_result="timing_pattern_matched",
+        mixed=True,
+        error_result="dbms_error_not_observed",
+        mixed_error=True,
     ),
     "discover/success.json": Scenario(0, 0),
     "review-draft/success.json": Scenario(0, 0),
@@ -147,8 +193,32 @@ def cli_args(name: str, scenario: Scenario, folder: Path) -> list[str]:
                 source = CASE_TEMPLATE.format(expected="not_detected", path="/ok")
                 source = source.replace('id = "fixture-case"', 'id = "boolean-case"')
                 (folder / "boolean-case.toml").write_text(source, encoding="utf-8")
-            budget = 15 if scenario.mixed else 9
+            if scenario.mixed_error:
+                (folder / "error-case.toml").write_text(
+                    ERROR_CASE_TEMPLATE.format(
+                        case_id="error-case",
+                        expected="not_detected",
+                        path="error-not-detected",
+                    ),
+                    encoding="utf-8",
+                )
+            budget = 19 if scenario.mixed_error else 15 if scenario.mixed else 9
             args = ["verify", "--cases", str(folder), "--max-requests", str(budget)]
+        elif scenario.error_result is not None:
+            path = (
+                "error-disclosed"
+                if scenario.error_result == "dbms_error_disclosed"
+                else "error-not-detected"
+            )
+            (folder / "error-case.toml").write_text(
+                ERROR_CASE_TEMPLATE.format(
+                    case_id="error-case",
+                    expected=scenario.expected_verdict,
+                    path=path,
+                ),
+                encoding="utf-8",
+            )
+            args = ["verify", "--cases", str(folder), "--max-requests", "4"]
         else:
             cases = (
                 (("a-case", "/limited"), ("b-case", "/ok"))
@@ -491,6 +561,11 @@ def capture(
             raise httpx.ReadTimeout("Fixture probe timed out.", request=request)
         if request.url.path == "/limited":
             return httpx.Response(429, content=b"rate-limited")
+        if request.url.path == "/error-disclosed" and request.url.params["id"] != "1":
+            return httpx.Response(
+                200,
+                content=b'sqlite3.OperationalError: near "fixture": syntax error',
+            )
         return httpx.Response(200, content=b"fixed-response")
 
     now = 0.0

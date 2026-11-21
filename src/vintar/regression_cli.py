@@ -13,7 +13,6 @@ from vintar.regression import (
     MAX_BATCH_CASES,
     AnyRegressionCase,
     CIExitCode,
-    ErrorRegressionCase,
     TrustedExecutionPolicy,
     batch_exit_code,
     load_regression_case,
@@ -29,10 +28,6 @@ _GENERIC_ERROR = "Error: regression verification could not be completed."
 _AUTH_ERROR = "Error: explicit testing authorization is required."
 _OUTPUT_ERROR = "Error: regression report output failed."
 _CANCEL_ERROR = "Error: regression verification was cancelled."
-
-
-class ErrorCaseReportUnsupportedError(ValueError):
-    """Error cases cannot enter the CI report path before Phase 14-3."""
 
 
 def _case_paths(source: str) -> tuple[Path, ...]:
@@ -207,11 +202,6 @@ def verify_command(
             trusted_scope=trusted_scope,
         )
 
-        if any(isinstance(case, ErrorRegressionCase) for case in selected):
-            raise ErrorCaseReportUnsupportedError(
-                "Error SQLi cases are not yet supported in CI batch reports. Run the Python single-case API for development, or wait for Phase 14-3 report support."
-            )
-
         # The batch runner preflights all cases and limits
         # before the first HTTP request.
         result = run_regression_batch(
@@ -228,8 +218,6 @@ def verify_command(
     except KeyboardInterrupt:
         _abort(_CANCEL_ERROR, code=130)
     except ReviewDraftError as exc:
-        _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
-    except ErrorCaseReportUnsupportedError as exc:
         _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
     except BatchRequestBudgetError:
         _abort(

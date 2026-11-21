@@ -268,7 +268,10 @@
           "$ref": "#/$defs/identifier"
         },
         "check_type": {
-          "const": "sqli.time"
+          "enum": [
+            "sqli.time",
+            "sqli.error"
+          ]
         },
         "expected_verdict": {
           "$ref": "#/$defs/verdict"
@@ -296,14 +299,18 @@
         },
         "timing": {
           "$ref": "#/$defs/timing"
+        },
+        "error": {
+          "$ref": "#/$defs/error"
         }
       },
       "allOf": [
         {
           "if": {
-            "required": [
-              "check_type"
-            ]
+            "properties": {
+              "check_type": { "const": "sqli.time" }
+            },
+            "required": ["check_type"]
           },
           "then": {
             "allOf": [
@@ -319,27 +326,51 @@
             "not": {
               "anyOf": [
                 { "required": ["verification"] },
-                { "required": ["confirmation"] }
+                { "required": ["confirmation"] },
+                { "required": ["error"] }
               ]
             }
           },
           "else": {
-            "required": [
-              "verification"
-            ],
-            "dependentRequired": {
-              "actual_reason_code": [
+            "if": {
+              "properties": {
+                "check_type": { "const": "sqli.error" }
+              },
+              "required": ["check_type"]
+            },
+            "then": {
+              "$ref": "#/$defs/error_outcome",
+              "required": [
+                "actual_reason_code",
                 "request_count",
-                "confirmation"
+                "error"
               ],
-              "request_count": [
-                "actual_reason_code",
-                "confirmation"
+              "not": {
+                "anyOf": [
+                  { "required": ["verification"] },
+                  { "required": ["confirmation"] },
+                  { "required": ["timing"] }
+                ]
+              }
+            },
+            "else": {
+              "required": [
+                "verification"
               ],
-              "confirmation": [
-                "actual_reason_code",
-                "request_count"
-              ]
+              "dependentRequired": {
+                "actual_reason_code": [
+                  "request_count",
+                  "confirmation"
+                ],
+                "request_count": [
+                  "actual_reason_code",
+                  "confirmation"
+                ],
+                "confirmation": [
+                  "actual_reason_code",
+                  "request_count"
+                ]
+              }
             }
           }
         },
@@ -445,6 +476,204 @@
             }
           }
         }
+      ]
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason_code", "request_count"],
+      "properties": {
+        "status": {
+          "enum": ["matched", "not_matched", "inconclusive"]
+        },
+        "reason_code": {
+          "enum": [
+            "dbms_error_disclosed",
+            "dbms_error_not_observed",
+            "baseline_dbms_error",
+            "unstable_response",
+            "unstable_error_signal",
+            "ambiguous_dbms_error",
+            "non_success_status",
+            "truncated_response",
+            "probe_timeout",
+            "probe_failed",
+            "probe_interrupted",
+            "rate_limited"
+          ]
+        },
+        "request_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "dbms": {
+          "enum": ["mssql", "mysql", "oracle", "postgresql", "sqlite"]
+        },
+        "signature_id": {
+          "enum": [
+            "mssql_syntax_error",
+            "mysql_syntax_error_1064",
+            "oracle_syntax_error",
+            "postgresql_syntax_error",
+            "sqlite_operational_syntax"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "reason_code": { "const": "dbms_error_disclosed" } },
+            "required": ["reason_code"]
+          },
+          "then": { "required": ["dbms", "signature_id"] },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["dbms"] },
+                { "required": ["signature_id"] }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "error_outcome": {
+      "allOf": [
+        {
+          "oneOf": [
+            { "$ref": "#/$defs/error_disclosed" },
+            { "$ref": "#/$defs/error_not_observed" },
+            { "$ref": "#/$defs/error_complete_inconclusive" },
+            { "$ref": "#/$defs/error_operational" }
+          ]
+        },
+        {
+          "if": { "properties": { "request_count": { "const": 1 } } },
+          "then": { "properties": { "error": { "properties": { "request_count": { "const": 1 } } } } }
+        },
+        {
+          "if": { "properties": { "request_count": { "const": 2 } } },
+          "then": { "properties": { "error": { "properties": { "request_count": { "const": 2 } } } } }
+        },
+        {
+          "if": { "properties": { "request_count": { "const": 3 } } },
+          "then": { "properties": { "error": { "properties": { "request_count": { "const": 3 } } } } }
+        },
+        {
+          "if": { "properties": { "request_count": { "const": 4 } } },
+          "then": { "properties": { "error": { "properties": { "request_count": { "const": 4 } } } } }
+        }
+      ]
+    },
+    "error_disclosed": {
+      "type": "object",
+      "properties": {
+        "actual_verdict": { "const": "inconclusive" },
+        "actual_reason_code": { "const": "dbms_error_disclosed" },
+        "request_count": { "const": 4 },
+        "error": {
+          "type": "object",
+          "properties": {
+            "status": { "const": "matched" },
+            "reason_code": { "const": "dbms_error_disclosed" },
+            "request_count": { "const": 4 }
+          }
+        }
+      }
+    },
+    "error_not_observed": {
+      "type": "object",
+      "properties": {
+        "actual_verdict": { "const": "not_detected" },
+        "actual_reason_code": { "const": "dbms_error_not_observed" },
+        "request_count": { "const": 4 },
+        "error": {
+          "type": "object",
+          "properties": {
+            "status": { "const": "not_matched" },
+            "reason_code": { "const": "dbms_error_not_observed" },
+            "request_count": { "const": 4 }
+          }
+        }
+      }
+    },
+    "error_complete_inconclusive": {
+      "type": "object",
+      "properties": {
+        "actual_verdict": { "const": "inconclusive" },
+        "actual_reason_code": {
+          "enum": [
+            "baseline_dbms_error",
+            "unstable_response",
+            "unstable_error_signal",
+            "ambiguous_dbms_error",
+            "non_success_status"
+          ]
+        },
+        "request_count": { "const": 4 },
+        "error": {
+          "type": "object",
+          "properties": {
+            "status": { "const": "inconclusive" },
+            "reason_code": {
+              "enum": [
+                "baseline_dbms_error",
+                "unstable_response",
+                "unstable_error_signal",
+                "ambiguous_dbms_error",
+                "non_success_status"
+              ]
+            },
+            "request_count": { "const": 4 }
+          }
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "actual_reason_code": { "const": "baseline_dbms_error" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "baseline_dbms_error" } } } } } },
+        { "if": { "properties": { "actual_reason_code": { "const": "unstable_response" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "unstable_response" } } } } } },
+        { "if": { "properties": { "actual_reason_code": { "const": "unstable_error_signal" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "unstable_error_signal" } } } } } },
+        { "if": { "properties": { "actual_reason_code": { "const": "ambiguous_dbms_error" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "ambiguous_dbms_error" } } } } } },
+        { "if": { "properties": { "actual_reason_code": { "const": "non_success_status" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "non_success_status" } } } } } }
+      ]
+    },
+    "error_operational": {
+      "type": "object",
+      "properties": {
+        "actual_verdict": { "const": "inconclusive" },
+        "actual_reason_code": {
+          "enum": [
+            "truncated_response",
+            "probe_timeout",
+            "probe_failed",
+            "probe_interrupted",
+            "rate_limited"
+          ]
+        },
+        "request_count": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "error": {
+          "type": "object",
+          "properties": {
+            "status": { "const": "inconclusive" },
+            "reason_code": {
+              "enum": [
+                "truncated_response",
+                "probe_timeout",
+                "probe_failed",
+                "probe_interrupted",
+                "rate_limited"
+              ]
+            },
+            "request_count": { "type": "integer", "minimum": 1, "maximum": 4 }
+          }
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "actual_reason_code": { "const": "truncated_response" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "truncated_response" } } } } } },
+        { "if": { "properties": { "actual_reason_code": { "const": "probe_timeout" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "probe_timeout" } } } } } },
+        { "if": { "properties": { "actual_reason_code": { "const": "probe_failed" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "probe_failed" } } } } } },
+        { "if": { "properties": { "actual_reason_code": { "const": "probe_interrupted" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "probe_interrupted" } } } } } },
+        { "if": { "properties": { "actual_reason_code": { "const": "rate_limited" } } }, "then": { "properties": { "error": { "properties": { "reason_code": { "const": "rate_limited" } } } } } }
       ]
     },
     "timing": {
@@ -666,7 +895,9 @@
     },
     "final_reason": {
       "enum": [
+        "ambiguous_dbms_error",
         "ambiguous_timing",
+        "baseline_dbms_error",
         "boolean_candidate",
         "boolean_differential",
         "budget_unavailable",
@@ -683,6 +914,8 @@
         "confirmation_truncated",
         "confirmation_unstable",
         "connection_error",
+        "dbms_error_disclosed",
+        "dbms_error_not_observed",
         "incomplete_probes",
         "insufficient_evidence",
         "no_boolean_difference",
@@ -697,6 +930,7 @@
         "timing_pattern_not_matched",
         "truncated_response",
         "unexpected_difference",
+        "unstable_error_signal",
         "unstable_timing",
         "unstable_response"
       ]

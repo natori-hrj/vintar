@@ -4,11 +4,13 @@ import json
 from enum import IntEnum
 
 from vintar.checks.sqli.confirmation_runner import ConfirmationStatus
+from vintar.checks.sqli.error_contract import error_product_result
 from vintar.checks.sqli.models import VerificationResult
 from vintar.checks.sqli.report import verification_report_dict
 from vintar.checks.sqli.time_contract import time_product_result
 from vintar.regression.batch import RegressionBatchResult
 from vintar.regression.runner import (
+    ErrorRegressionOutcome,
     RegressionOutcome,
     RegressionStatus,
     TimeRegressionOutcome,
@@ -85,7 +87,7 @@ def regression_batch_report_dict(
         if type(outcome) is RegressionOutcome:
             if type(outcome.verification) is not VerificationResult:
                 raise TypeError("result contains an unsupported derived model.")
-        elif type(outcome) is not TimeRegressionOutcome:
+        elif type(outcome) not in {TimeRegressionOutcome, ErrorRegressionOutcome}:
             raise TypeError("result contains an unsupported derived model.")
 
     executed_ids = tuple(outcome.case_id for outcome in result.outcomes)
@@ -104,22 +106,50 @@ def regression_batch_report_dict(
     outcomes: list[dict[str, object]] = []
 
     for outcome in result.outcomes:
-        if type(outcome) is TimeRegressionOutcome:
-            product = time_product_result(outcome.time_run.analysis)
+        if type(outcome) is ErrorRegressionOutcome:
+            product = error_product_result(outcome.error_run.analysis)
+            evidence = outcome.error_run.analysis.evidence
+            error_report: dict[str, object] = {
+                "status": outcome.error_run.analysis.status.value,
+                "reason_code": product.reason_code,
+                "request_count": product.request_count,
+            }
+            if evidence is not None:
+                error_report.update(
+                    dbms=evidence.dbms,
+                    signature_id=evidence.signature_id,
+                )
             outcomes.append(
                 {
                     "case_id": outcome.case_id,
-                    "check_type": "sqli.time",
+                    "check_type": "sqli.error",
                     "expected_verdict": outcome.expected_verdict.value,
                     "actual_verdict": product.verdict.value,
                     "actual_reason_code": product.reason_code,
                     "request_count": product.request_count,
                     "expectation_match": outcome.expectation_match,
                     "status": outcome.status.value,
+                    "error": error_report,
+                }
+            )
+            continue
+
+        if type(outcome) is TimeRegressionOutcome:
+            time_product = time_product_result(outcome.time_run.analysis)
+            outcomes.append(
+                {
+                    "case_id": outcome.case_id,
+                    "check_type": "sqli.time",
+                    "expected_verdict": outcome.expected_verdict.value,
+                    "actual_verdict": time_product.verdict.value,
+                    "actual_reason_code": time_product.reason_code,
+                    "request_count": time_product.request_count,
+                    "expectation_match": outcome.expectation_match,
+                    "status": outcome.status.value,
                     "timing": {
                         "status": outcome.time_run.analysis.status.value,
-                        "reason_code": product.reason_code,
-                        "request_count": product.request_count,
+                        "reason_code": time_product.reason_code,
+                        "request_count": time_product.request_count,
                     },
                 }
             )

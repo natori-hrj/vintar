@@ -6,14 +6,14 @@ security verification workflow.
 
 ## Supported Scope
 
-Vintar supports Boolean- and time-based SQL injection regression checks for
+Vintar supports Boolean-, time-, and error-based SQL injection regression checks for
 `GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
 materialization run offline. The workflow is
 `discover → review-draft → materialize-case → verify`. Reviewers explicitly
 select the `string-quoted` or `numeric` probe preset for Boolean cases that use presets.
 Verification runs against an authorized, configured target.
 
-Deferred are confirmed `VULNERABLE` verdicts, error-based and UNION-based SQL
+Deferred are confirmed Error `VULNERABLE` verdicts and UNION-based SQL
 injection checks, POST form and JSON body injection, cookie and header injection,
 and authenticated workflows.
 
@@ -106,6 +106,7 @@ It does not run automatically on pull requests.
 | `NOT_DETECTED` matches the reviewed expectation for every case in a complete batch | `0` | **PASS.** No Boolean differential was detected under the tested probes and conditions. This does not prove SQL injection is absent. |
 | `INCONCLUSIVE` with reason `boolean_candidate` | `3` | **BLOCK / Review required.** A SQLi-like Boolean response differential was observed. This is a candidate signal and requires independent evidence before anyone can call it a confirmed vulnerability. |
 | `INCONCLUSIVE` with reason `timing_pattern_matched` | `3` | **BLOCK / Review required.** A bounded timing pattern was reproduced. This is a candidate signal, never a confirmed vulnerability. |
+| `INCONCLUSIVE` with reason `dbms_error_disclosed` | `3` | **BLOCK / Review required.** A new, reproducible DBMS diagnostic was displayed. Diagnostic disclosure alone does not prove that input changed SQL execution. |
 | Other `INCONCLUSIVE` reasons or an incomplete batch | `3` | **BLOCK / Investigation required.** Verification was insufficient. Check the budget, rate limits, transport or HTTP status, and response stability. |
 | `FAIL` | `1` | **FAIL.** A `NOT_DETECTED` result did not match the reviewed expectation. |
 | `ERROR` | `2` | **ERROR.** Invalid input, configuration, execution, or output prevented a usable result. |
@@ -138,6 +139,10 @@ only the final verdict, reason, request count, and a sibling `timing` object wit
 analysis status, reason, and request count. Boolean outcomes retain their
 per-observation `elapsed` values, response digests, and sizes. Case IDs and this
 Boolean response metadata may still disclose information.
+`sqli.error` outcomes likewise contain only the final verdict, reason, request
+count, and a sibling `error` object. A matched signal adds only the reviewed
+DBMS family and signature ID. Response bodies, matched text, payloads, and
+target URLs are never included.
 
 Access to artifacts must be restricted appropriately.
 Anyone with read access to the repository can normally download its

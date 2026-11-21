@@ -1,0 +1,46 @@
+{
+  "exit_code": 3,
+  "stderr": "",
+  "stdout_json": {
+    "complete": true,
+    "counts": {
+      "fail": 0,
+      "inconclusive": 1,
+      "not_run": 0,
+      "pass": 0
+    },
+    "executed_case_ids": [
+      "error-case"
+    ],
+    "executed_count": 1,
+    "exit_code": 3,
+    "not_run_case_ids": [],
+    "outcomes": [
+      {
+        "actual_reason_code": "dbms_error_disclosed",
+        "actual_verdict": "inconclusive",
+        "case_id": "error-case",
+        "check_type": "sqli.error",
+        "error": {
+          "dbms": "sqlite",
+          "reason_code": "dbms_error_disclosed",
+          "request_count": 4,
+          "signature_id": "sqlite_operational_syntax",
+          "status": "matched"
+        },
+        "expectation_match": true,
+        "expected_verdict": "inconclusive",
+        "request_count": 4,
+        "status": "inconclusive"
+      }
+    ],
+    "planned_case_ids": [
+      "error-case"
+    ],
+    "planned_count": 1,
+    "report_type": "regression_batch",
+    "requests_used": 4,
+    "schema_version": 1,
+    "status": "inconclusive"
+  }
+}

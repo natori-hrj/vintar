@@ -14,6 +14,8 @@ from vintar.checks.sqli.confirmation_runner import (
     CONFIRMATION_RESULT_RULES,
     ConfirmationStatus,
 )
+from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
+from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
 from vintar.checks.sqli.models import (
     BooleanEvidence,
     Observation,
@@ -45,6 +47,10 @@ _EXTENDED_OUTCOME_FIELDS = {
 _TIME_OUTCOME_FIELDS = {
     "check_type",
     "timing",
+}
+_ERROR_OUTCOME_FIELDS = {
+    "check_type",
+    "error",
 }
 _CONFIRMATION_RULES = CONFIRMATION_RESULT_RULES
 _OPERATIONAL_CONFIRMATION_REASONS = frozenset(
@@ -180,13 +186,23 @@ def _validate(path: Path, exit_code: int) -> None:
         for item in report["outcomes"]:
             if not isinstance(item, dict):
                 continue
-            time_fields = _TIME_OUTCOME_FIELDS & item.keys()
-            if time_fields and time_fields != _TIME_OUTCOME_FIELDS:
+            is_time = item.get("check_type") == "sqli.time"
+            if (is_time and "timing" not in item) or (not is_time and "timing" in item):
                 raise ValueError(
                     "Invalid time outcome fields. Supply check_type and timing together for a time outcome, or omit both for a Boolean outcome."
                 )
+            is_error = item.get("check_type") == "sqli.error"
+            if (is_error and "error" not in item) or (not is_error and "error" in item):
+                raise ValueError(
+                    "Invalid Error SQLi outcome fields. Supply check_type and error together for an Error outcome, or omit both for another check type."
+                )
             present = _EXTENDED_OUTCOME_FIELDS & item.keys()
-            if "timing" not in item and present and present != _EXTENDED_OUTCOME_FIELDS:
+            if (
+                "timing" not in item
+                and "error" not in item
+                and present
+                and present != _EXTENDED_OUTCOME_FIELDS
+            ):
                 raise ValueError(
                     "Invalid extended outcome fields. Supply actual_reason_code, request_count, and confirmation together, or omit all three for a legacy v1 report."
                 )
@@ -351,6 +367,61 @@ def _validate(path: Path, exit_code: int) -> None:
             if item["status"] != expected_status:
                 raise ValueError(
                     "Inconsistent time case status. Use the existing regression status mapping for the final verdict and expectation match."
+                )
+            continue
+
+        if item.get("check_type") == "sqli.error":
+            error = item["error"]
+            reason = error["reason_code"]
+            rule = ERROR_RESULT_RULES.get(reason)
+            if rule is None:
+                raise ValueError(
+                    "Invalid Error SQLi outcome reason. Use a reason declared in ERROR_RESULT_RULES."
+                )
+            if error["status"] != rule.analysis_status.value:
+                raise ValueError(
+                    "Invalid Error SQLi outcome status. Use the analysis status required by ERROR_RESULT_RULES."
+                )
+            if item["actual_verdict"] != rule.product_verdict.value:
+                raise ValueError(
+                    "Invalid Error SQLi outcome verdict. Use the product verdict required by ERROR_RESULT_RULES."
+                )
+            request_count = error["request_count"]
+            if not rule.minimum_requests <= request_count <= rule.maximum_requests:
+                raise ValueError(
+                    "Invalid Error SQLi outcome request count. Use the bounded request range required by ERROR_RESULT_RULES."
+                )
+            if (
+                item["actual_reason_code"] != reason
+                or item["request_count"] != request_count
+            ):
+                raise ValueError(
+                    "Invalid Error SQLi outcome summary. Match the top-level reason and request count to the error result."
+                )
+            evidence_fields = {"dbms", "signature_id"} & error.keys()
+            if rule.requires_evidence:
+                if evidence_fields != {"dbms", "signature_id"}:
+                    raise ValueError(
+                        "Invalid Error SQLi evidence. Supply DBMS and signature ID together when ERROR_RESULT_RULES requires evidence."
+                    )
+                signature = ERROR_SIGNATURES.get(error["signature_id"])
+                if signature is None or signature.dbms != error["dbms"]:
+                    raise ValueError(
+                        "Invalid Error SQLi evidence pair. Use a reviewed DBMS and signature ID pair from ERROR_SIGNATURES."
+                    )
+            elif evidence_fields:
+                raise ValueError(
+                    "Unexpected Error SQLi evidence. Omit DBMS and signature ID when ERROR_RESULT_RULES does not require evidence."
+                )
+            if verdict == "inconclusive":
+                expected_status = "inconclusive"
+            elif matched:
+                expected_status = "pass"
+            else:
+                expected_status = "fail"
+            if item["status"] != expected_status:
+                raise ValueError(
+                    "Inconsistent Error SQLi case status. Use the existing regression status mapping for the final verdict and expectation match."
                 )
             continue
 
