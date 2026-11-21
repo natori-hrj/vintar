@@ -1,7 +1,7 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Reviewed DSVW Boolean SQLi measurement surface",
+    "title": "Reviewed DSVW SQLi measurement surface",
     "version": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908"
   },
   "servers": [

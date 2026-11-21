@@ -32,6 +32,8 @@
 **Internal**
 
 - Add a third-party DSVW evaluation harness for maintainers.
+  - Internally extend the manual pinned-source measurement to cover explicit
+    nine-request `sqli.time` cases, reported separately from Boolean results.
 
 ## [0.2.0] - 2026-11-20
 

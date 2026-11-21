@@ -11,12 +11,16 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from test_sqli_candidate_reliability import classify as reliability_classify
+from typer.testing import CliRunner
 
 from vintar.checks.sqli.models import Verdict
+from vintar.cli import app
+from vintar.regression.cases import TimeRegressionCase, load_regression_case
 
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
 TARGETS = THIRD_PARTY / "targets.toml"
+CONFIGS = THIRD_PARTY / "dsvw" / "configs"
 RUNNER = ROOT / "scripts" / "run_third_party_sqli_measurement.py"
 PREPARER = ROOT / "scripts" / "prepare_third_party_sqli.py"
 
@@ -49,7 +53,8 @@ def expected_report() -> dict[str, object]:
         {
             "actual_verdict": "inconclusive",
             "classification": "tp",
-            "confirmation": {
+            "check_type": "sqli.boolean",
+            "detail": {
                 "configured": True,
                 "reason_code": "confirmation_pattern_matched",
                 "request_count": 12,
@@ -65,7 +70,8 @@ def expected_report() -> dict[str, object]:
         {
             "actual_verdict": "inconclusive",
             "classification": "tp",
-            "confirmation": {
+            "check_type": "sqli.boolean",
+            "detail": {
                 "configured": False,
                 "reason_code": None,
                 "request_count": 0,
@@ -80,8 +86,41 @@ def expected_report() -> dict[str, object]:
         },
         {
             "actual_verdict": "inconclusive",
+            "check_type": "sqli.time",
             "classification": "non_decision",
-            "confirmation": {
+            "detail": {
+                "reason_code": "unstable_timing",
+                "request_count": 9,
+                "status": "inconclusive",
+            },
+            "endpoint_id": "dsvw-time-id",
+            "expected_label": "positive",
+            "expected_verdict": "inconclusive",
+            "mode": "nine_probe",
+            "reason_code": "unstable_timing",
+            "request_count": 9,
+        },
+        {
+            "actual_verdict": "not_detected",
+            "check_type": "sqli.time",
+            "classification": "tn",
+            "detail": {
+                "reason_code": "timing_pattern_not_matched",
+                "request_count": 9,
+                "status": "not_confirmed",
+            },
+            "endpoint_id": "dsvw-time-version-query",
+            "expected_label": "negative",
+            "expected_verdict": "not_detected",
+            "mode": "nine_probe",
+            "reason_code": "timing_pattern_not_matched",
+            "request_count": 9,
+        },
+        {
+            "actual_verdict": "inconclusive",
+            "classification": "non_decision",
+            "check_type": "sqli.boolean",
+            "detail": {
                 "configured": True,
                 "reason_code": "initial_not_eligible",
                 "request_count": 0,
@@ -97,7 +136,8 @@ def expected_report() -> dict[str, object]:
         {
             "actual_verdict": "inconclusive",
             "classification": "non_decision",
-            "confirmation": {
+            "check_type": "sqli.boolean",
+            "detail": {
                 "configured": False,
                 "reason_code": None,
                 "request_count": 0,
@@ -113,19 +153,30 @@ def expected_report() -> dict[str, object]:
     ]
     return {
         "counts": {
-            "confirmation": {
-                "fn": 0,
-                "fp": 0,
-                "non_decision": 1,
-                "tn": 0,
-                "tp": 1,
+            "sqli.boolean": {
+                "confirmation": {
+                    "fn": 0,
+                    "fp": 0,
+                    "non_decision": 1,
+                    "tn": 0,
+                    "tp": 1,
+                },
+                "six_probe": {
+                    "fn": 0,
+                    "fp": 0,
+                    "non_decision": 1,
+                    "tn": 0,
+                    "tp": 1,
+                },
             },
-            "six_probe": {
-                "fn": 0,
-                "fp": 0,
-                "non_decision": 1,
-                "tn": 0,
-                "tp": 1,
+            "sqli.time": {
+                "nine_probe": {
+                    "fn": 0,
+                    "fp": 0,
+                    "non_decision": 1,
+                    "tn": 1,
+                    "tp": 0,
+                }
             },
         },
         "records": records,
@@ -148,9 +199,24 @@ def test_reviewed_declarations_are_exact_and_digest_bound():
     assert [record["id"] for record in records] == [
         "dsvw-blind-boolean-id",
         "dsvw-version-query",
+        "dsvw-time-id",
+        "dsvw-time-version-query",
     ]
-    assert [record["label"] for record in records] == ["positive", "negative"]
+    assert [record["check_type"] for record in records] == [
+        "sqli.boolean",
+        "sqli.boolean",
+        "sqli.time",
+        "sqli.time",
+    ]
+    assert [record["label"] for record in records] == [
+        "positive",
+        "negative",
+        "positive",
+        "negative",
+    ]
     assert [record["evidence_type"] for record in records] == [
+        "non_parameterized_sql_sink",
+        "parameter_does_not_reach_sql_sink",
         "non_parameterized_sql_sink",
         "parameter_does_not_reach_sql_sink",
     ]
@@ -173,6 +239,8 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
     assert [path.name for path in configs] == [
         "dsvw-blind-boolean-id-confirmation.toml",
         "dsvw-blind-boolean-id-six.toml",
+        "dsvw-time-id-time.toml",
+        "dsvw-time-version-query-time.toml",
         "dsvw-version-query-confirmation.toml",
         "dsvw-version-query-six.toml",
     ]
@@ -188,8 +256,126 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
         parsed.append(config)
     assert sum(config["limits"]["max_requests"] == 6 for config in parsed) == 2
     assert sum(config["limits"]["max_requests"] == 18 for config in parsed) == 2
-    assert sum(config["probes"]["selection"] == "explicit" for config in parsed) == 2
+    assert sum(config["limits"]["max_requests"] == 9 for config in parsed) == 2
+    assert sum(config["probes"]["selection"] == "explicit" for config in parsed) == 4
     assert sum(config["probes"]["selection"] == "preset" for config in parsed) == 2
+    time_configs = [config for config in parsed if config.get("type") == "sqli.time"]
+    assert len(time_configs) == 2
+    assert all(config["injection"]["mode"] == "replace" for config in time_configs)
+    assert all(
+        config["probes"]["expected_delay_seconds"] == 0.5 for config in time_configs
+    )
+
+
+@pytest.mark.parametrize(
+    ("record_id", "input_id", "parameter", "index", "expected"),
+    [
+        (
+            "dsvw-time-id",
+            "input-0927742c7a4ae9527f51f8c541502371",
+            "id",
+            0,
+            "inconclusive",
+        ),
+        (
+            "dsvw-time-version-query",
+            "input-ffe5bfa38242d9cad17138d92bb38efd",
+            "v",
+            1,
+            "not_detected",
+        ),
+    ],
+)
+def test_time_configs_materialize_and_load_offline(
+    tmp_path, monkeypatch, record_id, input_id, parameter, index, expected
+):
+    monkeypatch.chdir(tmp_path)
+    spec = tmp_path / "openapi.json"
+    spec.write_bytes((THIRD_PARTY / "dsvw" / "openapi.json").read_bytes())
+    selection = tmp_path / "selection.toml"
+    selection.write_text(f'version = 1\napproved = ["{input_id}"]\n', encoding="utf-8")
+    runner = CliRunner()
+    discovered = runner.invoke(
+        app,
+        [
+            "discover",
+            "--spec",
+            str(spec),
+            "--selection",
+            str(selection),
+            "--drafts-dir",
+            str(tmp_path / "drafts"),
+        ],
+    )
+    assert discovered.exit_code == 0 and discovered.stderr == ""
+    draft_name = json.loads(discovered.stdout)["drafts"][0]
+    draft = tmp_path / "drafts" / draft_name
+    other = "v" if parameter == "id" else "id"
+    answers = tmp_path / "answers.json"
+    answers.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "expected_verdict": expected,
+                "parameters": {
+                    parameter: {
+                        "pointer": f"/paths/~1/get/parameters/{index}/schema/example"
+                    },
+                    other: {"omit": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    review = tmp_path / "review.json"
+    reviewed = runner.invoke(
+        app,
+        [
+            "review-draft",
+            "--spec",
+            str(spec),
+            "--draft",
+            str(draft),
+            "--answers",
+            str(answers),
+            "--output",
+            str(review),
+        ],
+    )
+    assert reviewed.exit_code == 0 and reviewed.stderr == ""
+    config = tmp_path / "config.toml"
+    config.write_text(
+        (CONFIGS / f"{record_id}-time.toml")
+        .read_text(encoding="utf-8")
+        .replace("__ORIGIN__", "http://127.0.0.1:65412"),
+        encoding="utf-8",
+    )
+    output = tmp_path / "case.toml"
+    materialized = runner.invoke(
+        app,
+        [
+            "materialize-case",
+            "--spec",
+            str(spec),
+            "--draft",
+            str(draft),
+            "--answers",
+            str(answers),
+            "--review",
+            str(review),
+            "--config",
+            str(config),
+            "--output",
+            str(output),
+        ],
+    )
+    assert materialized.exit_code == 0 and materialized.stderr == ""
+    case = load_regression_case(output)
+    assert isinstance(case, TimeRegressionCase)
+    assert json.loads(materialized.stdout)["case_id"] == case.case_id
+    assert case.case_id.endswith("-time")
+    assert case.max_requests == 9
+    assert case.expected_delay_seconds == 0.5
 
 
 @pytest.mark.parametrize("label", ["positive", "negative"])
@@ -203,8 +389,57 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
 )
 def test_runner_reuses_the_reliability_classification(label, verdict, reason):
     runner = load_runner()
-    assert runner.classify(label, verdict.value, reason) == reliability_classify(
-        label, verdict, reason
+    assert runner.classify(
+        "sqli.boolean", label, verdict.value, reason
+    ) == reliability_classify(label, verdict, reason)
+
+
+@pytest.mark.parametrize(
+    ("label", "verdict", "reason", "expected"),
+    [
+        ("positive", "inconclusive", "timing_pattern_matched", "tp"),
+        ("negative", "inconclusive", "timing_pattern_matched", "fp"),
+        ("positive", "not_detected", "timing_pattern_not_matched", "fn"),
+        ("negative", "not_detected", "timing_pattern_not_matched", "tn"),
+        ("negative", "inconclusive", "unstable_timing", "non_decision"),
+    ],
+)
+def test_time_classification_uses_the_product_contract(
+    label, verdict, reason, expected
+):
+    runner = load_runner()
+    assert runner.classify("sqli.time", label, verdict, reason) == expected
+
+
+def test_aggregation_separates_boolean_and_time_results():
+    runner = load_runner()
+    records = expected_report()["records"]
+
+    assert runner.counts(records) == expected_report()["counts"]
+    assert set(runner.counts(records)) == {"sqli.boolean", "sqli.time"}
+
+
+def test_non_decisions_keep_the_manual_runner_exit_one(tmp_path, monkeypatch, capsys):
+    runner = load_runner()
+    report = expected_report()
+    monkeypatch.setattr(runner, "measure", lambda workspace, output: report)
+    monkeypatch.setattr(
+        runner.sys,
+        "argv",
+        [
+            "run_third_party_sqli_measurement.py",
+            "--workspace",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "report.json"),
+        ],
+    )
+
+    assert runner.unhealthy_count(report) == 3
+    assert runner.main() == 1
+    captured = capsys.readouterr()
+    assert "contains a false negative, false positive, or non-decision" in (
+        captured.err
     )
 
 
@@ -312,6 +547,9 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
     assert first != second
     assert re.fullmatch(r"vintar-dsvw-[0-9a-f]{12}-0-six", first)
     assert len(first) < 64
+    assert runner.compose_project_name("0123456789ab", 2, "time") == (
+        "vintar-dsvw-0123456789ab-2-time"
+    )
 
     monkeypatch.setattr(
         runner,
@@ -323,7 +561,7 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
                 "license": "Unlicense",
                 "name": "DSVW",
             },
-            [{"id": "case"}],
+            [{"id": "case", "check_type": "sqli.boolean"}],
         ),
     )
     monkeypatch.setattr(runner, "load_document", lambda path: {})
@@ -346,7 +584,8 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
         return {
             "actual_verdict": "inconclusive",
             "classification": "non_decision",
-            "confirmation": {"status": "not_eligible"},
+            "check_type": "sqli.boolean",
+            "detail": {"status": "not_eligible"},
             "endpoint_id": "case",
             "expected_label": "negative",
             "expected_verdict": "not_detected",

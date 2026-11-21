@@ -105,9 +105,17 @@ def loopback_bridge(upstream_host: str) -> Iterator[str]:
             )
 
 
-def classify(expected: str, verdict: str, reason: str) -> str:
-    """Apply the existing Boolean candidate-signal evaluation contract."""
-    if verdict == "inconclusive" and reason == "boolean_candidate":
+def classify(check_type: str, expected: str, verdict: str, reason: str) -> str:
+    """Apply the product decision contract for one reviewed check type."""
+    positive_reason = {
+        "sqli.boolean": "boolean_candidate",
+        "sqli.time": "timing_pattern_matched",
+    }.get(check_type)
+    if positive_reason is None:
+        raise MeasurementError(
+            "The record has an unsupported check type. Use sqli.boolean or sqli.time."
+        )
+    if verdict == "inconclusive" and reason == positive_reason:
         return "tp" if expected == "positive" else "fp"
     if verdict == "not_detected":
         return "fn" if expected == "positive" else "tn"
@@ -152,9 +160,9 @@ def load_declarations() -> tuple[dict[str, object], list[dict[str, object]]]:
         )
     target = document["target"]
     records = document["records"]
-    if type(target) is not dict or type(records) is not list or len(records) != 2:
+    if type(target) is not dict or type(records) is not list or len(records) != 4:
         raise MeasurementError(
-            "The third-party declaration must contain the reviewed DSVW target and exactly two records."
+            "The third-party declaration must contain the reviewed DSVW target and exactly four Boolean/Time records."
         )
     typed_records: list[dict[str, object]] = []
     for record in records:
@@ -163,6 +171,13 @@ def load_declarations() -> tuple[dict[str, object], list[dict[str, object]]]:
                 "A third-party record is invalid. Supply a reviewed TOML table instead."
             )
         typed_records.append(record)
+    check_types = [
+        required_text(record, "check_type", "record") for record in typed_records
+    ]
+    if check_types.count("sqli.boolean") != 2 or check_types.count("sqli.time") != 2:
+        raise MeasurementError(
+            "The third-party declaration must contain exactly two sqli.boolean and two sqli.time records. Review targets.toml instead of changing labels after measurement."
+        )
     return target, typed_records
 
 
@@ -331,7 +346,7 @@ def compose_project_name(run_id: str, case_index: int, mode: str) -> str:
         or any(character not in "0123456789abcdef" for character in run_id)
         or type(case_index) is not int
         or case_index < 0
-        or mode not in {"six", "confirmation"}
+        or mode not in {"six", "confirmation", "time"}
     ):
         raise MeasurementError(
             "The measurement project identity is invalid. Use the generated run ID, nonnegative case index, and supported probe mode instead."
@@ -422,6 +437,7 @@ def run_pipeline_case(
     input_id = required_text(record, "input_id", "record")
     parameter = required_text(record, "parameter", "record")
     label = required_text(record, "label", "record")
+    check_type = required_text(record, "check_type", "record")
     expected_verdict = "inconclusive" if label == "positive" else "not_detected"
     local_spec = folder / "openapi.json"
     local_spec.write_bytes(SPEC.read_bytes())
@@ -533,8 +549,8 @@ def run_pipeline_case(
         ],
         cwd=folder,
     )
-    max_requests = 6 if mode == "six" else 18
-    expected_confirmation = "not configured" if mode == "six" else "configured"
+    max_requests = {"six": 6, "confirmation": 18, "time": 9}[mode]
+    expected_confirmation = "configured" if mode == "confirmation" else "not configured"
     if (
         materialized.get("max_requests") != max_requests
         or materialized.get("confirmation") != expected_confirmation
@@ -554,6 +570,8 @@ def run_pipeline_case(
             "10",
             "--timeout",
             "5",
+            "--time-deadline",
+            "60",
             "--authorized",
         ],
         cwd=folder,
@@ -573,32 +591,48 @@ def run_pipeline_case(
     verdict = required_text(outcome, "actual_verdict", "verification outcome")
     reason = required_text(outcome, "actual_reason_code", "verification outcome")
     request_count = outcome.get("request_count")
-    confirmation = outcome.get("confirmation")
-    if type(request_count) is not int or type(confirmation) is not dict:
+    detail_key = "timing" if check_type == "sqli.time" else "confirmation"
+    detail = outcome.get(detail_key)
+    if type(request_count) is not int or type(detail) is not dict:
         raise MeasurementError(
-            "Verification omitted request or confirmation evidence. Check the installed Vintar report contract."
+            "Verification omitted request or check evidence. Check the installed Vintar report contract."
         )
     return {
         "actual_verdict": verdict,
-        "classification": classify(label, verdict, reason),
-        "confirmation": confirmation,
+        "check_type": check_type,
+        "classification": classify(check_type, label, verdict, reason),
+        "detail": detail,
         "endpoint_id": record_id,
         "expected_label": label,
         "expected_verdict": expected_verdict,
-        "mode": "six_probe" if mode == "six" else "confirmation",
+        "mode": {
+            "six": "six_probe",
+            "confirmation": "confirmation",
+            "time": "nine_probe",
+        }[mode],
         "reason_code": reason,
         "request_count": request_count,
     }
 
 
-def counts(records: list[dict[str, object]]) -> dict[str, dict[str, int]]:
-    """Count classifications separately for the six- and eighteen-request cases."""
-    result: dict[str, dict[str, int]] = {}
-    for mode in ("six_probe", "confirmation"):
-        phase = Counter(
-            record["classification"] for record in records if record["mode"] == mode
-        )
-        result[mode] = {key: phase[key] for key in CLASSIFICATIONS}
+def counts(
+    records: list[dict[str, object]],
+) -> dict[str, dict[str, dict[str, int]]]:
+    """Count classifications separately by check type and request mode."""
+    result: dict[str, dict[str, dict[str, int]]] = {}
+    modes = {
+        "sqli.boolean": ("six_probe", "confirmation"),
+        "sqli.time": ("nine_probe",),
+    }
+    for check_type, check_modes in modes.items():
+        result[check_type] = {}
+        for mode in check_modes:
+            phase = Counter(
+                record["classification"]
+                for record in records
+                if record["check_type"] == check_type and record["mode"] == mode
+            )
+            result[check_type][mode] = {key: phase[key] for key in CLASSIFICATIONS}
     return result
 
 
@@ -611,19 +645,19 @@ def render_summary(report: dict[str, object]) -> str:
         )
     lines = [
         SUMMARY_START,
-        "| Record | Mode | Expected label | Actual verdict | Reason | Confirmation | Requests | Classification |",
-        "| --- | --- | --- | --- | --- | --- | ---: | --- |",
+        "| Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |",
+        "| --- | --- | --- | --- | --- | --- | --- | ---: | --- |",
     ]
     for record in records:
-        if type(record) is not dict or type(record.get("confirmation")) is not dict:
+        if type(record) is not dict or type(record.get("detail")) is not dict:
             raise MeasurementError(
                 "The measurement report contains an invalid record. Check the runner before updating documentation."
             )
-        confirmation = record["confirmation"]
+        detail = record["detail"]
         lines.append(
-            "| {endpoint_id} | {mode} | {expected_label} | {actual_verdict} | {reason_code} | {status} | {request_count} | {classification} |".format(
+            "| {check_type} | {endpoint_id} | {mode} | {expected_label} | {actual_verdict} | {reason_code} | {status} | {request_count} | {classification} |".format(
                 **record,
-                status=confirmation.get("status"),
+                status=detail.get("status"),
             )
         )
     report_counts = report["counts"]
@@ -634,19 +668,28 @@ def render_summary(report: dict[str, object]) -> str:
     lines.extend(
         (
             "",
-            "| Mode | TP | TN | FP | FN | Non-decision |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Check type | Mode | TP | TN | FP | FN | Non-decision |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
         )
     )
-    for mode in ("six_probe", "confirmation"):
-        values = report_counts.get(mode)
-        if type(values) is not dict:
+    for check_type, modes in (
+        ("sqli.boolean", ("six_probe", "confirmation")),
+        ("sqli.time", ("nine_probe",)),
+    ):
+        type_counts = report_counts.get(check_type)
+        if type(type_counts) is not dict:
             raise MeasurementError(
-                "The measurement report is missing phase counts. Check the runner before updating documentation."
+                "The measurement report is missing check-type counts. Check the runner before updating documentation."
             )
-        lines.append(
-            f"| {mode} | {values.get('tp')} | {values.get('tn')} | {values.get('fp')} | {values.get('fn')} | {values.get('non_decision')} |"
-        )
+        for mode in modes:
+            values = type_counts.get(mode)
+            if type(values) is not dict:
+                raise MeasurementError(
+                    "The measurement report is missing phase counts. Check the runner before updating documentation."
+                )
+            lines.append(
+                f"| {check_type} | {mode} | {values.get('tp')} | {values.get('tn')} | {values.get('fp')} | {values.get('fn')} | {values.get('non_decision')} |"
+            )
     lines.append(SUMMARY_END)
     return "\n".join(lines)
 
@@ -694,7 +737,9 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
     run_id = new_run_id()
     run_root = Path(tempfile.mkdtemp(prefix="vintar-dsvw-run-", dir=workspace))
     for index, declaration in enumerate(declarations):
-        for mode in ("six", "confirmation"):
+        check_type = required_text(declaration, "check_type", "record")
+        modes = ("six", "confirmation") if check_type == "sqli.boolean" else ("time",)
+        for mode in modes:
             project = compose_project_name(run_id, index, mode)
             case_folder = run_root / project
             case_folder.mkdir()
@@ -727,6 +772,34 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
     return report
 
 
+def unhealthy_count(report: dict[str, object]) -> int:
+    """Count every false decision or abstention across isolated check types."""
+    report_counts = report.get("counts")
+    if type(report_counts) is not dict:
+        raise MeasurementError(
+            "The measurement report has invalid counts. Check the runner before treating the result as healthy."
+        )
+    total = 0
+    for check_counts in report_counts.values():
+        if type(check_counts) is not dict:
+            raise MeasurementError(
+                "The measurement report has invalid check-type counts. Check the runner before treating the result as healthy."
+            )
+        for values in check_counts.values():
+            if type(values) is not dict:
+                raise MeasurementError(
+                    "The measurement report has invalid mode counts. Check the runner before treating the result as healthy."
+                )
+            for key in ("fn", "fp", "non_decision"):
+                value = values.get(key)
+                if type(value) is not int or value < 0:
+                    raise MeasurementError(
+                        "The measurement report has invalid classification counts. Check the runner before treating the result as healthy."
+                    )
+                total += value
+    return total
+
+
 def main() -> int:
     """Run the manual local-only measurement."""
     parser = argparse.ArgumentParser()
@@ -738,11 +811,7 @@ def main() -> int:
     except MeasurementError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
-    unhealthy = sum(
-        values[key]
-        for values in report["counts"].values()
-        for key in ("fn", "fp", "non_decision")
-    )
+    unhealthy = unhealthy_count(report)
     print(f"Saved the DSVW measurement report to {arguments.output.resolve()}")
     if unhealthy:
         print(

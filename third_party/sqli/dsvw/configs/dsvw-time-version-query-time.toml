@@ -1,0 +1,26 @@
+# Payloads and the fixed threshold match dsvw-time-id. This negative record
+# measures the same expressions where v is reflected and never reaches SQL.
+config_version = 1
+type = "sqli.time"
+input_id = "input-ffe5bfa38242d9cad17138d92bb38efd"
+
+[target]
+url = "__ORIGIN__/"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "v"
+occurrence = 0
+mode = "replace"
+
+[probes]
+selection = "explicit"
+delay_payload = "(SELECT (CASE WHEN (SUBSTR((SELECT password FROM users WHERE name='admin'),2,1)='e') THEN (LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(300000000))))) ELSE 0 END))"
+control_payload = "(SELECT (CASE WHEN (SUBSTR((SELECT password FROM users WHERE name='admin'),2,1)='x') THEN (LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(300000000))))) ELSE 0 END))"
+expected_delay_seconds = 0.5
+
+[limits]
+max_requests = 9
+requests_per_second = 10.0
+timeout_seconds = 5.0
