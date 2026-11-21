@@ -2,22 +2,27 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-21
+
 **Added**
 
+- Verify explicit Schema v1 cases with check type `sqli.error` using a fixed
+  four-request plan and a reviewed DBMS diagnostic signature registry. A repeated
+  new diagnostic produces `INCONCLUSIVE / dbms_error_disclosed` and blocks CI
+  with exit code 3 unless a batch failure takes precedence. The Error check
+  never emits `VULNERABLE`.
+- Include an additive, redacted `error` object in Schema v1 CI report outcomes
+  for Error cases.
 - Materialize reviewed OpenAPI decisions into explicit Schema v1 `sqli.error`
-  cases with fixed four-request limits and deterministic `-error` case IDs.
+  cases with fixed four-request limits and deterministic `<id>-error` case IDs.
   Error payloads remain explicit reviewer input; no DBMS, SQL context, or
   payload is inferred from OpenAPI metadata.
-- Run explicit Schema v1 `sqli.error` cases through `vintar verify` and emit
-  additive, redacted Error outcomes in Schema v1 CI reports. A reproducible new
-  DBMS diagnostic remains `INCONCLUSIVE / dbms_error_disclosed` and blocks CI;
-  it never claims a confirmed vulnerability without independent confirmation.
 
 **Internal**
 
-- Extend the pinned-source manual DSVW evaluation with separate four-request
-  Error SQLi candidate and reflected-only negative measurements. Error candidates
-  remain `INCONCLUSIVE` and are never counted as confirmed vulnerabilities.
+- Extend the pinned-source manual DSVW evaluation with schema v3 reports and
+  separate four-request Error SQLi candidate and reflected-only negative
+  measurements. Error candidates remain `INCONCLUSIVE`.
 
 ## [0.3.0] - 2026-11-21
 
@@ -94,5 +99,6 @@
 - Validate batch reports and verify exit contracts against local fixtures in GitHub Actions.
 - Check CLI output and README examples with deterministic golden tests. CI also checks formatting, architecture, strict types, and Git history for committed secrets.
 
-[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/natori-hrj/vintar/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/natori-hrj/vintar/compare/v0.2.1...v0.3.0

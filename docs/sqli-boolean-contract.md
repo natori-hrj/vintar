@@ -415,7 +415,7 @@ general-world detection accuracy.
 
 ## Known Limitations
 
-The current implementation does not guarantee detection of:
+The Boolean check does not guarantee detection of:
 
 - All SQL injection vulnerabilities
 - Every SQL dialect or SQL context
