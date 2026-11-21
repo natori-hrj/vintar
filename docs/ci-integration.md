@@ -10,7 +10,7 @@ Vintar supports Boolean- and time-based SQL injection regression checks for
 `GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
 materialization run offline. The workflow is
 `discover → review-draft → materialize-case → verify`. Reviewers explicitly
-select the `string-quoted` or `numeric` probe preset when using presets.
+select the `string-quoted` or `numeric` probe preset for Boolean cases that use presets.
 Verification runs against an authorized, configured target.
 
 Deferred are confirmed `VULNERABLE` verdicts, error-based and UNION-based SQL
@@ -77,7 +77,8 @@ for an operational reason. A matched confirmation retains the established final
 reason code `boolean_candidate`; mismatch and operational reasons remain
 INCONCLUSIVE and block the gate with exit code 3.
 
-Schema v1 `sqli.time` cases use exactly nine requests. The operator-owned
+Schema v1 `sqli.time` cases use a fixed nine-request plan and require explicit
+reviewed delay and control payloads. Time presets are unavailable. The operator-owned
 `--time-deadline` option defaults to 45 seconds and cannot be increased by a
 case. Preflight rejects a case whose per-request timeout and rate cannot fit
 within that deadline before any HTTP request is sent.

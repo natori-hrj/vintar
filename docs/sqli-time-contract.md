@@ -2,18 +2,18 @@
 
 ## Purpose
 
-This document defines the experimental design and safety
+This document defines the shipped case contract, research design, and safety
 requirements for Vintar's time-based SQL injection verification.
 
 The implementation includes:
 
 - A bounded, immutable request plan
 - A pure timing analyzer
-- An experimental HTTP runner
+- An HTTP runner used by Schema v1 cases through `vintar verify`
 
 The component does not establish SQL execution or prove SQL injection.
 
-It is not approved for production vulnerability findings or CI gates.
+CI can block for review when a timing candidate is returned.
 
 ## Separation From Boolean Verification
 
@@ -311,8 +311,8 @@ Unexpected analyzer failures must not be transformed into a candidate.
 ## Product Result Contract
 
 The offline product contract maps a validated timing analysis to a product
-verdict without changing its reason code. This mapping does not connect the
-time-based check to Schema v1, the CLI, reports, or a CI gate.
+verdict without changing its reason code. Schema v1, the CLI, and CI reports
+use this mapping.
 
 A timing candidate maps to `INCONCLUSIVE`, never `VULNERABLE`. A
 `NOT_DETECTED` result means only that the configured timing pattern was not
@@ -550,7 +550,7 @@ false-positive rates.
 
 ## Outstanding Requirements
 
-Before production use:
+Before making broader production reliability claims:
 
 - Enforce a hard end-to-end execution deadline
 - Validate total execution time under blocking transports
@@ -561,16 +561,12 @@ Before production use:
 - Validate cancellation and rate-limit interruption
 - Document supported DBMS and SQL contexts
 - Review response evidence disclosure
-- Define machine-readable reporting and CLI integration
-- Define CI gate behavior
 - Perform independent evaluation
 
 ## Current Completion Assessment
 
-The request plan and pure analyzer are implemented.
-
-An experimental HTTP runner is implemented, subject to successful
-review and regression tests.
+The request plan, pure analyzer, and HTTP runner are available through
+Schema v1 Time cases.
 
 The runner provides bounded request counts and cooperative deadline
 checks, not a strict total-time guarantee.

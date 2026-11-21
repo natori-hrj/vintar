@@ -4,17 +4,20 @@ Vintar is a Python tool for running authorized web security regression checks in
 
 ## Supported Scope
 
-Vintar supports Boolean-based SQL injection regression checks for
+Vintar supports Boolean- and time-based SQL injection regression checks for
 `GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
 materialization run offline. The workflow is
 `discover → review-draft → materialize-case → verify`. Reviewers explicitly
-select the `string-quoted` or `numeric` probe preset when using presets.
+select the `string-quoted` or `numeric` probe preset for Boolean cases that use presets.
 Verification runs against an authorized, configured target.
 
-Deferred to v0.2 and later are confirmed `VULNERABLE` verdicts and CLI integration
-of 12-probe confirmation, time-based, error-based, and UNION-based SQL injection
-checks, POST form and JSON body injection, cookie and header injection, and
-authenticated workflows.
+Time cases require explicit reviewed delay and control payloads and a fixed
+nine-request budget. The operator controls the execution deadline with
+`verify --time-deadline`. Time presets are unavailable.
+
+Deferred are confirmed `VULNERABLE` verdicts, error-based and UNION-based SQL
+injection checks, POST form and JSON body injection, cookie and header injection,
+and authenticated workflows.
 
 ## Install from PyPI
 
@@ -100,8 +103,9 @@ uv run --locked vintar verify \
 
 | Case outcome or batch condition | `verify` exit code | CI meaning |
 | --- | --- | --- |
-| `NOT_DETECTED` matches the reviewed expectation for every case in a complete batch | `0` | **PASS.** No Boolean differential was detected under the tested probes and conditions. This does not prove SQL injection is absent. |
+| `NOT_DETECTED` matches the reviewed expectation for every case in a complete batch | `0` | **PASS.** The tested probes did not reproduce a Boolean differential or the configured timing pattern for their respective checks. This does not prove SQL injection is absent. |
 | `INCONCLUSIVE` with reason `boolean_candidate` | `3` | **BLOCK / Review required.** A SQLi-like Boolean response differential was observed. This is a candidate signal and requires independent evidence before anyone can call it a confirmed vulnerability. |
+| `INCONCLUSIVE` with reason `timing_pattern_matched` | `3` | **BLOCK / Review required.** The configured timing pattern was reproduced. This is a candidate signal and never produces a `VULNERABLE` verdict. |
 | Other `INCONCLUSIVE` reasons or an incomplete batch | `3` | **BLOCK / Investigation required.** Verification was insufficient. Check the budget, rate limits, transport or HTTP status, and response stability. |
 | `FAIL` | `1` | **FAIL.** A `NOT_DETECTED` result did not match the reviewed expectation. |
 | `ERROR` | `2` | **ERROR.** Invalid input, configuration, execution, or output prevented a usable result. |
@@ -367,6 +371,9 @@ uv run --locked vintar sqli verify \
   counts were **TP=2, TN=2, FP=0, FN=0** for those fixtures. PostgreSQL and MySQL
   integration tests are opt-in and do not run in default CI.
 - Schema v1 uses placeholder origins. Verification binds the case to the trusted runtime origin.
+- The [DSVW evaluation](docs/sqli-third-party-evaluation.md) covers two reviewed
+  inputs per check type. Timing results depend on the host, and this small
+  evaluation does not establish detection precision.
 - The batch engine has per-request timeouts. The staging workflow supplies the job-level timeout.
 - Schema validation checks the report. Case definitions still require trusted review.
 

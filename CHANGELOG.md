@@ -2,13 +2,19 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-21
+
 **Internal**
 
 - Audit locked runtime and development dependencies in CI and enable weekly
   Dependabot updates for uv and GitHub Actions.
+- Extend the manual pinned-source DSVW evaluation to cover explicit nine-request
+  `sqli.time` cases, reported separately from Boolean results.
 
 **Added**
 
+- Map a Time SQLi candidate from the analyzer to the product result
+  `INCONCLUSIVE / timing_pattern_matched`. It never produces `VULNERABLE`.
 - Materialize reviewed OpenAPI decisions into explicit Schema v1 `sqli.time`
   cases with query-only injection, fixed nine-request limits, and no inferred
   DBMS, SQL context, or probe preset. Time materialization appends a deterministic
@@ -18,6 +24,10 @@
   deadline. Schema v1 CI reports now carry redacted time status, reason, and
   request counts, including mixed Boolean/time batches, while existing Boolean
   and legacy reports remain compatible.
+
+**Dependencies**
+
+- Update Typer to 0.29.1, FastAPI to 0.163.2, pytest to 9.2.0, and Ruff to 0.17.5.
 
 ## [0.2.1] - 2026-11-21
 
@@ -32,8 +42,6 @@
 **Internal**
 
 - Add a third-party DSVW evaluation harness for maintainers.
-  - Internally extend the manual pinned-source measurement to cover explicit
-    nine-request `sqli.time` cases, reported separately from Boolean results.
 
 ## [0.2.0] - 2026-11-20
 
@@ -68,3 +76,6 @@
 - Measure candidate-signal reliability with matched SQLite loopback fixtures.
 - Validate batch reports and verify exit contracts against local fixtures in GitHub Actions.
 - Check CLI output and README examples with deterministic golden tests. CI also checks formatting, architecture, strict types, and Git history for committed secrets.
+
+[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/natori-hrj/vintar/compare/v0.2.1...v0.3.0
