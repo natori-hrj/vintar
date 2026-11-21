@@ -245,6 +245,18 @@ def make_error_inputs(
     return inputs
 
 
+def make_check_inputs(
+    check_type: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path]:
+    if check_type == "sqli.error":
+        return make_error_inputs(tmp_path, monkeypatch)
+    if check_type == "sqli.time":
+        return make_time_inputs(tmp_path, monkeypatch)
+    return make_inputs(tmp_path, monkeypatch)
+
+
 def test_materializes_loadable_case_and_is_idempotent(tmp_path, monkeypatch):
     inputs = make_inputs(tmp_path, monkeypatch)
     result = invoke(inputs)
@@ -444,7 +456,7 @@ def test_error_payload_uses_schema_v1_case_validation(
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ("max_requests = 4", "max_requests = 6", "exactly 4 requests"),
+        ("max_requests = 4", "max_requests = 6", "limits.max_requests = 4"),
         (
             "requests_per_second = 10.0",
             "requests_per_second = true",
@@ -468,6 +480,75 @@ def test_error_limits_use_schema_v1_case_validation(
 
     assert result.exit_code == 2 and result.stdout == ""
     assert message in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("check_type", "valid", "invalid", "guidance"),
+    [
+        *(
+            ("sqli.error", "4", invalid, "limits.max_requests = 4")
+            for invalid in ("nan", "+inf", "-inf", "4.0", "true", "6")
+        ),
+        *(
+            ("sqli.boolean", "6", invalid, "max_requests = 6")
+            for invalid in ("nan", "+inf", "-inf", "6.0", "true", "7")
+        ),
+        *(
+            ("sqli.time", "9", invalid, "max_requests = 9")
+            for invalid in ("nan", "+inf", "-inf", "9.0", "true", "6")
+        ),
+    ],
+)
+def test_materialization_rejects_invalid_request_budget_before_rendering(
+    tmp_path, monkeypatch, check_type, valid, invalid, guidance
+):
+    inputs = make_check_inputs(check_type, tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    inputs["config"].write_text(
+        source.replace(f"max_requests = {valid}", f"max_requests = {invalid}"),
+        encoding="utf-8",
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert guidance in result.stderr
+    assert "cannot materialize the case" not in result.stderr
+    if check_type == "sqli.error":
+        assert result.stderr == (
+            "Error: Error SQLi cases require exactly 4 requests. "
+            "Set limits.max_requests = 4.\n"
+        )
+
+
+@pytest.mark.parametrize("check_type", ["sqli.boolean", "sqli.time", "sqli.error"])
+@pytest.mark.parametrize(
+    ("field", "valid", "allowed"),
+    [
+        ("requests_per_second", "10.0", "0.1 through 10.0"),
+        ("timeout_seconds", "5.0", "0.1 through 60.0"),
+    ],
+)
+@pytest.mark.parametrize("invalid", ["nan", "+inf", "-inf"])
+def test_materialization_rejects_nonfinite_limits_with_field_specific_guidance(
+    tmp_path, monkeypatch, check_type, field, valid, allowed, invalid
+):
+    inputs = make_check_inputs(check_type, tmp_path, monkeypatch)
+    source = inputs["config"].read_text(encoding="utf-8")
+    if check_type == "sqli.time" and field == "timeout_seconds":
+        valid = "3.0"
+        allowed = "expected_delay_seconds + 0.5 through 8.0"
+    inputs["config"].write_text(
+        source.replace(f"{field} = {valid}", f"{field} = {invalid}"),
+        encoding="utf-8",
+    )
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2 and result.stdout == ""
+    assert f"Invalid {field}" in result.stderr
+    assert "finite number" in result.stderr
+    assert allowed in result.stderr
 
 
 def test_time_selection_is_explicit_even_for_integer_openapi_parameter(

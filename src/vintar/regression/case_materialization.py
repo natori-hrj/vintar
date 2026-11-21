@@ -2,6 +2,7 @@
 
 import errno
 import json
+import math
 import os
 import tomllib
 from dataclasses import dataclass
@@ -88,10 +89,20 @@ def _text(value: object, field: str) -> str:
     return value
 
 
-def _number(value: object, field: str) -> int | float:
+def _number(
+    value: object,
+    field: str,
+    *,
+    allowed_range: str | None = None,
+) -> int | float:
     if type(value) is int:
         return value
     if type(value) is float:
+        if not math.isfinite(value):
+            guidance = f" from {allowed_range}" if allowed_range is not None else ""
+            raise CaseMaterializationError(
+                f"Invalid {field}. Supply a finite number{guidance}, excluding booleans."
+            )
         return value
     raise CaseMaterializationError(
         f"Invalid {field}. Supply a numeric Schema v1 limit in --config."
@@ -299,7 +310,11 @@ def _time_probe_payloads(value: object) -> tuple[str, str, float]:
         raise CaseMaterializationError(
             "Time probe payloads are identical. Supply distinct explicit delay_payload and control_payload values in --config."
         )
-    expected_delay = _number(probes["expected_delay_seconds"], "expected_delay_seconds")
+    expected_delay = _number(
+        probes["expected_delay_seconds"],
+        "expected_delay_seconds",
+        allowed_range="0.25 through 2.0",
+    )
     if not 0.25 <= expected_delay <= 2.0:
         raise CaseMaterializationError(
             "Invalid expected_delay_seconds. Supply a number from 0.25 through 2.0, excluding booleans."
@@ -392,8 +407,21 @@ def _render(
     url = _text(target["url"], "target URL")
     allowed_origin = _text(target["allowed_origin"], "allowed origin")
     max_requests = limits["max_requests"]
-    requests_per_second = _number(limits["requests_per_second"], "requests_per_second")
-    timeout_seconds = _number(limits["timeout_seconds"], "timeout_seconds")
+    requests_per_second = _number(
+        limits["requests_per_second"],
+        "requests_per_second",
+        allowed_range="0.1 through 10.0",
+    )
+    timeout_range = (
+        "expected_delay_seconds + 0.5 through 8.0"
+        if check_type == "sqli.time"
+        else "0.1 through 60.0"
+    )
+    timeout_seconds = _number(
+        limits["timeout_seconds"],
+        "timeout_seconds",
+        allowed_range=timeout_range,
+    )
     confirmation: BooleanConfirmationPreset | None = None
     true_payload = ""
     false_payload = ""
@@ -421,7 +449,19 @@ def _render(
             )
     elif check_type == "sqli.error":
         error_payload = _error_probe_payload(config["probes"])
-        expected_requests = _number(max_requests, "Error SQLi max_requests")
+        if type(max_requests) is not int or max_requests != 4:
+            raise CaseMaterializationError(
+                "Error SQLi cases require exactly 4 requests. Set limits.max_requests = 4."
+            )
+        if not 0.1 <= requests_per_second <= 10.0:
+            raise CaseMaterializationError(
+                "Error requests_per_second must be a number from 0.1 through 10.0, excluding booleans. Supply a bounded request rate."
+            )
+        if not 0.1 <= timeout_seconds <= 60.0:
+            raise CaseMaterializationError(
+                "Error timeout_seconds must be a number from 0.1 through 60.0, excluding booleans. Supply a bounded timeout."
+            )
+        expected_requests = 4
     else:
         true_payload, false_payload, confirmation = _probe_payloads(config["probes"])
         expected_requests = 18 if confirmation is not None else 6
