@@ -515,29 +515,81 @@ def test_extra_or_missing_count_key_is_rejected(operation):
         runner.validate_measurement_report(report)
 
 
-def test_count_mode_without_matching_records_is_rejected():
+@pytest.mark.parametrize("recompute_counts", [True, False])
+def test_removed_non_decisions_are_rejected_before_counts(recompute_counts):
+    runner = load_runner()
+    saved = expected_report()
+    saved["records"] = [
+        record
+        for record in saved["records"]
+        if record["classification"] != "non_decision"
+    ]
+    if recompute_counts:
+        saved["counts"] = runner.counts(saved["records"])
+    report = json.loads(json.dumps(saved))
+
+    for reader in (runner.validate_measurement_report, runner.unhealthy_count):
+        with pytest.raises(
+            runner.MeasurementError,
+            match=r"incomplete: missing endpoint_id 'dsvw-time-id', check_type 'sqli.time', mode 'nine_probe'.*full measurement run",
+        ):
+            reader(report)
+
+
+def test_duplicate_record_is_rejected_with_occurrence_count():
     runner = load_runner()
     report = expected_report()
-    report["records"] = [
-        record for record in report["records"] if record["check_type"] != "sqli.time"
-    ]
+    report["records"].append(report["records"][0].copy())
+    report["counts"] = runner.counts(report["records"])
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"check type sqli.time, mode nine_probe, field records.*no matching records.*rerun the measurement",
+        match=r"Duplicate.*endpoint_id 'dsvw-blind-boolean-id', check_type 'sqli.boolean', mode 'confirmation' appears 2 times.*full measurement run",
     ):
         runner.validate_measurement_report(report)
 
 
-def test_record_without_matching_count_mode_is_rejected():
+@pytest.mark.parametrize(
+    ("field", "value"), [("endpoint_id", "undeclared-endpoint"), ("mode", "unknown")]
+)
+def test_undeclared_record_key_is_rejected(field, value):
     runner = load_runner()
     report = expected_report()
-    report["records"][0]["mode"] = "unknown"
+    report["records"][0][field] = value
+    report["counts"] = runner.counts(report["records"])
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"no matching count entry for check type sqli.boolean, mode unknown, field mode.*rerun the measurement",
+        match=rf"Unexpected.*{field} '{value}'.*not in targets.toml.*full measurement run",
     ):
+        runner.validate_measurement_report(report)
+
+
+def test_report_keys_follow_reviewed_measurement_plan(monkeypatch, tmp_path):
+    runner = load_runner()
+    target, records = runner.load_declarations()
+    old_id = records[0]["id"]
+    new_id = "renamed-endpoint"
+    records[0]["id"] = new_id
+    monkeypatch.setattr(runner, "load_declarations", lambda: (target, records))
+    monkeypatch.setattr(runner, "CONFIGS", tmp_path)
+    for config in CONFIGS.glob("*.toml"):
+        (tmp_path / config.name.replace(old_id, new_id)).write_bytes(
+            config.read_bytes()
+        )
+
+    planned = list(runner.plan_measurements(records))
+    report = expected_report()
+    for record in report["records"]:
+        if record["endpoint_id"] == old_id:
+            record["endpoint_id"] = new_id
+    assert {entry.key for entry in planned} == {
+        (record["endpoint_id"], record["check_type"], record["mode"])
+        for record in report["records"]
+    }
+    assert runner.validate_measurement_report(report) is report
+    planned[0].config.unlink()
+    with pytest.raises(runner.MeasurementError, match="Missing reviewed configuration"):
         runner.validate_measurement_report(report)
 
 
@@ -701,7 +753,7 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
                 "license": "Unlicense",
                 "name": "DSVW",
             },
-            [{"id": "case", "check_type": "sqli.boolean"}],
+            [{"id": "dsvw-blind-boolean-id", "check_type": "sqli.boolean"}],
         ),
     )
     monkeypatch.setattr(runner, "load_document", lambda path: {})
@@ -720,16 +772,17 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
     def fake_bridge(upstream):
         yield "http://127.0.0.1:12345"
 
-    def fake_result(folder, origin, declaration, mode):
+    def fake_result(folder, origin, planned):
+        endpoint_id, check_type, mode = planned.key
         return {
             "actual_verdict": "inconclusive",
             "classification": "non_decision",
-            "check_type": "sqli.boolean",
+            "check_type": check_type,
             "detail": {"status": "not_eligible"},
-            "endpoint_id": "case",
+            "endpoint_id": endpoint_id,
             "expected_label": "negative",
             "expected_verdict": "not_detected",
-            "mode": "six_probe" if mode == "six" else "confirmation",
+            "mode": mode,
             "reason_code": "unexpected_difference",
             "request_count": 6,
         }
@@ -753,6 +806,7 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
         "vintar-dsvw-0123456789ab-0-confirmation",
     ]
     assert stopped == started
+    assert runner.validate_measurement_report(report) is report
 
 
 def prepared_provenance():

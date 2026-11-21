@@ -16,6 +16,7 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
@@ -29,6 +30,18 @@ SUMMARY_START = "<!-- third-party-measurement:start -->"
 SUMMARY_END = "<!-- third-party-measurement:end -->"
 CLASSIFICATIONS = ("tp", "fn", "fp", "tn", "non_decision")
 MEASUREMENT_SCHEMA_VERSION = 2
+PROBE_MODES = {
+    "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
+    "sqli.time": {"time": "nine_probe"},
+}
+
+
+class PlannedMeasurement(NamedTuple):
+    index: int
+    declaration: dict[str, object]
+    mode: str
+    key: tuple[str, str, str]
+    config: Path
 
 
 class MeasurementError(RuntimeError):
@@ -54,18 +67,51 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     records = report["records"]
     counts_value = report["counts"]
     target = report["target"]
-    if (
-        type(records) is not list
-        or type(counts_value) is not dict
-        or type(target) is not dict
-    ):
+    if type(records) is not list or type(target) is not dict:
         raise MeasurementError(
             "Invalid third-party measurement report v2 structure. Use grouped counts, record objects, and target metadata; rerun the measurement to regenerate the report."
         )
+    _, declarations = load_declarations()
+    expected_keys = {planned.key for planned in plan_measurements(declarations)}
+    record_keys: Counter[tuple[str, str, str]] = Counter()
+    for record in records:
+        if type(record) is not dict:
+            raise MeasurementError(
+                "The third-party measurement report contains a non-object record. Rerun the measurement to regenerate the report."
+            )
+        key = (
+            required_text(record, "endpoint_id", "report record"),
+            required_text(record, "check_type", "report record"),
+            required_text(record, "mode", "report record"),
+        )
+        record_keys[key] += 1
+
+    for key, occurrences in record_keys.items():
+        endpoint_id, check_type, mode = key
+        description = (
+            f"endpoint_id {endpoint_id!r}, check_type {check_type!r}, mode {mode!r}"
+        )
+        if occurrences > 1:
+            raise MeasurementError(
+                f"Duplicate measurement record for {description} appears {occurrences} times. Regenerate the report with a full measurement run."
+            )
+        if key not in expected_keys:
+            raise MeasurementError(
+                f"Unexpected measurement record for {description} is not in targets.toml. Regenerate the report with a full measurement run."
+            )
+    if missing := expected_keys.difference(record_keys):
+        endpoint_id, check_type, mode = min(missing)
+        raise MeasurementError(
+            f"The measurement report is incomplete: missing endpoint_id {endpoint_id!r}, check_type {check_type!r}, mode {mode!r}. Regenerate the report with a full measurement run."
+        )
+
     expected_modes = {
-        "sqli.boolean": ("six_probe", "confirmation"),
-        "sqli.time": ("nine_probe",),
+        check_type: tuple(modes.values()) for check_type, modes in PROBE_MODES.items()
     }
+    if type(counts_value) is not dict:
+        raise MeasurementError(
+            "Invalid third-party measurement report v2 counts. Use counts grouped by check type and mode; rerun the measurement to regenerate the report."
+        )
     if counts_value.keys() != expected_modes.keys():
         changed = min(counts_value.keys() ^ expected_modes.keys(), key=str)
         raise MeasurementError(
@@ -96,50 +142,18 @@ def validate_measurement_report(report: object) -> dict[str, object]:
                 raise MeasurementError(
                     f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field value. Supply nonnegative integer counts and rerun the measurement to regenerate the report."
                 )
-    recomputed = {
-        check_type: {
-            mode: {classification: 0 for classification in CLASSIFICATIONS}
-            for mode in modes
-        }
-        for check_type, modes in expected_modes.items()
-    }
-    record_totals = {
-        check_type: {mode: 0 for mode in modes}
-        for check_type, modes in expected_modes.items()
-    }
     for record in records:
-        if (
-            type(record) is not dict
-            or type(record.get("detail")) is not dict
-            or "confirmation" in record
-        ):
+        if type(record.get("detail")) is not dict or "confirmation" in record:
             raise MeasurementError(
                 "Invalid third-party measurement report v2 record. Use check_type and the sibling detail object instead of the v1 confirmation field; rerun the measurement to regenerate the report."
             )
-        check_type = record.get("check_type")
-        mode = record.get("mode")
-        classification = record.get("classification")
-        if (
-            type(check_type) is not str
-            or check_type not in expected_modes
-            or type(mode) is not str
-            or mode not in expected_modes[check_type]
-        ):
+        if record.get("classification") not in CLASSIFICATIONS:
             raise MeasurementError(
-                f"Measurement records have no matching count entry for check type {check_type}, mode {mode}, field mode. Use a declared check-type/mode pair and rerun the measurement to regenerate the report."
+                f"Measurement record for check type {record['check_type']}, mode {record['mode']} has an invalid classification. Use TP, TN, FP, FN, or non-decision and rerun the measurement to regenerate the report."
             )
-        if classification not in CLASSIFICATIONS:
-            raise MeasurementError(
-                f"Measurement records have no matching count entry for check type {check_type}, mode {mode}, field classification. Use TP, TN, FP, FN, or non-decision and rerun the measurement to regenerate the report."
-            )
-        recomputed[check_type][mode][classification] += 1
-        record_totals[check_type][mode] += 1
+    recomputed = counts(records)
     for check_type, modes in expected_modes.items():
         for mode in modes:
-            if record_totals[check_type][mode] == 0:
-                raise MeasurementError(
-                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field records. Remove count keys with no matching records or rerun the measurement to regenerate the report."
-                )
             for field in CLASSIFICATIONS:
                 if (
                     counts_value[check_type][mode][field]
@@ -296,6 +310,29 @@ def load_declarations() -> tuple[dict[str, object], list[dict[str, object]]]:
             "The third-party declaration must contain exactly two sqli.boolean and two sqli.time records. Review targets.toml instead of changing labels after measurement."
         )
     return target, typed_records
+
+
+def plan_measurements(
+    declarations: list[dict[str, object]],
+) -> Iterator[PlannedMeasurement]:
+    """Plan one report record per reviewed endpoint and probe config."""
+    keys: set[tuple[str, str, str]] = set()
+    for index, declaration in enumerate(declarations):
+        endpoint_id = required_text(declaration, "id", "record")
+        check_type = required_text(declaration, "check_type", "record")
+        for mode, report_mode in PROBE_MODES[check_type].items():
+            key = (endpoint_id, check_type, report_mode)
+            if key in keys:
+                raise MeasurementError(
+                    f"Duplicate measurement declaration {key!r}. Keep one declaration per endpoint_id, check_type, and mode in targets.toml."
+                )
+            keys.add(key)
+            config = CONFIGS / f"{endpoint_id}-{mode}.toml"
+            if not config.is_file():
+                raise MeasurementError(
+                    f"Missing reviewed configuration {config.name!r} for check type {check_type}. Restore the corresponding TOML config before running or validating measurements."
+                )
+            yield PlannedMeasurement(index, declaration, mode, key, config)
 
 
 def validate_provenance(
@@ -546,15 +583,15 @@ def pipeline_environment(origin: str) -> dict[str, str]:
 def run_pipeline_case(
     folder: Path,
     origin: str,
-    record: dict[str, object],
-    mode: str,
+    planned: PlannedMeasurement,
 ) -> dict[str, object]:
     """Run all four CLI stages for one reviewed record and probe mode."""
-    record_id = required_text(record, "id", "record")
+    record = planned.declaration
+    mode = planned.mode
+    record_id, check_type, report_mode = planned.key
     input_id = required_text(record, "input_id", "record")
     parameter = required_text(record, "parameter", "record")
     label = required_text(record, "label", "record")
-    check_type = required_text(record, "check_type", "record")
     expected_verdict = "inconclusive" if label == "positive" else "not_detected"
     local_spec = folder / "openapi.json"
     local_spec.write_bytes(SPEC.read_bytes())
@@ -641,11 +678,10 @@ def run_pipeline_case(
         cwd=folder,
     )
 
-    config_template = CONFIGS / f"{record_id}-{mode}.toml"
     config = folder / "config.toml"
     write_text(
         config,
-        config_template.read_text(encoding="utf-8").replace("__ORIGIN__", origin),
+        planned.config.read_text(encoding="utf-8").replace("__ORIGIN__", origin),
     )
     case = folder / "case.toml"
     materialized = cli(
@@ -722,11 +758,7 @@ def run_pipeline_case(
         "endpoint_id": record_id,
         "expected_label": label,
         "expected_verdict": expected_verdict,
-        "mode": {
-            "six": "six_probe",
-            "confirmation": "confirmation",
-            "time": "nine_probe",
-        }[mode],
+        "mode": report_mode,
         "reason_code": reason,
         "request_count": request_count,
     }
@@ -737,13 +769,9 @@ def counts(
 ) -> dict[str, dict[str, dict[str, int]]]:
     """Count classifications separately by check type and request mode."""
     result: dict[str, dict[str, dict[str, int]]] = {}
-    modes = {
-        "sqli.boolean": ("six_probe", "confirmation"),
-        "sqli.time": ("nine_probe",),
-    }
-    for check_type, check_modes in modes.items():
+    for check_type, check_modes in PROBE_MODES.items():
         result[check_type] = {}
-        for mode in check_modes:
+        for mode in check_modes.values():
             phase = Counter(
                 record["classification"]
                 for record in records
@@ -850,29 +878,22 @@ def write_report(path: Path, report: dict[str, object]) -> None:
 def measure(workspace: Path, output: Path) -> dict[str, object]:
     """Measure all reviewed records in both modes and save every observation."""
     target, declarations = load_declarations()
+    plan = list(plan_measurements(declarations))
     state = load_document(workspace / STATE_NAME)
     image_tag, image_id = validate_provenance(state, target, declarations)
     records: list[dict[str, object]] = []
     run_id = new_run_id()
     run_root = Path(tempfile.mkdtemp(prefix="vintar-dsvw-run-", dir=workspace))
-    for index, declaration in enumerate(declarations):
-        check_type = required_text(declaration, "check_type", "record")
-        modes = ("six", "confirmation") if check_type == "sqli.boolean" else ("time",)
-        for mode in modes:
-            project = compose_project_name(run_id, index, mode)
-            case_folder = run_root / project
-            case_folder.mkdir()
-            attempted_start = False
-            try:
-                attempted_start = True
-                upstream = start_target(image_tag, project)
-                with loopback_bridge(upstream) as origin:
-                    records.append(
-                        run_pipeline_case(case_folder, origin, declaration, mode)
-                    )
-            finally:
-                if attempted_start:
-                    stop_target(image_tag, project)
+    for planned in plan:
+        project = compose_project_name(run_id, planned.index, planned.mode)
+        case_folder = run_root / project
+        case_folder.mkdir()
+        try:
+            upstream = start_target(image_tag, project)
+            with loopback_bridge(upstream) as origin:
+                records.append(run_pipeline_case(case_folder, origin, planned))
+        finally:
+            stop_target(image_tag, project)
     records.sort(key=lambda row: (str(row["endpoint_id"]), str(row["mode"])))
     report: dict[str, object] = {
         "counts": counts(records),
