@@ -197,6 +197,55 @@ def test_loaded_cpu_bound_delay_shape_is_candidate():
     assert result.evidence.delay_span == pytest.approx(0.895)
 
 
+@pytest.mark.parametrize(
+    "delay",
+    [
+        (0.10, 0.10, 2.00),
+        (0.10, 0.60, 1.00),
+        (0.10, 0.85, 0.85),
+    ],
+)
+def test_non_candidate_delay_variance_never_concludes_absence(delay):
+    result = run_analysis(
+        baseline=(0.10, 0.10, 0.10),
+        control=(0.10, 0.10, 0.10),
+        delay=delay,
+    )
+
+    assert result.status is TimeAnalysisStatus.INCONCLUSIVE
+    assert result.reason_code == "unstable_timing"
+
+
+@pytest.mark.parametrize(
+    ("maximum_delay", "expected_status", "expected_reason"),
+    [
+        (
+            0.35,
+            TimeAnalysisStatus.NOT_CONFIRMED,
+            "timing_pattern_not_matched",
+        ),
+        (
+            0.351,
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "unstable_timing",
+        ),
+    ],
+)
+def test_delay_stability_boundary_before_negative_verdict(
+    maximum_delay,
+    expected_status,
+    expected_reason,
+):
+    result = run_analysis(
+        baseline=(0.10, 0.10, 0.10),
+        control=(0.10, 0.10, 0.10),
+        delay=(0.10, 0.10, maximum_delay),
+    )
+
+    assert result.status is expected_status
+    assert result.reason_code == expected_reason
+
+
 def test_baseline_control_difference_is_inconclusive():
     result = run_analysis(
         baseline=(0.1, 0.11, 0.12),
@@ -229,16 +278,16 @@ def test_intermediate_delay_is_ambiguous():
     assert result.evidence is not None
 
 
-def test_delay_sample_inside_control_band_is_ambiguous():
+def test_stable_delay_span_with_insufficient_margin_is_ambiguous():
     result = run_analysis(
         baseline=(0.10, 0.10, 0.10),
         control=(0.10, 0.10, 0.20),
-        delay=(0.19, 0.85, 0.85),
+        delay=(0.69, 0.85, 0.85),
     )
 
     assert result.evidence is not None
     assert result.evidence.median_excess == pytest.approx(0.75)
-    assert result.evidence.minimum_delay_margin == pytest.approx(-0.01)
+    assert result.evidence.minimum_delay_margin == pytest.approx(0.49)
     assert result.status is TimeAnalysisStatus.INCONCLUSIVE
     assert result.reason_code == "ambiguous_timing"
 
@@ -254,7 +303,7 @@ def test_delay_sample_inside_control_band_is_ambiguous():
         (
             (0.599, 0.85, 0.85),
             TimeAnalysisStatus.INCONCLUSIVE,
-            "ambiguous_timing",
+            "unstable_timing",
         ),
         (
             (0.60, 0.849, 0.849),

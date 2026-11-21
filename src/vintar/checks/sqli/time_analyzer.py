@@ -393,6 +393,13 @@ def _at_most(value: float, limit: float) -> bool:
     )
 
 
+def _delay_stable_enough_to_conclude_absence(
+    evidence: TimeEvidence,
+    stability_limit: float,
+) -> bool:
+    return not _greater_than(evidence.delay_span, stability_limit)
+
+
 def _classify_evidence(
     evidence: TimeEvidence,
     expected_delay: float,
@@ -422,6 +429,9 @@ def _classify_evidence(
         candidate_margin_limit,
     ):
         return TimeAnalysisStatus.CANDIDATE, "timing_pattern_matched"
+
+    if not _delay_stable_enough_to_conclude_absence(evidence, stability_limit):
+        return TimeAnalysisStatus.INCONCLUSIVE, "unstable_timing"
 
     if _at_most(evidence.median_excess, no_delay_limit):
         return TimeAnalysisStatus.NOT_CONFIRMED, "timing_pattern_not_matched"

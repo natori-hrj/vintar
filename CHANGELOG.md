@@ -5,9 +5,9 @@
 **Changed**
 
 - Classify `sqli.time` candidates by their relation to stable Baseline and Control
-  responses. Varying CPU-bound Delay responses alone no longer produce
-  `unstable_timing`; candidate classification also requires every Delay sample to
-  remain separated from the Control band.
+  responses. Delayed-sample variance no longer blocks a clearly separated
+  candidate, but it still prevents a `NOT_DETECTED` verdict when the candidate
+  relation is absent.
 
 ## [0.4.0] - 2026-11-21
 

@@ -280,9 +280,15 @@ span as evidence but does not use it to produce `unstable_timing`.
 
 After the Baseline and Control stability checks, classification is
 relation-first. Both the median-excess threshold and the minimum Delay-to-Control
-margin must be met for CANDIDATE. If median excess reaches the candidate threshold
-but any Delay sample overlaps the required Control margin, the result is
-`INCONCLUSIVE / ambiguous_timing`.
+margin must be met for CANDIDATE. Delay span is not consulted for a clearly
+separated candidate.
+
+If the candidate relation is not established, Delay span must be within the same
+stability limit before the analyzer can conclude `NOT_DETECTED`. Excessive Delay
+variance without clear separation produces `INCONCLUSIVE / unstable_timing`, so
+incomplete negative evidence cannot pass the CI gate. Once that fail-closed check
+passes, a result between the no-delay and candidate relations, including an
+insufficient minimum Delay-to-Control margin, is `INCONCLUSIVE / ambiguous_timing`.
 
 Intermediate or otherwise ambiguous measurements are INCONCLUSIVE.
 
