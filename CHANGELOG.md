@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+**Internal**
+
+- Audit locked runtime and development dependencies in CI and enable weekly
+  Dependabot updates for uv and GitHub Actions.
+
 **Added**
 
 - Run explicit Schema v1 `sqli.time` cases through the Python API and the
