@@ -344,9 +344,10 @@ A time outcome uses the common `actual_verdict`, `actual_reason_code`, and
 ```
 
 Time outcomes never contain the Boolean `verification` or `confirmation`
-objects. Boolean outcomes never contain `check_type` or `timing`. Reports do
-not expose elapsed observations, medians, thresholds, payloads, or target URLs.
-The Schema v1 extension is additive; legacy v1 reports remain valid.
+objects. Boolean outcomes never contain `check_type` or `timing`. Time outcomes
+do not expose elapsed observations, medians, thresholds, payloads, or target
+URLs. Boolean outcomes in the same report retain their per-observation `elapsed`
+values. The Schema v1 extension is additive; legacy v1 reports remain valid.
 
 The existing process exit contract is unchanged: a matched timing pattern is
 INCONCLUSIVE with exit code 3, a matching NOT_DETECTED result can pass with exit

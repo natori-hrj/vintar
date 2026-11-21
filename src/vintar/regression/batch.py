@@ -22,6 +22,10 @@ from vintar.regression.runner import (
 MAX_BATCH_CASES = 128
 
 
+class BatchRequestBudgetError(ValueError):
+    """The trusted aggregate budget cannot cover the selected cases."""
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class RegressionBatchResult:
     """Immutable ordered outcomes and the complete planned case identity.
@@ -169,7 +173,9 @@ def run_regression_batch(
     required_requests = sum(case.max_requests for case in selected)
 
     if required_requests > policy.max_requests:
-        raise ValueError("Trusted batch request budget is insufficient.")
+        raise BatchRequestBudgetError(
+            "Trusted batch request budget cannot cover every selected case. Increase policy.max_requests to the sum of the case budgets, or run fewer cases."
+        )
 
     budget = RequestBudget(required_requests)
     rate_limiter = RateLimiter(

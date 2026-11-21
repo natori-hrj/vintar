@@ -131,11 +131,12 @@ Containing:
 
 The artifact retention period is seven days.
 
-The report does not contain raw HTTP request payloads, URLs, credentials, or
-timing durations. Time outcomes contain only the final verdict, reason, request
-count, and a sibling `timing` object with analysis status, reason, and request
-count. However, Boolean case IDs, response digests, sizes, and related metadata
-may still disclose information.
+The report does not contain raw HTTP request payloads, URLs, or credentials.
+`sqli.time` outcomes contain no elapsed timing durations or medians: they contain
+only the final verdict, reason, request count, and a sibling `timing` object with
+analysis status, reason, and request count. Boolean outcomes retain their
+per-observation `elapsed` values, response digests, and sizes. Case IDs and this
+Boolean response metadata may still disclose information.
 
 Access to artifacts must be restricted appropriately.
 Anyone with read access to the repository can normally download its
