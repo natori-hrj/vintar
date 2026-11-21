@@ -526,7 +526,12 @@
             "properties": { "reason_code": { "const": "dbms_error_disclosed" } },
             "required": ["reason_code"]
           },
-          "then": { "required": ["dbms", "signature_id"] },
+          "then": {
+            "allOf": [
+              { "required": ["dbms", "signature_id"] },
+              { "$ref": "#/$defs/error_signature_pairs" }
+            ]
+          },
           "else": {
             "not": {
               "anyOf": [
@@ -535,6 +540,90 @@
               ]
             }
           }
+        }
+      ]
+    },
+    "error_signature_pairs": {
+      "oneOf": [
+        {
+          "properties": {
+            "dbms": {
+              "const": "mssql"
+            },
+            "signature_id": {
+              "enum": [
+                "mssql_syntax_error"
+              ]
+            }
+          },
+          "required": [
+            "dbms",
+            "signature_id"
+          ]
+        },
+        {
+          "properties": {
+            "dbms": {
+              "const": "mysql"
+            },
+            "signature_id": {
+              "enum": [
+                "mysql_syntax_error_1064"
+              ]
+            }
+          },
+          "required": [
+            "dbms",
+            "signature_id"
+          ]
+        },
+        {
+          "properties": {
+            "dbms": {
+              "const": "oracle"
+            },
+            "signature_id": {
+              "enum": [
+                "oracle_syntax_error"
+              ]
+            }
+          },
+          "required": [
+            "dbms",
+            "signature_id"
+          ]
+        },
+        {
+          "properties": {
+            "dbms": {
+              "const": "postgresql"
+            },
+            "signature_id": {
+              "enum": [
+                "postgresql_syntax_error"
+              ]
+            }
+          },
+          "required": [
+            "dbms",
+            "signature_id"
+          ]
+        },
+        {
+          "properties": {
+            "dbms": {
+              "const": "sqlite"
+            },
+            "signature_id": {
+              "enum": [
+                "sqlite_operational_syntax"
+              ]
+            }
+          },
+          "required": [
+            "dbms",
+            "signature_id"
+          ]
         }
       ]
     },

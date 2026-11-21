@@ -7,11 +7,15 @@ security verification workflow.
 ## Supported Scope
 
 Vintar supports Boolean-, time-, and error-based SQL injection regression checks for
-`GET` query parameters. OpenAPI 3.0 and 3.1 discovery, draft review, and case
-materialization run offline. The workflow is
-`discover → review-draft → materialize-case → verify`. Reviewers explicitly
-select the `string-quoted` or `numeric` probe preset for Boolean cases that use presets.
-Verification runs against an authorized, configured target.
+`GET` query parameters. OpenAPI 3.0 and 3.1 `discover`, `review-draft`, and
+`materialize-case` support Boolean and Time cases and run offline. `verify`
+runs Boolean, Time, and Error cases against an authorized, configured target.
+Reviewers explicitly select the `string-quoted` or `numeric` probe preset for
+Boolean cases that use presets.
+
+Error SQLi currently starts from a hand-written Schema v1 case. OpenAPI
+materialization for Error cases is planned for a later phase; no Error payload
+or DBMS is inferred from OpenAPI metadata.
 
 Deferred are confirmed Error `VULNERABLE` verdicts and UNION-based SQL
 injection checks, POST form and JSON body injection, cookie and header injection,
@@ -62,8 +66,9 @@ Do not place API tokens, credentials, or secrets inside origins.
 
 ## Prepare reviewed cases
 
-Use offline OpenAPI discovery to identify candidate inputs, record reviewer
-decisions with `review-draft`, and produce reviewed Schema v1 TOML files with
+For Boolean and Time cases, use offline OpenAPI discovery to identify candidate
+inputs, record reviewer decisions with `review-draft`, and produce reviewed
+Schema v1 TOML files with
 `materialize-case`. Store the reviewed cases under `security/cases/` and run
 `verify` with explicit authorization and trusted runtime origins. Restrict
 access to materialized cases because they contain raw reviewed values.
@@ -82,6 +87,35 @@ reviewed delay and control payloads. Time presets are unavailable. The operator-
 `--time-deadline` option defaults to 45 seconds and cannot be increased by a
 case. Preflight rejects a case whose per-request timeout and rate cannot fit
 within that deadline before any HTTP request is sent.
+
+For Error SQLi, write the reviewed Schema v1 case directly and run it with the
+same authorized `vintar verify` command:
+
+```toml
+version = 1
+id = "reviewed-error-case"
+type = "sqli.error"
+expected_verdict = "inconclusive"
+
+[target]
+url = "http://placeholder.invalid:8000/items"
+allowed_origin = "http://placeholder.invalid:8000"
+params = [{ name = "id", value = "1" }]
+
+[injection]
+location = "query"
+name = "id"
+occurrence = 0
+mode = "append"
+
+[probes]
+error_payload = "'"
+
+[limits]
+max_requests = 4
+requests_per_second = 10.0
+timeout_seconds = 5.0
+```
 
 ## Execution
 

@@ -15,6 +15,7 @@ from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import (
     ERROR_SIGNATURE_DBMS_NAMES,
     ERROR_SIGNATURE_IDS,
+    ERROR_SIGNATURES,
 )
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
@@ -23,6 +24,7 @@ from vintar.regression.report import regression_batch_report_dict
 from vintar.regression.runner import RegressionOutcome, RegressionStatus
 
 _VALIDATOR_MODULE = runpy.run_path("scripts/validate_ci_report.py")
+_SCHEMA_GENERATOR_MODULE = runpy.run_path("scripts/update_error_signature_schema.py")
 _validate = _VALIDATOR_MODULE["_validate"]
 SCHEMA_PATH = Path("schemas/regression-batch-report-v1.schema.json")
 
@@ -214,6 +216,83 @@ def test_error_schema_and_validator_derive_contract_tables():
     assert _VALIDATOR_MODULE["ERROR_RESULT_RULES"] is ERROR_RESULT_RULES
 
 
+def test_error_signature_schema_pairs_match_registry():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    assert (
+        schema["$defs"]["error_signature_pairs"]
+        == _SCHEMA_GENERATOR_MODULE["error_signature_pair_schema"]()
+    )
+    schema_pairs = {
+        (branch["properties"]["dbms"]["const"], signature_id)
+        for branch in schema["$defs"]["error_signature_pairs"]["oneOf"]
+        for signature_id in branch["properties"]["signature_id"]["enum"]
+    }
+    registry_pairs = {
+        (signature.dbms, signature_id)
+        for signature_id, signature in ERROR_SIGNATURES.items()
+    }
+    assert schema_pairs == registry_pairs
+
+
+@pytest.mark.parametrize(
+    ("signature_id", "dbms"),
+    [
+        (signature_id, signature.dbms)
+        for signature_id, signature in ERROR_SIGNATURES.items()
+    ],
+)
+def test_schema_accepts_every_registered_error_signature_pair(signature_id, dbms):
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"].update(
+        dbms=dbms,
+        signature_id=signature_id,
+    )
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    Draft202012Validator(schema).validate(report)
+
+
+def test_schema_rejects_oracle_dbms_with_sqlite_signature():
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"]["dbms"] = "oracle"
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(report)
+
+
+@pytest.mark.parametrize(
+    ("dbms", "signature_id", "accepted"),
+    [
+        *(
+            (signature.dbms, signature_id, True)
+            for signature_id, signature in ERROR_SIGNATURES.items()
+        ),
+        ("oracle", "sqlite_operational_syntax", False),
+    ],
+)
+def test_schema_and_python_validator_agree_on_error_signature_pairs(
+    tmp_path, dbms, signature_id, accepted
+):
+    report = make_error_report("dbms_error_disclosed")
+    report["outcomes"][0]["error"].update(
+        dbms=dbms,
+        signature_id=signature_id,
+    )
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    path = write_report(tmp_path, report)
+
+    if accepted:
+        Draft202012Validator(schema).validate(report)
+        _validate(path, 3)
+    else:
+        with pytest.raises(ValidationError):
+            Draft202012Validator(schema).validate(report)
+        with pytest.raises(ValidationError):
+            _validate(path, 3)
+
+
 @pytest.mark.parametrize("reason", ERROR_RESULT_RULES)
 def test_every_error_result_rule_is_accepted_by_schema_and_validator(tmp_path, reason):
     report = make_error_report(reason)
@@ -290,7 +369,7 @@ def test_error_evidence_requires_reviewed_dbms_signature_pair(tmp_path):
     report = make_error_report("dbms_error_disclosed")
     report["outcomes"][0]["error"]["dbms"] = "mysql"
 
-    with pytest.raises(ValueError, match=r"reviewed DBMS and signature ID pair"):
+    with pytest.raises((ValueError, ValidationError)):
         _validate(write_report(tmp_path, report), 3)
 
 
