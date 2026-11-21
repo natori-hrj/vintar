@@ -580,6 +580,148 @@ def test_error_acceptance_contract_keeps_candidate_distinct_from_vulnerability()
     }
 
 
+def _report_record(report, endpoint_id):
+    return next(
+        record for record in report["records"] if record["endpoint_id"] == endpoint_id
+    )
+
+
+def test_error_candidate_without_detail_is_rejected_with_regeneration_guidance():
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, "dsvw-error-id")["detail"] = {}
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-error-id.*detail fields contradict ERROR_RESULT_RULES: missing .*dbms.*reason_code.*request_count.*signature_id.*status.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize(
+    "missing_field", ["status", "reason_code", "request_count", "dbms", "signature_id"]
+)
+def test_error_candidate_requires_every_contract_field(missing_field):
+    runner = load_runner()
+    report = expected_report()
+    del _report_record(report, "dsvw-error-id")["detail"][missing_field]
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"dsvw-error-id.*detail fields contradict ERROR_RESULT_RULES: missing \['{missing_field}'\].*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_error_candidate_rejects_unreviewed_dbms_signature_pair():
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, "dsvw-error-id")["detail"]["dbms"] = "mysql"
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-error-id.*unreviewed DBMS/signature pair.*Remeasure.*ERROR_SIGNATURES.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("status", "inconclusive", "status 'inconclusive' contradicts reason"),
+        ("reason_code", "unstable_response", "detail contradicts its top-level"),
+        ("request_count", 3, "request_count contradicts reason"),
+    ],
+)
+def test_error_candidate_values_follow_error_result_rules(field, value, message):
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, "dsvw-error-id")["detail"][field] = value
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"dsvw-error-id.*{message}.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize("evidence_value", [None, "sqlite"])
+def test_error_non_candidate_rejects_forbidden_evidence_fields(evidence_value):
+    runner = load_runner()
+    report = expected_report()
+    detail = _report_record(report, "dsvw-error-version-query")["detail"]
+    detail["dbms"] = evidence_value
+    detail["signature_id"] = evidence_value
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-error-version-query.*detail fields contradict ERROR_RESULT_RULES: unexpected .*dbms.*signature_id.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize(
+    ("endpoint_id", "stored_classification", "ground_truth", "result", "expected"),
+    [
+        (
+            "dsvw-error-version-query",
+            "candidate",
+            "negative",
+            "not_detected/dbms_error_not_observed",
+            "tn",
+        ),
+        (
+            "dsvw-error-id",
+            "tn",
+            "positive",
+            "inconclusive/dbms_error_disclosed",
+            "candidate",
+        ),
+        (
+            "dsvw-error-id",
+            "fn",
+            "positive",
+            "inconclusive/dbms_error_disclosed",
+            "candidate",
+        ),
+        (
+            "dsvw-blind-boolean-id",
+            "fn",
+            "positive",
+            "inconclusive/boolean_candidate",
+            "tp",
+        ),
+        (
+            "dsvw-time-id",
+            "fn",
+            "positive",
+            "inconclusive/timing_pattern_matched",
+            "tp",
+        ),
+    ],
+)
+def test_reaggregated_counts_cannot_hide_classification_relabeling(
+    endpoint_id, stored_classification, ground_truth, result, expected
+):
+    runner = load_runner()
+    report = expected_report()
+    _report_record(report, endpoint_id)["classification"] = stored_classification
+    report["counts"] = runner.counts(report["records"])
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"{endpoint_id}.*stored classification '{stored_classification}' contradicts ground truth '{ground_truth}' with {result}; expected '{expected}'.*Remeasure.*do not hand-edit reports",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_stored_v3_report_fixture_still_validates_unchanged():
+    runner = load_runner()
+    report = expected_report()
+
+    assert runner.validate_measurement_report(report) is report
+
+
 def test_non_decisions_keep_the_manual_runner_exit_one(tmp_path, monkeypatch, capsys):
     runner = load_runner()
     report = expected_report()
@@ -907,7 +1049,13 @@ def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_
                 "license": "Unlicense",
                 "name": "DSVW",
             },
-            [{"id": "dsvw-blind-boolean-id", "check_type": "sqli.boolean"}],
+            [
+                {
+                    "id": "dsvw-blind-boolean-id",
+                    "check_type": "sqli.boolean",
+                    "label": "negative",
+                }
+            ],
         ),
     )
     monkeypatch.setattr(runner, "load_document", lambda path: {})

@@ -18,6 +18,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
+from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
+from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
+
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
 DECLARATIONS = THIRD_PARTY / "targets.toml"
@@ -53,6 +56,63 @@ class MeasurementError(RuntimeError):
     """An actionable third-party measurement failure."""
 
 
+def _validate_error_detail(record: dict[str, object]) -> None:
+    """Validate one Error detail object from the shared product contracts."""
+    endpoint_id = required_text(record, "endpoint_id", "report record")
+    detail = record.get("detail")
+    if type(detail) is not dict:
+        raise MeasurementError(
+            f"Error measurement record {endpoint_id!r} has no Error detail object. Remeasure the target; do not hand-edit reports."
+        )
+    reason = record.get("reason_code")
+    rule = ERROR_RESULT_RULES.get(reason) if type(reason) is str else None
+    if rule is None:
+        raise MeasurementError(
+            f"Error measurement record {endpoint_id!r} has an unsupported top-level reason. Use an ERROR_RESULT_RULES result by remeasuring; do not hand-edit reports."
+        )
+    required_fields = {"status", "reason_code", "request_count"}
+    if rule.requires_evidence:
+        required_fields.update(("dbms", "signature_id"))
+    if detail.keys() != required_fields:
+        missing = sorted(required_fields - detail.keys())
+        unexpected = sorted(detail.keys() - required_fields)
+        difference = f"missing {missing!r}" if missing else f"unexpected {unexpected!r}"
+        raise MeasurementError(
+            f"Error measurement record {endpoint_id!r} detail fields contradict ERROR_RESULT_RULES: {difference}. Remeasure the target to regenerate the complete Error result; do not hand-edit reports."
+        )
+    status = detail["status"]
+    request_count = detail["request_count"]
+    if status != rule.analysis_status.value:
+        raise MeasurementError(
+            f"Error measurement record {endpoint_id!r} detail status {status!r} contradicts reason {reason!r}. Remeasure the target using ERROR_RESULT_RULES; do not hand-edit reports."
+        )
+    if (
+        type(request_count) is not int
+        or not rule.minimum_requests <= request_count <= rule.maximum_requests
+    ):
+        raise MeasurementError(
+            f"Error measurement record {endpoint_id!r} detail request_count contradicts reason {reason!r}. Remeasure the target using the bounded ERROR_RESULT_RULES request range; do not hand-edit reports."
+        )
+    if rule.requires_evidence:
+        signature_id = detail["signature_id"]
+        dbms = detail["dbms"]
+        signature = (
+            ERROR_SIGNATURES.get(signature_id) if type(signature_id) is str else None
+        )
+        if signature is None or signature.dbms != dbms:
+            raise MeasurementError(
+                f"Error measurement record {endpoint_id!r} has an unreviewed DBMS/signature pair. Remeasure the target and use evidence from ERROR_SIGNATURES; do not hand-edit reports."
+            )
+    if (
+        detail.get("reason_code") != reason
+        or record.get("request_count") != request_count
+        or record.get("actual_verdict") != rule.product_verdict.value
+    ):
+        raise MeasurementError(
+            f"Error measurement record {endpoint_id!r} detail contradicts its top-level verdict, reason, or request count. Remeasure the target to regenerate matching fields; do not hand-edit reports."
+        )
+
+
 def validate_measurement_report(report: object) -> dict[str, object]:
     """Accept only the current manual measurement report contract."""
     if type(report) is not dict:
@@ -77,8 +137,13 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             "Invalid third-party measurement report v3 structure. Use grouped counts, record objects, and target metadata; rerun the measurement to regenerate the report."
         )
     _, declarations = load_declarations()
-    expected_keys = {planned.key for planned in plan_measurements(declarations)}
+    planned_measurements = list(plan_measurements(declarations))
+    expected_keys = {planned.key for planned in planned_measurements}
+    declarations_by_key = {
+        planned.key: planned.declaration for planned in planned_measurements
+    }
     record_keys: Counter[tuple[str, str, str]] = Counter()
+    recomputed_records: list[dict[str, object]] = []
     for record in records:
         if type(record) is not dict:
             raise MeasurementError(
@@ -161,7 +226,36 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             raise MeasurementError(
                 f"Measurement record for check type {record['check_type']}, mode {record['mode']} has an invalid classification. Use the classifications defined for that check type and rerun the measurement to regenerate the report."
             )
-    recomputed = counts(records)
+        key = (
+            required_text(record, "endpoint_id", "report record"),
+            required_text(record, "check_type", "report record"),
+            required_text(record, "mode", "report record"),
+        )
+        declaration = declarations_by_key[key]
+        ground_truth = required_text(declaration, "label", "record")
+        verdict = required_text(record, "actual_verdict", "report record")
+        reason = required_text(record, "reason_code", "report record")
+        recomputed_classification = classify(
+            required_text(record, "check_type", "report record"),
+            ground_truth,
+            verdict,
+            reason,
+        )
+        stored_classification = record.get("classification")
+        if stored_classification != recomputed_classification:
+            raise MeasurementError(
+                f"Measurement record {key[0]!r} stored classification {stored_classification!r} contradicts ground truth {ground_truth!r} with {verdict}/{reason}; expected {recomputed_classification!r}. Remeasure the target; do not hand-edit reports."
+            )
+        if record.get("expected_label") != ground_truth:
+            raise MeasurementError(
+                f"Measurement record {key[0]!r} expected_label contradicts reviewed ground truth {ground_truth!r}. Remeasure from targets.toml; do not hand-edit reports."
+            )
+        if check_type == "sqli.error":
+            _validate_error_detail(record)
+        recomputed_records.append(
+            {**record, "classification": recomputed_classification}
+        )
+    recomputed = counts(recomputed_records)
     for check_type, modes in expected_modes.items():
         for mode in modes:
             for field in CLASSIFICATIONS[check_type]:
