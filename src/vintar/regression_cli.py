@@ -11,8 +11,8 @@ import typer
 from vintar.core.scope import AllowedOrigin, ScopePolicy
 from vintar.regression import (
     MAX_BATCH_CASES,
+    AnyRegressionCase,
     CIExitCode,
-    RegressionCase,
     TrustedExecutionPolicy,
     batch_exit_code,
     load_regression_case,
@@ -20,7 +20,8 @@ from vintar.regression import (
     run_regression_batch,
 )
 from vintar.regression.binding import bind_runtime_target, parse_runtime_origin
-from vintar.regression.cases import ReviewDraftError
+from vintar.regression.cases import ReviewDraftError, TimeRegressionCase
+from vintar.regression.report import UnsupportedTimeBatchReportError
 
 _GENERIC_ERROR = "Error: regression verification could not be completed."
 _AUTH_ERROR = "Error: explicit testing authorization is required."
@@ -74,7 +75,7 @@ def _load_bound_cases(
     *,
     target: AllowedOrigin,
     trusted_scope: ScopePolicy,
-) -> tuple[RegressionCase, ...]:
+) -> tuple[AnyRegressionCase, ...]:
     """Load and bind every case before starting network execution."""
     return tuple(
         bind_runtime_target(
@@ -190,6 +191,11 @@ def verify_command(
             trusted_scope=trusted_scope,
         )
 
+        if any(isinstance(case, TimeRegressionCase) for case in selected):
+            raise UnsupportedTimeBatchReportError(
+                "Time SQLi cases are not yet supported in batch reports. Use the Python single-case regression API until Phase 13-3 adds report support."
+            )
+
         # The batch runner preflights all cases and limits
         # before the first HTTP request.
         result = run_regression_batch(
@@ -206,6 +212,8 @@ def verify_command(
     except KeyboardInterrupt:
         _abort(_CANCEL_ERROR, code=130)
     except ReviewDraftError as exc:
+        _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
+    except UnsupportedTimeBatchReportError as exc:
         _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
     except (OSError, ValueError):
         _abort(_GENERIC_ERROR, code=int(CIExitCode.ERROR))

@@ -8,11 +8,12 @@ from vintar.checks.sqli.models import Verdict
 from vintar.core.injector import inject
 from vintar.core.request import InjectionMode, RequestTemplate
 from vintar.core.scope import AllowedOrigin
-from vintar.regression import RegressionCase
+from vintar.regression import AnyRegressionCase, RegressionCase
 from vintar.regression import cases as cases_module
 from vintar.regression.cases import (
     CASE_MAX_RESPONSE_SIZE,
     MAX_CASE_BYTES,
+    TimeRegressionCase,
     load_regression_case,
     parse_regression_case,
 )
@@ -60,6 +61,37 @@ CONFIRMED_CASE = VALID_CASE.replace(
     'baseline_preserving_control = "\' AND 7=7-- "',
 ).replace("max_requests = 6", "max_requests = 18")
 
+TIME_CASE = """
+version = 1
+id = "product-search-time-sqli"
+type = "sqli.time"
+expected_verdict = "not_detected"
+
+[target]
+url = "http://localhost:8000/products"
+allowed_origin = "http://localhost:8000"
+
+[[target.params]]
+name = "category"
+value = "Pets"
+
+[injection]
+location = "query"
+name = "category"
+occurrence = 0
+mode = "append"
+
+[probes]
+delay_payload = "-delay"
+control_payload = "-control"
+expected_delay_seconds = 0.25
+
+[limits]
+max_requests = 9
+requests_per_second = 10.0
+timeout_seconds = 0.75
+"""
+
 
 def test_valid_case_is_parsed():
     case = parse_regression_case(VALID_CASE)
@@ -90,6 +122,148 @@ def test_optional_confirmation_case_is_parsed():
     assert case.confirmation.true_payload == "' AND 2<3-- "
     assert case.confirmation.false_payload == "' AND 2>3-- "
     assert case.confirmation.baseline_preserving_control == "' AND 7=7-- "
+
+
+def test_valid_time_case_is_parsed_at_lower_boundaries():
+    case = parse_regression_case(TIME_CASE)
+
+    assert isinstance(case, TimeRegressionCase)
+    assert isinstance(case, AnyRegressionCase)
+    assert not isinstance(case, RegressionCase)
+    assert case.check_type == "sqli.time"
+    assert case.delay_payload == "-delay"
+    assert case.control_payload == "-control"
+    assert case.expected_delay_seconds == 0.25
+    assert case.max_requests == 9
+    assert case.timeout_seconds == 0.75
+
+
+def test_valid_time_case_is_parsed_at_upper_boundaries():
+    case = parse_regression_case(
+        TIME_CASE.replace(
+            "expected_delay_seconds = 0.25", "expected_delay_seconds = 2.0"
+        ).replace("timeout_seconds = 0.75", "timeout_seconds = 8.0")
+    )
+
+    assert isinstance(case, TimeRegressionCase)
+    assert case.expected_delay_seconds == 2.0
+    assert case.timeout_seconds == 8.0
+
+
+@pytest.mark.parametrize("value", ["0.24", "2.01", "true"])
+def test_time_case_rejects_invalid_expected_delay(value):
+    source = TIME_CASE.replace(
+        "expected_delay_seconds = 0.25", f"expected_delay_seconds = {value}"
+    )
+
+    with pytest.raises(ValueError, match=r"0.25 through 2.0.*excluding booleans"):
+        parse_regression_case(source)
+
+
+@pytest.mark.parametrize("value", ["0.74", "8.01", "true"])
+def test_time_case_rejects_invalid_timeout(value):
+    source = TIME_CASE.replace("timeout_seconds = 0.75", f"timeout_seconds = {value}")
+
+    with pytest.raises(
+        ValueError, match=r"timeout_seconds.*expected_delay_seconds \+ 0.5"
+    ):
+        parse_regression_case(source)
+
+
+def test_time_case_rejects_timeout_below_delay_margin():
+    source = TIME_CASE.replace(
+        "expected_delay_seconds = 0.25", "expected_delay_seconds = 1.0"
+    )
+
+    with pytest.raises(ValueError, match=r"too short.*expected_delay_seconds \+ 0.5"):
+        parse_regression_case(source)
+
+
+@pytest.mark.parametrize("value", ["0.09", "10.01", "true"])
+def test_time_case_rejects_invalid_request_rate(value):
+    source = TIME_CASE.replace(
+        "requests_per_second = 10.0", f"requests_per_second = {value}"
+    )
+
+    with pytest.raises(ValueError, match=r"0.1 through 10.0.*excluding booleans"):
+        parse_regression_case(source)
+
+
+@pytest.mark.parametrize("value", ["8", "10", "true"])
+def test_time_case_requires_exact_nine_request_budget(value):
+    source = TIME_CASE.replace("max_requests = 9", f"max_requests = {value}")
+
+    with pytest.raises(ValueError, match=r"exactly 9.*max_requests = 9"):
+        parse_regression_case(source)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        'delay_payload = ""',
+        f'delay_payload = "{"x" * 513}"',
+        'delay_payload = "bad\\u0001value"',
+    ],
+)
+def test_time_case_rejects_invalid_payload(replacement):
+    source = TIME_CASE.replace('delay_payload = "-delay"', replacement)
+
+    with pytest.raises(ValueError, match=r"nonempty strings.*512.*control characters"):
+        parse_regression_case(source)
+
+
+def test_time_case_requires_distinct_payloads():
+    source = TIME_CASE.replace(
+        'control_payload = "-control"', 'control_payload = "-delay"'
+    )
+
+    with pytest.raises(ValueError, match=r"must differ.*distinct"):
+        parse_regression_case(source)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        'true_payload = "true"\nfalse_payload = "false"',
+        'delay_payload = "-delay"\ncontrol_payload = "-control"\nexpected_delay_seconds = 0.25\nunknown = "value"',
+    ],
+)
+def test_time_case_rejects_boolean_mixed_or_unknown_probe_keys(replacement):
+    before = 'delay_payload = "-delay"\ncontrol_payload = "-control"\nexpected_delay_seconds = 0.25'
+
+    with pytest.raises(ValueError, match=r"require exactly.*Remove Boolean or unknown"):
+        parse_regression_case(TIME_CASE.replace(before, replacement))
+
+
+def test_time_case_rejects_probe_matching_baseline_request():
+    source = TIME_CASE.replace('mode = "append"', 'mode = "replace"').replace(
+        'delay_payload = "-delay"', 'delay_payload = "Pets"'
+    )
+
+    with pytest.raises(ValueError, match=r"baseline, control, and delay.*distinct"):
+        parse_regression_case(source)
+
+
+def test_time_case_rejects_non_query_injection_actionably():
+    source = TIME_CASE.replace('location = "query"', 'location = "header"')
+
+    with pytest.raises(ValueError, match=r"query injection only.*location = \"query\""):
+        parse_regression_case(source)
+
+
+def test_time_case_validates_scope_for_baseline_control_and_delay(monkeypatch):
+    observed = []
+    original = cases_module.validate_scope
+
+    def recording_validate_scope(url, scope):
+        observed.append(url)
+        return original(url, scope)
+
+    monkeypatch.setattr(cases_module, "validate_scope", recording_validate_scope)
+
+    parse_regression_case(TIME_CASE)
+
+    assert observed == ["http://localhost:8000/products"] * 3
 
 
 @pytest.mark.parametrize(

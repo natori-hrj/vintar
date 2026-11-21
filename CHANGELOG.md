@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+**Added**
+
+- Accept explicit Schema v1 `sqli.time` cases through the Python single-case
+  regression API with a fixed nine-request plan and an operator-owned execution
+  deadline. Batch JSON reporting and CLI output remain out of scope.
+
 ## [0.2.1] - 2026-11-21
 
 **Fixed**

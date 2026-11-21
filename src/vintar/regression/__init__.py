@@ -9,7 +9,10 @@ from vintar.regression.cases import (
     CASE_MAX_RESPONSE_SIZE,
     CASE_VERSION,
     MAX_CASE_BYTES,
+    AnyRegressionCase,
+    BooleanRegressionCase,
     RegressionCase,
+    TimeRegressionCase,
     load_regression_case,
     parse_regression_case,
 )
@@ -22,8 +25,10 @@ from vintar.regression.report import (
     regression_batch_report_json,
 )
 from vintar.regression.runner import (
+    AnyRegressionOutcome,
     RegressionOutcome,
     RegressionStatus,
+    TimeRegressionOutcome,
     TrustedExecutionPolicy,
     run_regression_case,
 )
@@ -35,11 +40,16 @@ __all__ = [
     "CASE_VERSION",
     "MAX_BATCH_CASES",
     "MAX_CASE_BYTES",
+    "AnyRegressionCase",
+    "AnyRegressionOutcome",
+    "BooleanRegressionCase",
     "CIExitCode",
     "RegressionBatchResult",
     "RegressionCase",
     "RegressionOutcome",
     "RegressionStatus",
+    "TimeRegressionCase",
+    "TimeRegressionOutcome",
     "TrustedExecutionPolicy",
     "batch_exit_code",
     "load_regression_case",

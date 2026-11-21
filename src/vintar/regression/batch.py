@@ -8,9 +8,10 @@ from vintar.checks.sqli.models import Verdict
 from vintar.core.budget import RequestBudget
 from vintar.core.rate_limit import RateLimiter
 from vintar.core.scope import ScopePolicy
-from vintar.regression.cases import RegressionCase
+from vintar.regression.cases import AnyRegressionCase
 from vintar.regression.runner import (
     _CASE_ID_PATTERN,
+    AnyRegressionOutcome,
     RegressionOutcome,
     RegressionStatus,
     TrustedExecutionPolicy,
@@ -33,7 +34,7 @@ class RegressionBatchResult:
     """
 
     planned_case_ids: tuple[str, ...]
-    outcomes: tuple[RegressionOutcome, ...]
+    outcomes: tuple[AnyRegressionOutcome, ...]
     status: RegressionStatus
     requests_used: int
 
@@ -53,7 +54,7 @@ class RegressionBatchResult:
         if (
             not isinstance(self.outcomes, tuple)
             or not self.outcomes
-            or not all(isinstance(item, RegressionOutcome) for item in self.outcomes)
+            or not all(isinstance(item, AnyRegressionOutcome) for item in self.outcomes)
         ):
             raise ValueError("Invalid batch outcomes.")
 
@@ -83,7 +84,7 @@ class RegressionBatchResult:
 
 
 def _aggregate_status(
-    outcomes: tuple[RegressionOutcome, ...],
+    outcomes: tuple[AnyRegressionOutcome, ...],
     complete: bool,
 ) -> RegressionStatus:
     """FAIL takes precedence over incomplete/INCONCLUSIVE, then PASS."""
@@ -98,25 +99,28 @@ def _aggregate_status(
     return RegressionStatus.PASS
 
 
-def _must_stop_batch(outcome: RegressionOutcome) -> bool:
+def _must_stop_batch(outcome: AnyRegressionOutcome) -> bool:
     """Stop when continuing would ignore a safety or decisive condition."""
-    verification = outcome.verification
-
-    if verification.verdict is Verdict.VULNERABLE:
+    if outcome.final_verdict is Verdict.VULNERABLE:
         return True
 
     if outcome.final_reason_code in {
         "rate_limited",
+        "probe_timeout",
+        "probe_failed",
+        "probe_interrupted",
         "confirmation_rate_limited",
         "confirmation_rate_limit_interrupted",
     }:
         return True
 
-    return bool(verification.failures)
+    return bool(
+        isinstance(outcome, RegressionOutcome) and outcome.verification.failures
+    )
 
 
 def run_regression_batch(
-    cases: list[RegressionCase] | tuple[RegressionCase, ...],
+    cases: list[AnyRegressionCase] | tuple[AnyRegressionCase, ...],
     *,
     policy: TrustedExecutionPolicy,
     transport: httpx.BaseTransport | None = None,
@@ -151,7 +155,7 @@ def run_regression_batch(
 
     selected = tuple(cases)
 
-    if not all(isinstance(case, RegressionCase) for case in selected):
+    if not all(isinstance(case, AnyRegressionCase) for case in selected):
         raise TypeError("Invalid regression case.")
 
     identifiers = [case.case_id for case in selected]
@@ -175,7 +179,7 @@ def run_regression_batch(
         )
     )
 
-    outcomes: list[RegressionOutcome] = []
+    outcomes: list[AnyRegressionOutcome] = []
 
     for case, scope in zip(selected, scopes, strict=True):
         outcome = _run_with_resources(

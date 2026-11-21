@@ -7,7 +7,11 @@ from vintar.checks.sqli.confirmation_runner import ConfirmationStatus
 from vintar.checks.sqli.models import VerificationResult
 from vintar.checks.sqli.report import verification_report_dict
 from vintar.regression.batch import RegressionBatchResult
-from vintar.regression.runner import RegressionOutcome, RegressionStatus
+from vintar.regression.runner import (
+    RegressionOutcome,
+    RegressionStatus,
+    TimeRegressionOutcome,
+)
 
 BATCH_REPORT_SCHEMA_VERSION = 1
 BATCH_REPORT_TYPE = "regression_batch"
@@ -29,6 +33,10 @@ _CONFIRMATION_REASON_CODES = frozenset(
         "confirmation_cross_phase_mismatch",
     }
 )
+
+
+class UnsupportedTimeBatchReportError(ValueError):
+    """A time outcome reached the not-yet-supported batch report boundary."""
 
 
 class CIExitCode(IntEnum):
@@ -76,12 +84,18 @@ def regression_batch_report_dict(
     """
     if type(result) is not RegressionBatchResult:
         raise TypeError("result must be a RegressionBatchResult.")
-    if any(
-        type(outcome) is not RegressionOutcome
-        or type(outcome.verification) is not VerificationResult
-        for outcome in result.outcomes
-    ):
-        raise TypeError("result contains an unsupported derived model.")
+    if any(isinstance(outcome, TimeRegressionOutcome) for outcome in result.outcomes):
+        raise UnsupportedTimeBatchReportError(
+            "Time SQLi cases are not yet supported in batch reports. Use the Python single-case regression API until Phase 13-3 adds report support."
+        )
+    boolean_outcomes: list[RegressionOutcome] = []
+    for outcome in result.outcomes:
+        if (
+            type(outcome) is not RegressionOutcome
+            or type(outcome.verification) is not VerificationResult
+        ):
+            raise TypeError("result contains an unsupported derived model.")
+        boolean_outcomes.append(outcome)
 
     executed_ids = tuple(outcome.case_id for outcome in result.outcomes)
 
@@ -98,7 +112,8 @@ def regression_batch_report_dict(
 
     outcomes: list[dict[str, object]] = []
 
-    for outcome in result.outcomes:
+    for outcome in boolean_outcomes:
+        verification = outcome.verification
         confirmation = outcome.confirmation
         if confirmation is None:
             confirmation_report: dict[str, object] = {
@@ -131,7 +146,7 @@ def regression_batch_report_dict(
                 "request_count": outcome.request_count,
                 "expectation_match": outcome.expectation_match,
                 "status": outcome.status.value,
-                "verification": verification_report_dict(outcome.verification),
+                "verification": verification_report_dict(verification),
                 "confirmation": confirmation_report,
             }
         )

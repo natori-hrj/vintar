@@ -108,6 +108,59 @@ category C characters.
 A plan is a structural description of requests, not an authorization
 token or a proof of execution provenance.
 
+## Schema v1 Time Case
+
+Schema v1 accepts an explicit time-based case without inferring a DBMS, SQL
+context, or payload preset:
+
+```toml
+version = 1
+id = "product-search-time-sqli"
+type = "sqli.time"
+expected_verdict = "not_detected"
+
+[target]
+url = "http://127.0.0.1:8000/products"
+allowed_origin = "http://127.0.0.1:8000"
+params = [{ name = "category", value = "Pets" }]
+
+[injection]
+location = "query"
+name = "category"
+occurrence = 0
+mode = "append"
+
+[probes]
+delay_payload = "reviewed-delay-expression"
+control_payload = "reviewed-control-expression"
+expected_delay_seconds = 0.5
+
+[limits]
+max_requests = 9
+requests_per_second = 2.0
+timeout_seconds = 2.0
+```
+
+The loader requires:
+
+- Exactly the three time probe fields; Boolean, mixed, and unknown probe keys
+  are rejected
+- Explicit, distinct payloads of 1–512 characters without Unicode category C
+  characters
+- `expected_delay_seconds` from 0.25 through 2.0
+- Exactly nine requests
+- `requests_per_second` from 0.1 through 10.0
+- `timeout_seconds` at least 0.5 seconds above the expected delay and no more
+  than 8.0 seconds
+- Exact built-in numeric values; booleans are not numbers
+- Query injection with a non-negative occurrence and `append` or `replace`
+- Distinct baseline, control, and delay request URLs, all inside the declared
+  allowed origin
+
+All case and trusted-policy checks finish before the first HTTP request.
+Diagnostics explain which setting is invalid and what bound or field to use,
+without echoing URLs, payloads, or baseline values.
+
 ## Timing Observation
 
 Each TimeObservation records:
@@ -269,8 +322,9 @@ The runner stops after:
 For a completed nine-probe sequence, it invokes the pure timing
 analyzer.
 
-The runner is not connected to Schema v1, the public CLI, or the
-production CI security gate.
+The runner accepts a validated Schema v1 `sqli.time` case through the
+single-case regression API. Batch JSON reporting, the public CLI output, and
+the production CI report contract are not connected yet.
 
 ## Request Accounting
 
@@ -292,9 +346,27 @@ completed HTTP response.
 
 ## Total Execution Deadline
 
-The experimental runner accepts a total time limit in seconds.
+The regression API takes the total time limit from
+`TrustedExecutionPolicy.max_time_execution_seconds`, independently of the
+case. A case cannot increase this operator-owned limit.
 
 The default is 45 seconds, with a maximum of 120 seconds.
+
+Before HTTP, preflight applies the stricter case and trusted request rates and
+per-request timeouts. The deadline must accommodate one full per-request
+timeout plus the eight required rate-limit intervals:
+
+```text
+9 * effective_timeout + 8 / effective_requests_per_second
+```
+
+This budgets every request at its full per-request timeout plus the eight
+rate-limit intervals between nine requests. The runner receives that same
+trusted deadline, checks remaining time before every request, and caps each
+request timeout to the remaining duration. The trusted timeout must also
+remain at least 0.5 seconds above the expected delay. Impossible combinations
+are rejected before dispatch with guidance to increase the trusted deadline or
+rate, or shorten the valid timeout.
 
 The runner uses a monotonic clock.
 

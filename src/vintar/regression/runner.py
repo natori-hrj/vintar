@@ -14,13 +14,20 @@ from vintar.checks.sqli.confirmation_runner import (
 )
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
+from vintar.checks.sqli.time_contract import time_product_result
+from vintar.checks.sqli.time_plan import TIME_REQUESTS, TimePayloads
+from vintar.checks.sqli.time_runner import TimeRunReport, verify_time_based_sqli
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.injector import inject
 from vintar.core.rate_limit import RateLimiter
 from vintar.core.scope import ScopePolicy, validate_scope
 from vintar.core.template import validate_template
-from vintar.regression.cases import RegressionCase
+from vintar.regression.cases import (
+    AnyRegressionCase,
+    BooleanRegressionCase,
+    TimeRegressionCase,
+)
 
 _CASE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
@@ -42,6 +49,7 @@ class TrustedExecutionPolicy:
     max_requests_per_second: float = 2.0
     max_timeout_seconds: float = 10.0
     max_response_size: int = 1_048_576
+    max_time_execution_seconds: float = 45.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.scope, ScopePolicy):
@@ -56,6 +64,7 @@ class TrustedExecutionPolicy:
         for name, minimum, maximum, minimum_inclusive in (
             ("max_requests_per_second", 0.1, 10.0, True),
             ("max_timeout_seconds", 0.0, 60.0, False),
+            ("max_time_execution_seconds", 0.0, 120.0, False),
         ):
             value = getattr(self, name)
 
@@ -162,6 +171,52 @@ class RegressionOutcome:
         return self.confirmation.total_requests
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class TimeRegressionOutcome:
+    """Observed result for one time-based regression case."""
+
+    case_id: str
+    expected_verdict: Verdict
+    time_run: TimeRunReport
+    expectation_match: bool
+    status: RegressionStatus
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.case_id) is not str
+            or _CASE_ID_PATTERN.fullmatch(self.case_id) is None
+        ):
+            raise ValueError("Invalid case identifier.")
+        if not isinstance(self.expected_verdict, Verdict):
+            raise TypeError("Invalid expected verdict.")
+        if type(self.time_run) is not TimeRunReport:
+            raise TypeError("Invalid time run result.")
+        if type(self.expectation_match) is not bool:
+            raise TypeError("Invalid expectation match.")
+        if not isinstance(self.status, RegressionStatus):
+            raise TypeError("Invalid regression status.")
+        match = self.final_verdict is self.expected_verdict
+        if self.expectation_match != match:
+            raise ValueError("Inconsistent expectation match.")
+        if self.status is not _classify(self.final_verdict, match):
+            raise ValueError("Inconsistent regression status.")
+
+    @property
+    def final_verdict(self) -> Verdict:
+        return time_product_result(self.time_run.analysis).verdict
+
+    @property
+    def final_reason_code(self) -> str:
+        return time_product_result(self.time_run.analysis).reason_code
+
+    @property
+    def request_count(self) -> int:
+        return time_product_result(self.time_run.analysis).request_count
+
+
+AnyRegressionOutcome = RegressionOutcome | TimeRegressionOutcome
+
+
 def _classify(
     actual: Verdict,
     expectation_match: bool,
@@ -180,11 +235,11 @@ def _classify(
 
 
 def _effective_scope(
-    case: RegressionCase,
+    case: AnyRegressionCase,
     policy: TrustedExecutionPolicy,
 ) -> ScopePolicy:
     """Preflight the complete probe plan without sending HTTP."""
-    if not isinstance(case, RegressionCase):
+    if not isinstance(case, AnyRegressionCase):
         raise TypeError("case must be a RegressionCase.")
     if not isinstance(policy, TrustedExecutionPolicy):
         raise TypeError("policy must be a TrustedExecutionPolicy.")
@@ -196,12 +251,19 @@ def _effective_scope(
 
     scope = ScopePolicy(allowed_origins=frozenset(allowed))
 
-    templates = [
-        case.template,
-        inject(case.template, case.point, case.true_payload),
-        inject(case.template, case.point, case.false_payload),
-    ]
-    if case.confirmation is not None:
+    if isinstance(case, BooleanRegressionCase):
+        templates = [
+            case.template,
+            inject(case.template, case.point, case.true_payload),
+            inject(case.template, case.point, case.false_payload),
+        ]
+    else:
+        templates = [
+            case.template,
+            inject(case.template, case.point, case.control_payload),
+            inject(case.template, case.point, case.delay_payload),
+        ]
+    if isinstance(case, BooleanRegressionCase) and case.confirmation is not None:
         templates.extend(
             (
                 inject(case.template, case.point, case.confirmation.true_payload),
@@ -225,18 +287,33 @@ def _effective_scope(
         validate_template(template)
         validate_scope(template.url, scope)
 
+    if isinstance(case, TimeRegressionCase):
+        effective_rate = min(case.requests_per_second, policy.max_requests_per_second)
+        effective_timeout = min(case.timeout_seconds, policy.max_timeout_seconds)
+        if effective_timeout < case.expected_delay_seconds + 0.5:
+            raise ValueError(
+                "Trusted timeout is too short for the time case. Increase max_timeout_seconds to at least expected_delay_seconds + 0.5, or use a smaller reviewed delay."
+            )
+        minimum_window = (
+            TIME_REQUESTS * effective_timeout + (TIME_REQUESTS - 1) / effective_rate
+        )
+        if minimum_window > policy.max_time_execution_seconds:
+            raise ValueError(
+                "Trusted time execution deadline cannot accommodate the case timeout and request rate. Increase max_time_execution_seconds, increase the trusted request rate, or use a shorter valid timeout."
+            )
+
     return scope
 
 
 def _run_with_resources(
-    case: RegressionCase,
+    case: AnyRegressionCase,
     *,
     policy: TrustedExecutionPolicy,
     budget: RequestBudget,
     rate_limiter: RateLimiter,
     transport: httpx.BaseTransport | None = None,
     scope: ScopePolicy | None = None,
-) -> RegressionOutcome:
+) -> AnyRegressionOutcome:
     """Internal execution path for single-case and batch runners."""
     effective_scope = scope if scope is not None else _effective_scope(case, policy)
 
@@ -253,6 +330,29 @@ def _run_with_resources(
         ),
         rate_limiter=rate_limiter,
     )
+
+    if isinstance(case, TimeRegressionCase):
+        time_run = verify_time_based_sqli(
+            template=case.template,
+            point=case.point,
+            payloads=TimePayloads(
+                delay=case.delay_payload,
+                control=case.control_payload,
+            ),
+            expected_delay_seconds=case.expected_delay_seconds,
+            context=context,
+            max_total_seconds=policy.max_time_execution_seconds,
+            transport=transport,
+        )
+        product = time_product_result(time_run.analysis)
+        expectation_match = product.verdict is case.expected_verdict
+        return TimeRegressionOutcome(
+            case_id=case.case_id,
+            expected_verdict=case.expected_verdict,
+            time_run=time_run,
+            expectation_match=expectation_match,
+            status=_classify(product.verdict, expectation_match),
+        )
 
     confirmation: ConfirmationOutcome | None = None
     if case.confirmation is None:
@@ -302,11 +402,11 @@ def _run_with_resources(
 
 
 def run_regression_case(
-    case: RegressionCase,
+    case: AnyRegressionCase,
     *,
     policy: TrustedExecutionPolicy,
     transport: httpx.BaseTransport | None = None,
-) -> RegressionOutcome:
+) -> AnyRegressionOutcome:
     """Execute one case within independent trusted limits.
 
     The policy must come from a trusted caller, not an untrusted case.

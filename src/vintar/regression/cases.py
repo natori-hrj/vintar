@@ -114,6 +114,118 @@ class RegressionCase:
         )
 
 
+class TimeCaseValidationError(ValueError):
+    """A redacted, actionable time-case validation error."""
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TimeRegressionCase:
+    """Validated inputs for one bounded time-based SQLi check."""
+
+    schema_version: int
+    case_id: str
+    check_type: str
+    template: RequestTemplate
+    point: InjectionPoint
+    delay_payload: str
+    control_payload: str
+    expected_delay_seconds: float
+    expected_verdict: Verdict
+    scope: ScopePolicy
+    max_requests: int
+    max_response_size: int
+    requests_per_second: float
+    timeout_seconds: float
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != CASE_VERSION:
+            raise TimeCaseValidationError(
+                "Time SQLi cases require Schema v1. Set version = 1."
+            )
+        if type(self.check_type) is not str or self.check_type != "sqli.time":
+            raise TimeCaseValidationError(
+                'Time SQLi cases require type = "sqli.time". Use that exact check type.'
+            )
+
+        case_id = _string(self.case_id, max_length=64)
+        if _ID_PATTERN.fullmatch(case_id) is None:
+            raise TimeCaseValidationError(
+                "Invalid time case identifier. Use 1-64 letters, digits, dots, underscores, or hyphens, beginning with a letter or digit."
+            )
+        if not isinstance(self.template, RequestTemplate):
+            raise TypeError("template must be a RequestTemplate.")
+        if not isinstance(self.point, InjectionPoint):
+            raise TypeError("point must be an InjectionPoint.")
+        if not isinstance(self.expected_verdict, Verdict):
+            raise TypeError("expected_verdict must be a Verdict.")
+        if not isinstance(self.scope, ScopePolicy):
+            raise TypeError("scope must be a ScopePolicy.")
+
+        try:
+            delay_payload = _string(self.delay_payload, max_length=512)
+            control_payload = _string(self.control_payload, max_length=512)
+        except ValueError:
+            raise TimeCaseValidationError(
+                "Time probe payloads must be nonempty strings of at most 512 characters without control characters. Supply reviewed delay_payload and control_payload values."
+            ) from None
+        if delay_payload == control_payload:
+            raise TimeCaseValidationError(
+                "Time probe payloads must differ. Supply distinct delay_payload and control_payload values."
+            )
+
+        try:
+            expected_delay = _positive_number(self.expected_delay_seconds, 0.25, 2.0)
+        except ValueError:
+            raise TimeCaseValidationError(
+                "expected_delay_seconds must be a number from 0.25 through 2.0, excluding booleans. Supply a bounded expected delay."
+            ) from None
+
+        if type(self.max_requests) is not int or self.max_requests != 9:
+            raise TimeCaseValidationError(
+                "Time SQLi cases require exactly 9 requests. Set limits.max_requests = 9."
+            )
+        if (
+            type(self.max_response_size) is not int
+            or self.max_response_size != CASE_MAX_RESPONSE_SIZE
+        ):
+            raise TimeCaseValidationError(
+                "Time SQLi Schema v1 cases require the fixed response-size limit. Use the Schema v1 loader default."
+            )
+
+        try:
+            rps = _positive_number(self.requests_per_second, 0.1, 10.0)
+        except ValueError:
+            raise TimeCaseValidationError(
+                "requests_per_second must be a number from 0.1 through 10.0, excluding booleans. Supply a bounded request rate."
+            ) from None
+        try:
+            timeout = _positive_number(self.timeout_seconds, 0.75, 8.0)
+        except ValueError:
+            raise TimeCaseValidationError(
+                "Time timeout_seconds must be a number no greater than 8.0, excluding booleans. Supply at least expected_delay_seconds + 0.5."
+            ) from None
+        if timeout < expected_delay + 0.5:
+            raise TimeCaseValidationError(
+                "Time timeout_seconds is too short for the expected delay. Set it to at least expected_delay_seconds + 0.5 and no more than 8.0."
+            )
+
+        object.__setattr__(self, "expected_delay_seconds", expected_delay)
+        object.__setattr__(self, "requests_per_second", rps)
+        object.__setattr__(self, "timeout_seconds", timeout)
+
+        _validate_time_plan(
+            self.template,
+            self.point,
+            delay_payload,
+            control_payload,
+            self.scope,
+        )
+
+
+BooleanRegressionCase = RegressionCase
+AnyRegressionCase = RegressionCase | TimeRegressionCase
+
+
 def _table(value: object, keys: set[str]) -> dict[str, object]:
     table = _mapping_table(value)
 
@@ -231,11 +343,35 @@ def _validate_plan(
         validate_scope(planned.url, scope)
 
 
+def _validate_time_plan(
+    template: RequestTemplate,
+    point: InjectionPoint,
+    delay_payload: str,
+    control_payload: str,
+    scope: ScopePolicy,
+) -> None:
+    """Preflight the three distinct timing templates without network I/O."""
+    try:
+        validate_template(template)
+        validate_scope(template.url, scope)
+        control = inject(template, point, control_payload)
+        delay = inject(template, point, delay_payload)
+        if len({template, control, delay}) != 3:
+            raise ValueError
+        for planned in (control, delay):
+            validate_template(planned)
+            validate_scope(planned.url, scope)
+    except (TypeError, ValueError, httpx.HTTPError):
+        raise TimeCaseValidationError(
+            "Time baseline, control, and delay requests must be distinct and inside the allowed origin. Check the query injection target, occurrence, mode, and reviewed payloads."
+        ) from None
+
+
 class ReviewDraftError(ValueError):
     """A review draft requires human decisions before verification."""
 
 
-def parse_regression_case(source: str) -> RegressionCase:
+def parse_regression_case(source: str) -> AnyRegressionCase:
     """Validate a version-1 TOML case without executing HTTP requests."""
     try:
         if type(source) is not str:
@@ -287,7 +423,8 @@ def parse_regression_case(source: str) -> RegressionCase:
         if type(root["type"]) is not str:
             raise ValueError("Invalid check type.")
 
-        if root["type"] != "sqli.boolean":
+        check_type = root["type"]
+        if check_type not in {"sqli.boolean", "sqli.time"}:
             raise ValueError("Unsupported check type.")
 
         case_id = _string(
@@ -318,11 +455,20 @@ def parse_regression_case(source: str) -> RegressionCase:
         )
 
         probes = _mapping_table(root["probes"])
-        if probes.keys() not in (
-            {"true_payload", "false_payload"},
-            {"true_payload", "false_payload", "confirmation"},
-        ):
-            raise ValueError("Invalid regression case schema.")
+        if check_type == "sqli.boolean":
+            if probes.keys() not in (
+                {"true_payload", "false_payload"},
+                {"true_payload", "false_payload", "confirmation"},
+            ):
+                raise ValueError("Invalid regression case schema.")
+        elif probes.keys() != {
+            "delay_payload",
+            "control_payload",
+            "expected_delay_seconds",
+        }:
+            raise TimeCaseValidationError(
+                "Time probes require exactly delay_payload, control_payload, and expected_delay_seconds. Remove Boolean or unknown probe keys and supply the explicit time fields."
+            )
 
         limits = _table(
             root["limits"],
@@ -335,19 +481,37 @@ def parse_regression_case(source: str) -> RegressionCase:
 
         max_requests = limits["max_requests"]
         if type(max_requests) is not int:
+            if check_type == "sqli.time":
+                raise TimeCaseValidationError(
+                    "Time SQLi cases require exactly 9 requests. Set limits.max_requests = 9 using an integer, not a boolean."
+                )
             raise ValueError("Invalid request budget.")
 
-        rps = _positive_number(
-            limits["requests_per_second"],
-            0.1,
-            10.0,
-        )
+        try:
+            rps = _positive_number(
+                limits["requests_per_second"],
+                0.1,
+                10.0,
+            )
+        except ValueError:
+            if check_type == "sqli.time":
+                raise TimeCaseValidationError(
+                    "requests_per_second must be a number from 0.1 through 10.0, excluding booleans. Supply a bounded request rate."
+                ) from None
+            raise
 
-        timeout = _positive_number(
-            limits["timeout_seconds"],
-            0.1,
-            60.0,
-        )
+        try:
+            timeout = _positive_number(
+                limits["timeout_seconds"],
+                0.1,
+                60.0,
+            )
+        except ValueError:
+            if check_type == "sqli.time":
+                raise TimeCaseValidationError(
+                    "Time timeout_seconds must be numeric, excluding booleans. Supply at least expected_delay_seconds + 0.5 and no more than 8.0."
+                ) from None
+            raise
 
         url = _string(target["url"])
 
@@ -393,14 +557,26 @@ def parse_regression_case(source: str) -> RegressionCase:
 
         location = injection["location"]
         if type(location) is not str or location != "query":
+            if check_type == "sqli.time":
+                raise TimeCaseValidationError(
+                    'Time SQLi supports query injection only. Set injection.location = "query".'
+                )
             raise ValueError("Unsupported injection location.")
 
         mode = injection["mode"]
         if type(mode) is not str or mode not in {"append", "replace"}:
+            if check_type == "sqli.time":
+                raise TimeCaseValidationError(
+                    'Unsupported time injection mode. Use injection.mode = "append" or "replace".'
+                )
             raise ValueError("Unsupported injection mode.")
 
         occurrence = injection["occurrence"]
         if type(occurrence) is not int or occurrence < 0:
+            if check_type == "sqli.time":
+                raise TimeCaseValidationError(
+                    "Invalid time injection occurrence. Supply a non-negative integer, not a boolean."
+                )
             raise ValueError("Invalid occurrence.")
 
         point = InjectionPoint(
@@ -413,16 +589,41 @@ def parse_regression_case(source: str) -> RegressionCase:
             mode=InjectionMode(mode),
         )
 
-        true_payload = _string(
-            probes["true_payload"],
-            max_length=512,
-        )
+        if check_type == "sqli.time":
+            try:
+                delay_payload = _string(probes["delay_payload"], max_length=512)
+                control_payload = _string(probes["control_payload"], max_length=512)
+            except ValueError:
+                raise TimeCaseValidationError(
+                    "Time probe payloads must be nonempty strings of at most 512 characters without control characters. Supply reviewed delay_payload and control_payload values."
+                ) from None
+            try:
+                expected_delay = _positive_number(
+                    probes["expected_delay_seconds"], 0.25, 2.0
+                )
+            except ValueError:
+                raise TimeCaseValidationError(
+                    "expected_delay_seconds must be a number from 0.25 through 2.0, excluding booleans. Supply a bounded expected delay."
+                ) from None
+            return TimeRegressionCase(
+                schema_version=CASE_VERSION,
+                case_id=case_id,
+                check_type=check_type,
+                template=template,
+                point=point,
+                delay_payload=delay_payload,
+                control_payload=control_payload,
+                expected_delay_seconds=expected_delay,
+                expected_verdict=expected_verdict,
+                scope=scope,
+                max_requests=max_requests,
+                max_response_size=CASE_MAX_RESPONSE_SIZE,
+                requests_per_second=rps,
+                timeout_seconds=timeout,
+            )
 
-        false_payload = _string(
-            probes["false_payload"],
-            max_length=512,
-        )
-
+        true_payload = _string(probes["true_payload"], max_length=512)
+        false_payload = _string(probes["false_payload"], max_length=512)
         if true_payload == false_payload:
             raise ValueError("Probe payloads must differ.")
 
@@ -467,7 +668,7 @@ def parse_regression_case(source: str) -> RegressionCase:
             timeout_seconds=timeout,
         )
 
-    except ReviewDraftError:
+    except (ReviewDraftError, TimeCaseValidationError):
         raise
     except (
         TypeError,
@@ -483,7 +684,7 @@ def parse_regression_case(source: str) -> RegressionCase:
         ) from None
 
 
-def load_regression_case(path: str | Path) -> RegressionCase:
+def load_regression_case(path: str | Path) -> AnyRegressionCase:
     """Read one stable, bounded regular file without following symlinks."""
     try:
         raw = _read_case_file(path)
