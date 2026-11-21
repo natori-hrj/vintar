@@ -1,0 +1,125 @@
+{
+  "exit_code": 3,
+  "stderr": "",
+  "stdout_json": {
+    "complete": true,
+    "counts": {
+      "fail": 0,
+      "inconclusive": 1,
+      "not_run": 0,
+      "pass": 1
+    },
+    "executed_case_ids": [
+      "boolean-case",
+      "time-case"
+    ],
+    "executed_count": 2,
+    "exit_code": 3,
+    "not_run_case_ids": [],
+    "outcomes": [
+      {
+        "actual_reason_code": "no_boolean_difference",
+        "actual_verdict": "not_detected",
+        "case_id": "boolean-case",
+        "confirmation": {
+          "configured": false,
+          "reason_code": null,
+          "request_count": 0,
+          "status": "not_configured"
+        },
+        "expectation_match": true,
+        "expected_verdict": "not_detected",
+        "request_count": 6,
+        "status": "pass",
+        "verification": {
+          "check_type": "sqli_boolean",
+          "confidence": null,
+          "evidence": {
+            "baseline_false_similarity": 1.0,
+            "baseline_true_similarity": 1.0,
+            "true_false_similarity": 1.0
+          },
+          "failures": [],
+          "observations": [
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.125,
+              "kind": "baseline",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "baseline",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "true",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "true",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "false",
+              "status_code": 200,
+              "truncated": false
+            },
+            {
+              "body_digest": "312c297ebe6de6f4f35c6d74d28d766e559b3eae17e85585018b972b10351ebb",
+              "body_size": 14,
+              "elapsed": 0.5,
+              "kind": "false",
+              "status_code": 200,
+              "truncated": false
+            }
+          ],
+          "reason_code": "no_boolean_difference",
+          "request_count": 6,
+          "schema_version": 1,
+          "verdict": "not_detected"
+        }
+      },
+      {
+        "actual_reason_code": "timing_pattern_matched",
+        "actual_verdict": "inconclusive",
+        "case_id": "time-case",
+        "check_type": "sqli.time",
+        "expectation_match": true,
+        "expected_verdict": "inconclusive",
+        "request_count": 9,
+        "status": "inconclusive",
+        "timing": {
+          "reason_code": "timing_pattern_matched",
+          "request_count": 9,
+          "status": "candidate"
+        }
+      }
+    ],
+    "planned_case_ids": [
+      "boolean-case",
+      "time-case"
+    ],
+    "planned_count": 2,
+    "report_type": "regression_batch",
+    "requests_used": 15,
+    "schema_version": 1,
+    "status": "inconclusive"
+  }
+}

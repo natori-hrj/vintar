@@ -322,9 +322,36 @@ The runner stops after:
 For a completed nine-probe sequence, it invokes the pure timing
 analyzer.
 
-The runner accepts a validated Schema v1 `sqli.time` case through the
-single-case regression API. Batch JSON reporting, the public CLI output, and
-the production CI report contract are not connected yet.
+The runner accepts validated Schema v1 `sqli.time` cases through both the
+single-case regression API and `vintar verify`. Time cases can share a batch
+with Boolean cases while retaining their independent nine-request execution
+budget.
+
+## CI report contract
+
+A time outcome uses the common `actual_verdict`, `actual_reason_code`, and
+`request_count` fields and adds:
+
+```json
+{
+  "check_type": "sqli.time",
+  "timing": {
+    "status": "candidate",
+    "reason_code": "timing_pattern_matched",
+    "request_count": 9
+  }
+}
+```
+
+Time outcomes never contain the Boolean `verification` or `confirmation`
+objects. Boolean outcomes never contain `check_type` or `timing`. Reports do
+not expose elapsed observations, medians, thresholds, payloads, or target URLs.
+The Schema v1 extension is additive; legacy v1 reports remain valid.
+
+The existing process exit contract is unchanged: a matched timing pattern is
+INCONCLUSIVE with exit code 3, a matching NOT_DETECTED result can pass with exit
+code 0, expectation failures use exit code 1, and invalid execution or report
+inputs use exit code 2.
 
 ## Request Accounting
 
@@ -350,7 +377,10 @@ The regression API takes the total time limit from
 `TrustedExecutionPolicy.max_time_execution_seconds`, independently of the
 case. A case cannot increase this operator-owned limit.
 
-The default is 45 seconds, with a maximum of 120 seconds.
+The CLI exposes this trusted policy as `--time-deadline`. The default is 45
+seconds, with a maximum of 120 seconds. Invalid or impossible combinations fail
+preflight with guidance to increase the deadline or rate, or shorten the valid
+per-request timeout.
 
 Before HTTP, preflight applies the stricter case and trusted request rates and
 per-request timeouts. The deadline must accommodate one full per-request

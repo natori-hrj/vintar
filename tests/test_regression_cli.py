@@ -221,7 +221,7 @@ def test_verify_enum_json_and_exit_code_are_contract(
     assert outcome["verification"]["verdict"] == verdict
 
 
-def test_time_case_cli_fails_cleanly_until_batch_reports_are_supported(
+def test_time_case_cli_emits_time_report_and_existing_exit_contract(
     tmp_path, mock_http
 ):
     case = write_time_case(tmp_path)
@@ -229,13 +229,42 @@ def test_time_case_cli_fails_cleanly_until_batch_reports_are_supported(
 
     result = cli.invoke(app, args_for(case, max_requests=9), env=ENV)
 
+    assert result.exit_code == 3
+    report = json.loads(result.stdout)
+    assert report["exit_code"] == 3
+    [outcome] = report["outcomes"]
+    assert outcome["check_type"] == "sqli.time"
+    assert outcome["actual_verdict"] == "inconclusive"
+    assert outcome["actual_reason_code"] == "unstable_timing"
+    assert outcome["request_count"] == 9
+    assert outcome["timing"] == {
+        "status": "inconclusive",
+        "reason_code": "unstable_timing",
+        "request_count": 9,
+    }
+    assert "verification" not in outcome
+    assert "confirmation" not in outcome
+    assert result.stderr == ""
+    assert result.exception is not None
+    assert len(received) == 9
+
+
+def test_time_case_cli_rejects_impossible_operator_deadline_before_http(
+    tmp_path, mock_http
+):
+    case = write_time_case(tmp_path)
+    received, _ = mock_http
+
+    result = cli.invoke(
+        app,
+        [*args_for(case, max_requests=9), "--time-deadline", "1.0"],
+        env=ENV,
+    )
+
     assert result.exit_code == 2
     assert result.stdout == ""
-    assert result.stderr == (
-        "Error: Time SQLi cases are not yet supported in batch reports. "
-        "Use the Python single-case regression API until Phase 13-3 adds report support.\n"
-    )
-    assert result.exception is not None
+    assert "cannot accommodate" in result.stderr
+    assert "Increase --time-deadline" in result.stderr
     assert received == []
 
 
@@ -620,6 +649,8 @@ def test_insufficient_budget_blocks_all_requests(
 
     assert result.exit_code == 2
     assert result.stdout == ""
+    assert "cannot cover every selected case" in result.stderr
+    assert "Increase --max-requests" in result.stderr
     assert received == []
 
 

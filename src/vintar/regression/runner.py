@@ -32,6 +32,14 @@ from vintar.regression.cases import (
 _CASE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
 
+class TimeExecutionPolicyError(ValueError):
+    """A trusted time policy cannot execute a reviewed case safely."""
+
+
+class TimeRequestBudgetError(ValueError):
+    """The shared budget cannot grant a fresh time-case budget safely."""
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class TrustedExecutionPolicy:
     """Trusted limits supplied independently of regression cases.
@@ -298,7 +306,7 @@ def _effective_scope(
             TIME_REQUESTS * effective_timeout + (TIME_REQUESTS - 1) / effective_rate
         )
         if minimum_window > policy.max_time_execution_seconds:
-            raise ValueError(
+            raise TimeExecutionPolicyError(
                 "Trusted time execution deadline cannot accommodate the case timeout and request rate. Increase max_time_execution_seconds, increase the trusted request rate, or use a shorter valid timeout."
             )
 
@@ -317,9 +325,17 @@ def _run_with_resources(
     """Internal execution path for single-case and batch runners."""
     effective_scope = scope if scope is not None else _effective_scope(case, policy)
 
+    if isinstance(case, TimeRegressionCase) and budget.remaining < TIME_REQUESTS:
+        raise TimeRequestBudgetError(
+            "Trusted batch request budget has fewer than nine requests remaining for the time case. Increase policy.max_requests to cover every selected case, or run fewer cases."
+        )
+
+    execution_budget = (
+        RequestBudget(TIME_REQUESTS) if isinstance(case, TimeRegressionCase) else budget
+    )
     context = ExecutionContext(
         scope=effective_scope,
-        budget=budget,
+        budget=execution_budget,
         timeout=min(
             case.timeout_seconds,
             policy.max_timeout_seconds,
@@ -344,6 +360,8 @@ def _run_with_resources(
             max_total_seconds=policy.max_time_execution_seconds,
             transport=transport,
         )
+        for _ in range(time_run.budget_used):
+            budget.consume()
         product = time_product_result(time_run.analysis)
         expectation_match = product.verdict is case.expected_verdict
         return TimeRegressionOutcome(

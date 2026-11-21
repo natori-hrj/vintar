@@ -1,0 +1,44 @@
+{
+  "exit_code": 0,
+  "stderr": "",
+  "stdout_json": {
+    "complete": true,
+    "counts": {
+      "fail": 0,
+      "inconclusive": 0,
+      "not_run": 0,
+      "pass": 1
+    },
+    "executed_case_ids": [
+      "time-case"
+    ],
+    "executed_count": 1,
+    "exit_code": 0,
+    "not_run_case_ids": [],
+    "outcomes": [
+      {
+        "actual_reason_code": "timing_pattern_not_matched",
+        "actual_verdict": "not_detected",
+        "case_id": "time-case",
+        "check_type": "sqli.time",
+        "expectation_match": true,
+        "expected_verdict": "not_detected",
+        "request_count": 9,
+        "status": "pass",
+        "timing": {
+          "reason_code": "timing_pattern_not_matched",
+          "request_count": 9,
+          "status": "not_confirmed"
+        }
+      }
+    ],
+    "planned_case_ids": [
+      "time-case"
+    ],
+    "planned_count": 1,
+    "report_type": "regression_batch",
+    "requests_used": 9,
+    "schema_version": 1,
+    "status": "pass"
+  }
+}

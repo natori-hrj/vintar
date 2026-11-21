@@ -12,6 +12,7 @@ from jsonschema import Draft202012Validator, ValidationError
 
 from vintar.checks.sqli import confirmation_runner
 from vintar.checks.sqli.models import Verdict, VerificationResult
+from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
 from vintar.regression.batch import RegressionBatchResult
 from vintar.regression.report import regression_batch_report_dict
 from vintar.regression.runner import RegressionOutcome, RegressionStatus
@@ -99,6 +100,116 @@ def write_report(tmp_path, data):
     path = tmp_path / "report.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+def make_time_report(reason: str):
+    rule = TIME_RESULT_RULES[reason]
+    request_count = rule.minimum_requests
+    verdict = rule.product_verdict.value
+    status = "inconclusive" if verdict == "inconclusive" else "pass"
+    return {
+        "schema_version": 1,
+        "report_type": "regression_batch",
+        "status": status,
+        "complete": True,
+        "exit_code": 3 if status == "inconclusive" else 0,
+        "planned_case_ids": ["time-case"],
+        "executed_case_ids": ["time-case"],
+        "not_run_case_ids": [],
+        "planned_count": 1,
+        "executed_count": 1,
+        "requests_used": request_count,
+        "counts": {
+            "pass": int(status == "pass"),
+            "fail": 0,
+            "inconclusive": int(status == "inconclusive"),
+            "not_run": 0,
+        },
+        "outcomes": [
+            {
+                "case_id": "time-case",
+                "check_type": "sqli.time",
+                "expected_verdict": verdict,
+                "actual_verdict": verdict,
+                "actual_reason_code": reason,
+                "request_count": request_count,
+                "expectation_match": True,
+                "status": status,
+                "timing": {
+                    "status": rule.analysis_status.value,
+                    "reason_code": reason,
+                    "request_count": request_count,
+                },
+            }
+        ],
+    }
+
+
+def test_time_schema_reason_enum_matches_product_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    assert set(schema["$defs"]["timing"]["properties"]["reason_code"]["enum"]) == set(
+        TIME_RESULT_RULES
+    )
+    assert _VALIDATOR_MODULE["TIME_RESULT_RULES"] is TIME_RESULT_RULES
+
+
+@pytest.mark.parametrize("reason", TIME_RESULT_RULES)
+def test_every_time_result_rule_is_accepted_by_schema_and_validator(tmp_path, reason):
+    report = make_time_report(reason)
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(report)
+
+    _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize("reason", TIME_RESULT_RULES)
+@pytest.mark.parametrize("field", ["verdict", "count", "status"])
+def test_time_result_rule_mismatches_are_rejected(tmp_path, reason, field):
+    report = make_time_report(reason)
+    outcome = report["outcomes"][0]
+    if field == "verdict":
+        outcome["actual_verdict"] = (
+            "not_detected"
+            if outcome["actual_verdict"] == "inconclusive"
+            else "inconclusive"
+        )
+    elif field == "count":
+        rule = TIME_RESULT_RULES[reason]
+        invalid = rule.minimum_requests - 1 if rule.minimum_requests else 9
+        outcome["request_count"] = invalid
+        outcome["timing"]["request_count"] = invalid
+        report["requests_used"] = invalid
+    else:
+        outcome["timing"]["status"] = (
+            "candidate"
+            if outcome["timing"]["status"] != "candidate"
+            else "inconclusive"
+        )
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize("missing", ["check_type", "timing"])
+def test_time_outcome_fields_are_all_or_nothing(tmp_path, missing):
+    report = make_time_report("timing_pattern_not_matched")
+    del report["outcomes"][0][missing]
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 0)
+
+
+def test_boolean_outcome_rejects_timing_object(tmp_path):
+    report = make_report()
+    report["outcomes"][0]["timing"] = {
+        "status": "inconclusive",
+        "reason_code": "incomplete_probes",
+        "request_count": 0,
+    }
+
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 3)
 
 
 def test_valid_partial_report(tmp_path):

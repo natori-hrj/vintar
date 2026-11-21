@@ -1,6 +1,9 @@
 """Compare deterministic CLI results with the committed golden files."""
 
+import json
 import runpy
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,3 +44,33 @@ def test_cli_golden(name, tmp_path):
     assert actual == path.read_text(encoding="utf-8"), (
         f"CLI output differs from golden {name}. {update}"
     )
+
+
+def test_every_verify_golden_report_passes_ci_validator(tmp_path):
+    validator = Path("scripts/validate_ci_report.py").resolve()
+    validated = []
+    for name, scenario in SCENARIOS.items():
+        if not name.startswith("verify/"):
+            continue
+        capture_data = json.loads((GOLDEN_DIR / name).read_text(encoding="utf-8"))
+        report = capture_data["stdout_json"]
+        if report is None:
+            continue
+        path = tmp_path / name.replace("/", "-")
+        path.write_text(json.dumps(report), encoding="utf-8")
+        completed = subprocess.run(
+            [sys.executable, str(validator), str(path), str(scenario.exit_code)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, name
+        assert completed.stdout == ""
+        assert completed.stderr == ""
+        validated.append(name)
+
+    assert validated == [
+        name
+        for name in SCENARIOS
+        if name.startswith("verify/") and SCENARIOS[name].exit_code != 2
+    ]

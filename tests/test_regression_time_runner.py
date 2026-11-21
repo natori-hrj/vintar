@@ -4,21 +4,24 @@ import math
 
 import httpx
 import pytest
+from test_regression_runner import make_case
 from test_regression_time_http import time_case
 from test_sqli_time_analyzer import run_analysis
 
 from vintar.checks.sqli.models import Verdict
 from vintar.checks.sqli.time_runner import TimeRunReport
+from vintar.core.budget import RequestBudget
 from vintar.core.rate_limit import RateLimiter
 from vintar.core.scope import AllowedOrigin, ScopePolicy
 from vintar.regression import batch as batch_module
 from vintar.regression import runner as runner_module
 from vintar.regression.batch import run_regression_batch
-from vintar.regression.report import (
-    UnsupportedTimeBatchReportError,
-    regression_batch_report_dict,
+from vintar.regression.report import regression_batch_report_dict
+from vintar.regression.runner import (
+    TimeRequestBudgetError,
+    TrustedExecutionPolicy,
+    run_regression_case,
 )
-from vintar.regression.runner import TrustedExecutionPolicy, run_regression_case
 
 
 def policy(**changes) -> TrustedExecutionPolicy:
@@ -184,11 +187,19 @@ def test_time_case_batch_accounts_for_nine_requests(monkeypatch):
     assert len(received) == 9
     assert result.requests_used == 9
     assert result.outcomes[0].request_count == 9
-    with pytest.raises(
-        UnsupportedTimeBatchReportError,
-        match=r"not yet supported in batch reports.*single-case regression API",
-    ):
-        regression_batch_report_dict(result)
+    report = regression_batch_report_dict(result)
+    outcome = report["outcomes"][0]
+    assert outcome["check_type"] == "sqli.time"
+    assert outcome["actual_verdict"] == "not_detected"
+    assert outcome["actual_reason_code"] == "timing_pattern_not_matched"
+    assert outcome["request_count"] == 9
+    assert outcome["timing"] == {
+        "status": "not_confirmed",
+        "reason_code": "timing_pattern_not_matched",
+        "request_count": 9,
+    }
+    assert "verification" not in outcome
+    assert "confirmation" not in outcome
 
 
 def test_time_case_batch_budget_preflight_counts_nine_before_http():
@@ -202,4 +213,51 @@ def test_time_case_batch_budget_preflight_counts_nine_before_http():
             ),
         )
 
+    assert calls == []
+
+
+def test_mixed_batch_budget_preflight_rejects_eight_remaining_before_http():
+    calls = []
+    with pytest.raises(
+        ValueError,
+        match=r"cannot cover every selected case.*Increase policy.max_requests",
+    ):
+        run_regression_batch(
+            [
+                make_case(),
+                time_case("http://localhost:8000", "safe", "not_detected"),
+            ],
+            policy=policy(max_requests=14, max_timeout_seconds=10.0),
+            transport=httpx.MockTransport(
+                lambda request: calls.append(request) or httpx.Response(200)
+            ),
+        )
+
+    assert calls == []
+
+
+def test_time_case_fresh_budget_requires_nine_shared_requests_remaining():
+    case = time_case("http://localhost:8000", "safe", "not_detected")
+    trusted_policy = policy(max_requests=14)
+    shared_budget = RequestBudget(14)
+    for _ in range(6):
+        shared_budget.consume()
+    calls = []
+
+    with pytest.raises(
+        TimeRequestBudgetError,
+        match=r"fewer than nine requests remaining.*Increase policy.max_requests",
+    ):
+        runner_module._run_with_resources(
+            case,
+            policy=trusted_policy,
+            budget=shared_budget,
+            rate_limiter=RateLimiter(requests_per_second=10.0),
+            transport=httpx.MockTransport(
+                lambda request: calls.append(request) or httpx.Response(200)
+            ),
+        )
+
+    assert shared_budget.used_requests == 6
+    assert shared_budget.remaining == 8
     assert calls == []
