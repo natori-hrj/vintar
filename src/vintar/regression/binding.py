@@ -5,7 +5,7 @@ from dataclasses import replace
 import httpx
 
 from vintar.core.scope import AllowedOrigin, ScopePolicy, validate_scope
-from vintar.regression.cases import RegressionCase
+from vintar.regression.cases import AnyRegressionCase
 
 
 def parse_runtime_origin(value: str) -> AllowedOrigin:
@@ -52,17 +52,17 @@ def parse_runtime_origin(value: str) -> AllowedOrigin:
 
 
 def bind_runtime_target(
-    case: RegressionCase,
+    case: AnyRegressionCase,
     *,
     target: AllowedOrigin,
     trusted_scope: ScopePolicy,
-) -> RegressionCase:
+) -> AnyRegressionCase:
     """Copy a validated case onto an independently authorized origin.
 
     Schema v1's original absolute origin is a placeholder in this workflow.
     The raw request path and all injection inputs remain unchanged.
     """
-    if not isinstance(case, RegressionCase):
+    if not isinstance(case, AnyRegressionCase):
         raise TypeError("Invalid regression case.")
     if type(target) is not AllowedOrigin:
         raise TypeError("Invalid runtime target.")

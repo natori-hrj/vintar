@@ -11,8 +11,8 @@ import typer
 from vintar.core.scope import AllowedOrigin, ScopePolicy
 from vintar.regression import (
     MAX_BATCH_CASES,
+    AnyRegressionCase,
     CIExitCode,
-    RegressionCase,
     TrustedExecutionPolicy,
     batch_exit_code,
     load_regression_case,
@@ -75,7 +75,7 @@ def _load_bound_cases(
     *,
     target: AllowedOrigin,
     trusted_scope: ScopePolicy,
-) -> tuple[RegressionCase, ...]:
+) -> tuple[AnyRegressionCase, ...]:
     """Load and bind every case before starting network execution."""
     return tuple(
         bind_runtime_target(

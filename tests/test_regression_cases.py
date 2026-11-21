@@ -8,7 +8,7 @@ from vintar.checks.sqli.models import Verdict
 from vintar.core.injector import inject
 from vintar.core.request import InjectionMode, RequestTemplate
 from vintar.core.scope import AllowedOrigin
-from vintar.regression import RegressionCase
+from vintar.regression import AnyRegressionCase, RegressionCase
 from vintar.regression import cases as cases_module
 from vintar.regression.cases import (
     CASE_MAX_RESPONSE_SIZE,
@@ -128,7 +128,8 @@ def test_valid_time_case_is_parsed_at_lower_boundaries():
     case = parse_regression_case(TIME_CASE)
 
     assert isinstance(case, TimeRegressionCase)
-    assert isinstance(case, RegressionCase)
+    assert isinstance(case, AnyRegressionCase)
+    assert not isinstance(case, RegressionCase)
     assert case.check_type == "sqli.time"
     assert case.delay_payload == "-delay"
     assert case.control_payload == "-control"

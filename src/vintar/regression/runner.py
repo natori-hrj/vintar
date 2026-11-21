@@ -24,8 +24,8 @@ from vintar.core.rate_limit import RateLimiter
 from vintar.core.scope import ScopePolicy, validate_scope
 from vintar.core.template import validate_template
 from vintar.regression.cases import (
+    AnyRegressionCase,
     BooleanRegressionCase,
-    RegressionCase,
     TimeRegressionCase,
 )
 
@@ -102,11 +102,10 @@ class RegressionOutcome:
 
     case_id: str
     expected_verdict: Verdict
-    verification: VerificationResult | None
+    verification: VerificationResult
     expectation_match: bool
     status: RegressionStatus
     confirmation: ConfirmationOutcome | None = None
-    time_run: TimeRunReport | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -117,23 +116,13 @@ class RegressionOutcome:
 
         if not isinstance(self.expected_verdict, Verdict):
             raise TypeError("Invalid expected verdict.")
-        if (self.verification is None) == (self.time_run is None):
-            raise ValueError(
-                "Regression outcome requires exactly one Boolean or time result. Supply the result produced by the selected runner."
-            )
-        if self.verification is not None and not isinstance(
-            self.verification, VerificationResult
-        ):
+        if not isinstance(self.verification, VerificationResult):
             raise TypeError("Invalid verification result.")
-        if self.time_run is not None and type(self.time_run) is not TimeRunReport:
-            raise TypeError("Invalid time run result.")
         if (
             self.confirmation is not None
             and type(self.confirmation) is not ConfirmationOutcome
         ):
             raise TypeError("Invalid confirmation result.")
-        if self.confirmation is not None and self.verification is None:
-            raise ValueError("Time regression outcomes cannot contain confirmation.")
         if (
             self.confirmation is not None
             and self.confirmation.initial != self.verification
@@ -144,7 +133,7 @@ class RegressionOutcome:
         if not isinstance(self.status, RegressionStatus):
             raise TypeError("Invalid regression status.")
 
-        if self.verification is not None and self.verification.check_id != self.case_id:
+        if self.verification.check_id != self.case_id:
             raise ValueError("Verification case identifier mismatch.")
 
         match = self.final_verdict is self.expected_verdict
@@ -157,10 +146,6 @@ class RegressionOutcome:
 
     @property
     def final_verdict(self) -> Verdict:
-        if self.time_run is not None:
-            return time_product_result(self.time_run.analysis).verdict
-        if self.verification is None:
-            raise RuntimeError("Regression outcome has no check result.")
         if (
             self.confirmation is None
             or self.confirmation.status is ConfirmationStatus.SKIPPED
@@ -170,10 +155,6 @@ class RegressionOutcome:
 
     @property
     def final_reason_code(self) -> str:
-        if self.time_run is not None:
-            return time_product_result(self.time_run.analysis).reason_code
-        if self.verification is None:
-            raise RuntimeError("Regression outcome has no check result.")
         if (
             self.confirmation is None
             or self.confirmation.status is ConfirmationStatus.SKIPPED
@@ -185,13 +166,55 @@ class RegressionOutcome:
 
     @property
     def request_count(self) -> int:
-        if self.time_run is not None:
-            return time_product_result(self.time_run.analysis).request_count
-        if self.verification is None:
-            raise RuntimeError("Regression outcome has no check result.")
         if self.confirmation is None:
             return self.verification.request_count
         return self.confirmation.total_requests
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TimeRegressionOutcome:
+    """Observed result for one time-based regression case."""
+
+    case_id: str
+    expected_verdict: Verdict
+    time_run: TimeRunReport
+    expectation_match: bool
+    status: RegressionStatus
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.case_id) is not str
+            or _CASE_ID_PATTERN.fullmatch(self.case_id) is None
+        ):
+            raise ValueError("Invalid case identifier.")
+        if not isinstance(self.expected_verdict, Verdict):
+            raise TypeError("Invalid expected verdict.")
+        if type(self.time_run) is not TimeRunReport:
+            raise TypeError("Invalid time run result.")
+        if type(self.expectation_match) is not bool:
+            raise TypeError("Invalid expectation match.")
+        if not isinstance(self.status, RegressionStatus):
+            raise TypeError("Invalid regression status.")
+        match = self.final_verdict is self.expected_verdict
+        if self.expectation_match != match:
+            raise ValueError("Inconsistent expectation match.")
+        if self.status is not _classify(self.final_verdict, match):
+            raise ValueError("Inconsistent regression status.")
+
+    @property
+    def final_verdict(self) -> Verdict:
+        return time_product_result(self.time_run.analysis).verdict
+
+    @property
+    def final_reason_code(self) -> str:
+        return time_product_result(self.time_run.analysis).reason_code
+
+    @property
+    def request_count(self) -> int:
+        return time_product_result(self.time_run.analysis).request_count
+
+
+AnyRegressionOutcome = RegressionOutcome | TimeRegressionOutcome
 
 
 def _classify(
@@ -212,11 +235,11 @@ def _classify(
 
 
 def _effective_scope(
-    case: RegressionCase,
+    case: AnyRegressionCase,
     policy: TrustedExecutionPolicy,
 ) -> ScopePolicy:
     """Preflight the complete probe plan without sending HTTP."""
-    if not isinstance(case, RegressionCase):
+    if not isinstance(case, AnyRegressionCase):
         raise TypeError("case must be a RegressionCase.")
     if not isinstance(policy, TrustedExecutionPolicy):
         raise TypeError("policy must be a TrustedExecutionPolicy.")
@@ -283,14 +306,14 @@ def _effective_scope(
 
 
 def _run_with_resources(
-    case: RegressionCase,
+    case: AnyRegressionCase,
     *,
     policy: TrustedExecutionPolicy,
     budget: RequestBudget,
     rate_limiter: RateLimiter,
     transport: httpx.BaseTransport | None = None,
     scope: ScopePolicy | None = None,
-) -> RegressionOutcome:
+) -> AnyRegressionOutcome:
     """Internal execution path for single-case and batch runners."""
     effective_scope = scope if scope is not None else _effective_scope(case, policy)
 
@@ -323,13 +346,12 @@ def _run_with_resources(
         )
         product = time_product_result(time_run.analysis)
         expectation_match = product.verdict is case.expected_verdict
-        return RegressionOutcome(
+        return TimeRegressionOutcome(
             case_id=case.case_id,
             expected_verdict=case.expected_verdict,
-            verification=None,
+            time_run=time_run,
             expectation_match=expectation_match,
             status=_classify(product.verdict, expectation_match),
-            time_run=time_run,
         )
 
     confirmation: ConfirmationOutcome | None = None
@@ -380,11 +402,11 @@ def _run_with_resources(
 
 
 def run_regression_case(
-    case: RegressionCase,
+    case: AnyRegressionCase,
     *,
     policy: TrustedExecutionPolicy,
     transport: httpx.BaseTransport | None = None,
-) -> RegressionOutcome:
+) -> AnyRegressionOutcome:
     """Execute one case within independent trusted limits.
 
     The policy must come from a trusted caller, not an untrusted case.

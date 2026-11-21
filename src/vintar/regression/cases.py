@@ -31,7 +31,7 @@ _ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
 
 @dataclass(frozen=True, slots=True, repr=False)
-class BooleanRegressionCase:
+class RegressionCase:
     """Validated, immutable inputs for a repeatable security check.
 
     ``expected_verdict`` is a declared comparison target, not an observed
@@ -222,7 +222,8 @@ class TimeRegressionCase:
         )
 
 
-RegressionCase = BooleanRegressionCase | TimeRegressionCase
+BooleanRegressionCase = RegressionCase
+AnyRegressionCase = RegressionCase | TimeRegressionCase
 
 
 def _table(value: object, keys: set[str]) -> dict[str, object]:
@@ -370,7 +371,7 @@ class ReviewDraftError(ValueError):
     """A review draft requires human decisions before verification."""
 
 
-def parse_regression_case(source: str) -> RegressionCase:
+def parse_regression_case(source: str) -> AnyRegressionCase:
     """Validate a version-1 TOML case without executing HTTP requests."""
     try:
         if type(source) is not str:
@@ -650,7 +651,7 @@ def parse_regression_case(source: str) -> RegressionCase:
                 f"This confirmation configuration requires exactly {expected_requests} requests."
             )
 
-        return BooleanRegressionCase(
+        return RegressionCase(
             schema_version=CASE_VERSION,
             case_id=case_id,
             check_type="sqli.boolean",
@@ -683,7 +684,7 @@ def parse_regression_case(source: str) -> RegressionCase:
         ) from None
 
 
-def load_regression_case(path: str | Path) -> RegressionCase:
+def load_regression_case(path: str | Path) -> AnyRegressionCase:
     """Read one stable, bounded regular file without following symlinks."""
     try:
         raw = _read_case_file(path)
