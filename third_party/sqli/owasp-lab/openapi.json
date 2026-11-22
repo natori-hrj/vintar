@@ -1,0 +1,77 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Reviewed OWASP Training Lab SQLi measurement surface",
+    "version": "9cb62dd2e30b08a0ddc753247c62b54b90e933ed"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:5000"
+    }
+  ],
+  "paths": {
+    "/a03/search": {
+      "get": {
+        "operationId": "searchInjectionAccounts",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "a"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OWASP Training Lab account search response"
+          }
+        }
+      }
+    },
+    "/a03/check-username": {
+      "get": {
+        "operationId": "checkUsername",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "nobody"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OWASP Training Lab blind username check response"
+          }
+        }
+      }
+    },
+    "/a03/greet": {
+      "get": {
+        "operationId": "greet",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "Alice"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OWASP Training Lab reflected greeting response"
+          }
+        }
+      }
+    }
+  }
+}

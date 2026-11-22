@@ -1,0 +1,25 @@
+# PostgreSQL pg_sleep payloads and the fixed 0.5-second expectation were reviewed before measurement.
+config_version = 1
+type = "sqli.time"
+input_id = "input-e394c15608838355cc18b2176fc80222"
+
+[target]
+url = "__ORIGIN__/a03/check-username"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "username"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "explicit"
+delay_payload = "' OR (SELECT 1 FROM pg_sleep(0.5))=1-- "
+control_payload = "' OR (SELECT 1 FROM pg_sleep(0))=1-- "
+expected_delay_seconds = 0.5
+
+[limits]
+max_requests = 9
+requests_per_second = 10.0
+timeout_seconds = 5.0

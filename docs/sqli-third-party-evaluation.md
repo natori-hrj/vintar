@@ -1,9 +1,10 @@
 # Third-party SQLi evaluation
 
 This manual measurement exercises the complete Vintar pipeline against DSVW
-(SQLite) and sqli-dojo-docker (MySQL 8), two independent deliberately vulnerable
-projects. Each target contributes two reviewed inputs per check type. The combined
-sample is `n=4` Boolean, `n=4` Time, and `n=4` Error; it is not a
+(SQLite), sqli-dojo-docker (MySQL 8), and OWASP Training Lab (PostgreSQL 16),
+three independent deliberately vulnerable projects. Each target contributes two
+reviewed inputs per check type. The combined sample is `n=6` Boolean, `n=6` Time,
+and `n=6` Error; it is not a
 statistical precision claim and is not combined with Vintar's synthetic or
 repository-owned SQLite measurements.
 
@@ -42,6 +43,24 @@ by `src/common/view_source.php:1-31`, which renders the page source and terminat
 before the vulnerable page reaches SQL. The Boolean numeric predicates, MySQL
 `SLEEP(0.5)` Time relation, Error quote, and 0.5-second Time expectation were all
 fixed before measurement.
+
+The OWASP Training Lab labels come from MIT-licensed commit
+`9cb62dd2e30b08a0ddc753247c62b54b90e933ed`, whose archive SHA-256 is
+`5d0c805d86cd6a3ec8d95afdb2fdae99cab5dc765842dac4e6d122c171737db4`.
+The Boolean and Error positive records use the raw PostgreSQL interpolation in
+`app/categories/a03_injection/routes.py:104-112`; the Time positive uses the
+documented blind `pg_sleep` sink at lines 123-136. All three negative records use
+the GET-only greeting at lines 115-120. That route reflects `name` into HTML but
+never reaches SQL: it is an independent Boolean negative because predicates
+cannot affect a query, a Time negative because it has no delay sink, and an Error
+negative because it cannot disclose a DBMS diagnostic. Reflection can still make
+the Boolean detector abstain, which is recorded rather than suppressed.
+
+The Boolean LIKE-context predicates, PostgreSQL `pg_sleep(0.5)` relation, Error
+quote, and 0.5-second Time expectation were fixed before the first measurement.
+The Error-positive route does not render PostgreSQL exceptions; its generic 500
+is therefore recorded as a non-decision rather than being relabeled. The POST
+error-disclosure route is outside this GET-only phase.
 
 The Time threshold was fixed before measurement at `expected_delay_seconds = 0.5`
 with a five-second per-request timeout. DSVW's delay is CPU-bound, so this choice
@@ -104,6 +123,14 @@ that participated in the measurement.
 | dsvw | sqli.time | dsvw-time-version-query | nine_probe | negative | not_detected | timing_pattern_not_matched | not_confirmed | 9 | tn |
 | dsvw | sqli.boolean | dsvw-version-query | confirmation | negative | inconclusive | unexpected_difference | not_eligible | 6 | non_decision |
 | dsvw | sqli.boolean | dsvw-version-query | six_probe | negative | inconclusive | unexpected_difference | not_configured | 6 | non_decision |
+| owasp-lab | sqli.boolean | owasp-lab-boolean-greet | confirmation | negative | inconclusive | unexpected_difference | not_eligible | 6 | non_decision |
+| owasp-lab | sqli.boolean | owasp-lab-boolean-greet | six_probe | negative | inconclusive | unexpected_difference | not_configured | 6 | non_decision |
+| owasp-lab | sqli.boolean | owasp-lab-boolean-search | confirmation | positive | inconclusive | unexpected_difference | not_eligible | 6 | non_decision |
+| owasp-lab | sqli.boolean | owasp-lab-boolean-search | six_probe | positive | inconclusive | unexpected_difference | not_configured | 6 | non_decision |
+| owasp-lab | sqli.error | owasp-lab-error-greet | error_probe | negative | not_detected | dbms_error_not_observed | not_matched | 4 | tn |
+| owasp-lab | sqli.error | owasp-lab-error-search | error_probe | positive | inconclusive | non_success_status | inconclusive | 4 | non_decision |
+| owasp-lab | sqli.time | owasp-lab-time-check-username | nine_probe | positive | inconclusive | timing_pattern_matched | candidate | 9 | tp |
+| owasp-lab | sqli.time | owasp-lab-time-greet | nine_probe | negative | not_detected | timing_pattern_not_matched | not_confirmed | 9 | tn |
 | sqli-dojo | sqli.boolean | sqli-dojo-boolean-id | confirmation | positive | inconclusive | candidate_confirmation_mismatch | mismatch | 18 | non_decision |
 | sqli-dojo | sqli.boolean | sqli-dojo-boolean-id | six_probe | positive | inconclusive | boolean_candidate | not_configured | 6 | tp |
 | sqli-dojo | sqli.boolean | sqli-dojo-boolean-source | confirmation | negative | not_detected | no_boolean_difference | not_eligible | 6 | tn |
@@ -115,10 +142,10 @@ that participated in the measurement.
 
 | Check type | Mode | Candidate | TP | TN | FP | FN | Non-decision |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| sqli.boolean | six_probe | - | 2 | 1 | 0 | 0 | 1 |
-| sqli.boolean | confirmation | - | 1 | 1 | 0 | 0 | 2 |
-| sqli.time | nine_probe | - | 2 | 2 | 0 | 0 | 0 |
-| sqli.error | error_probe | 2 | - | 2 | 0 | 0 | 0 |
+| sqli.boolean | six_probe | - | 2 | 1 | 0 | 0 | 3 |
+| sqli.boolean | confirmation | - | 1 | 1 | 0 | 0 | 4 |
+| sqli.time | nine_probe | - | 3 | 3 | 0 | 0 | 0 |
+| sqli.error | error_probe | 2 | - | 3 | 0 | 0 | 1 |
 
 | Target dsvw | Mode | Candidate | TP | TN | FP | FN | Non-decision |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -126,6 +153,13 @@ that participated in the measurement.
 | sqli.boolean | confirmation | - | 1 | 0 | 0 | 0 | 1 |
 | sqli.time | nine_probe | - | 1 | 1 | 0 | 0 | 0 |
 | sqli.error | error_probe | 1 | - | 1 | 0 | 0 | 0 |
+
+| Target owasp-lab | Mode | Candidate | TP | TN | FP | FN | Non-decision |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sqli.boolean | six_probe | - | 0 | 0 | 0 | 0 | 2 |
+| sqli.boolean | confirmation | - | 0 | 0 | 0 | 0 | 2 |
+| sqli.time | nine_probe | - | 1 | 1 | 0 | 0 | 0 |
+| sqli.error | error_probe | 0 | - | 1 | 0 | 0 | 1 |
 
 | Target sqli-dojo | Mode | Candidate | TP | TN | FP | FN | Non-decision |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -168,6 +202,16 @@ not tuned into a match. The MySQL Time positive produced
 `mysql_syntax_error_1064` signature. All three `source` negatives were true
 negatives. The run used Docker Engine 29.9.2 and Docker Compose 5.6.1; no input,
 threshold, label, or expectation was changed after observing these results.
+
+On OWASP Training Lab, the PostgreSQL Time positive produced
+`timing_pattern_matched` and the `greet` Time negative was a true negative. The
+Error positive returned a generic non-success page without a PostgreSQL signature,
+so it remains `INCONCLUSIVE / non_success_status`; the Error negative was a true
+negative. Both Boolean records produced `unexpected_difference`: the vulnerable
+search and the non-SQL greeting reflect their inputs, so exact response relations
+do not isolate the SQL-driven difference. These are recorded as non-decisions in
+both six-probe and confirmation modes. No payload, threshold, label, or expected
+verdict was changed after observing the run.
 
 The Boolean classification contract matches `docs/sqli-boolean-evaluation.md`: only
 `INCONCLUSIVE / boolean_candidate` is a positive decision, only `NOT_DETECTED` is a

@@ -1,8 +1,9 @@
 # Third-party SQLi measurement
 
 This directory uses declaration version 2 for manual, local-only measurements of
-independent targets. DSVW exercises SQLite and sqli-dojo-docker exercises MySQL 8.
-Both are independent of Vintar and deliberately vulnerable. Never publish either
+independent targets. DSVW exercises SQLite, sqli-dojo-docker exercises MySQL 8,
+and OWASP Training Lab exercises PostgreSQL 16. All are independent of Vintar
+and deliberately vulnerable. Never publish any
 target on a public or shared interface.
 
 The declaration pins each upstream commit, commit archive SHA-256, and reviewed
@@ -49,6 +50,16 @@ the readiness healthcheck uses `/index.php`, never the measured
 Preparation records the repository-relative build-recipe path and SHA-256 in the
 prepared state. Measurement recomputes that digest before any container starts
 and refuses a stale image when the recipe has changed or its evidence is missing.
+
+OWASP Training Lab is pinned at commit
+`9cb62dd2e30b08a0ddc753247c62b54b90e933ed` with archive SHA-256
+`5d0c805d86cd6a3ec8d95afdb2fdae99cab5dc765842dac4e6d122c171737db4`.
+Its repository-owned measurement recipe pins the Python base image, and Compose
+pins PostgreSQL 16 by digest. Every case receives a fresh project-scoped
+PostgreSQL volume. Readiness uses `/healthz`, not any measured A03 route. The
+reviewed OpenAPI document contains three GET operations; each record binds its
+own `operation_path`, so discovery evidence remains tied to the actual upstream
+route rather than a fabricated combined operation.
 
 The saved manual measurement artifact uses schema version 4. `targets` is keyed
 by target id, records carry `target_id`, and counts contain both `overall` and

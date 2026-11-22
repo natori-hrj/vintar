@@ -7,6 +7,9 @@
 - Extend the pinned-source third-party SQLi evaluation with the independent
   MySQL 8-backed sqli-dojo-docker target, including reviewed positive and
   non-SQL negative records for Boolean, Time, and Error checks.
+- Add the PostgreSQL 16-backed OWASP Training Lab to the pinned-source
+  third-party SQLi corpus, with reviewed GET-only positive and non-SQL negative
+  records for Boolean, Time, and Error checks.
 
 **Changed**
 

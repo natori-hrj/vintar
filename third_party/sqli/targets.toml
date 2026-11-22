@@ -43,6 +43,28 @@ service_images = ["mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe778
 fresh_volumes = ["mysql-data"]
 startup_timeout_seconds = 120
 
+[[targets]]
+id = "owasp-lab"
+name = "OWASP Training Lab"
+repository = "https://github.com/jozeta/owasp-lab"
+license = "MIT"
+dbms = "postgresql"
+commit = "9cb62dd2e30b08a0ddc753247c62b54b90e933ed"
+archive_url = "https://github.com/jozeta/owasp-lab/archive/9cb62dd2e30b08a0ddc753247c62b54b90e933ed.tar.gz"
+archive_sha256 = "5d0c805d86cd6a3ec8d95afdb2fdae99cab5dc765842dac4e6d122c171737db4"
+compose_path = "owasp-lab/compose.yaml"
+spec_path = "owasp-lab/openapi.json"
+configs_path = "owasp-lab/configs"
+dockerfile_path = "owasp-lab/Dockerfile"
+service_name = "lab"
+service_port = 5000
+image_environment = "OWASP_LAB_IMAGE"
+parameter_names = ["q", "username", "name"]
+operation_path = "/a03/search"
+service_images = ["postgres:16-alpine@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d"]
+fresh_volumes = ["postgres-data"]
+startup_timeout_seconds = 120
+
 [[records]]
 target_id = "dsvw"
 id = "dsvw-blind-boolean-id"
@@ -222,3 +244,99 @@ source_start_line = 1
 source_end_line = 31
 source_fragment_sha256 = "be2be6bf067658a8572f0449f412de911afb0e0379ff2cd43ec0d1f3f9980d3e"
 reviewer_note = "The reviewed source parameter terminates before SQL and uses the same fixed Error payload as the positive."
+
+[[records]]
+target_id = "owasp-lab"
+id = "owasp-lab-boolean-search"
+check_type = "sqli.boolean"
+input_id = "input-576bd25c5162489797c44f04125ea3aa"
+operation_path = "/a03/search"
+parameter = "q"
+initial_value = "a"
+label = "positive"
+evidence_type = "non_parameterized_sql_sink"
+source_path = "app/categories/a03_injection/routes.py"
+source_start_line = 104
+source_end_line = 112
+source_fragment_sha256 = "a683863c52bd8c521574be007c05c50e59d226161f51527f46e9e10a9d64d308"
+reviewer_note = "The reviewed GET handler interpolates q into a PostgreSQL LIKE expression; its positive label is independent of Vintar output."
+
+[[records]]
+target_id = "owasp-lab"
+id = "owasp-lab-boolean-greet"
+check_type = "sqli.boolean"
+input_id = "input-b714f64e50b1e26b75d7ac44596d3b74"
+operation_path = "/a03/greet"
+parameter = "name"
+initial_value = "Alice"
+label = "negative"
+evidence_type = "parameter_does_not_reach_sql_sink"
+source_path = "app/categories/a03_injection/routes.py"
+source_start_line = 115
+source_end_line = 120
+source_fragment_sha256 = "e0114098d0fd936140b5b536dd3620c247971e4bfdc0bce93c634e6d697414bf"
+reviewer_note = "The reviewed GET handler reflects name into HTML without executing SQL. It is an independent Boolean negative even though reflection can create response differences."
+
+[[records]]
+target_id = "owasp-lab"
+id = "owasp-lab-time-check-username"
+check_type = "sqli.time"
+input_id = "input-e394c15608838355cc18b2176fc80222"
+operation_path = "/a03/check-username"
+parameter = "username"
+initial_value = "nobody"
+label = "positive"
+evidence_type = "non_parameterized_sql_sink"
+source_path = "app/categories/a03_injection/routes.py"
+source_start_line = 123
+source_end_line = 136
+source_fragment_sha256 = "944f8bcec3d32ee51576863982cc44a5b0b240f28c103a2f024cd11e0f8fd5df"
+reviewer_note = "The reviewed GET handler interpolates username into PostgreSQL; the documented pg_sleep relation and fixed threshold were selected before measurement."
+
+[[records]]
+target_id = "owasp-lab"
+id = "owasp-lab-time-greet"
+check_type = "sqli.time"
+input_id = "input-b714f64e50b1e26b75d7ac44596d3b74"
+operation_path = "/a03/greet"
+parameter = "name"
+initial_value = "Alice"
+label = "negative"
+evidence_type = "parameter_does_not_reach_sql_sink"
+source_path = "app/categories/a03_injection/routes.py"
+source_start_line = 115
+source_end_line = 120
+source_fragment_sha256 = "e0114098d0fd936140b5b536dd3620c247971e4bfdc0bce93c634e6d697414bf"
+reviewer_note = "The reviewed GET handler reflects name without SQL or a delay sink, so it is an independent Time negative using the same fixed payload relation."
+
+[[records]]
+target_id = "owasp-lab"
+id = "owasp-lab-error-search"
+check_type = "sqli.error"
+input_id = "input-576bd25c5162489797c44f04125ea3aa"
+operation_path = "/a03/search"
+parameter = "q"
+initial_value = "a"
+label = "positive"
+evidence_type = "non_parameterized_sql_sink"
+source_path = "app/categories/a03_injection/routes.py"
+source_start_line = 104
+source_end_line = 112
+source_fragment_sha256 = "a683863c52bd8c521574be007c05c50e59d226161f51527f46e9e10a9d64d308"
+reviewer_note = "The reviewed GET handler interpolates q into PostgreSQL. It does not catch or render database exceptions, so the measured Error outcome is recorded without changing the positive SQLi label."
+
+[[records]]
+target_id = "owasp-lab"
+id = "owasp-lab-error-greet"
+check_type = "sqli.error"
+input_id = "input-b714f64e50b1e26b75d7ac44596d3b74"
+operation_path = "/a03/greet"
+parameter = "name"
+initial_value = "Alice"
+label = "negative"
+evidence_type = "parameter_does_not_reach_sql_sink"
+source_path = "app/categories/a03_injection/routes.py"
+source_start_line = 115
+source_end_line = 120
+source_fragment_sha256 = "e0114098d0fd936140b5b536dd3620c247971e4bfdc0bce93c634e6d697414bf"
+reviewer_note = "The reviewed GET handler reflects name without SQL, so it cannot disclose a DBMS diagnostic and is an independent Error negative."

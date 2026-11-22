@@ -1,0 +1,22 @@
+config_version = 1
+input_id = "input-576bd25c5162489797c44f04125ea3aa"
+
+[target]
+url = "__ORIGIN__/a03/search"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "q"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "explicit"
+true_payload = "%' AND 1=1-- "
+false_payload = "%' AND 1=2-- "
+
+[limits]
+max_requests = 6
+requests_per_second = 10.0
+timeout_seconds = 5.0
