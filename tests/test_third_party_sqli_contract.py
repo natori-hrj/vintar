@@ -5,7 +5,6 @@ import json
 import re
 import tarfile
 import tomllib
-from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -189,67 +188,95 @@ def expected_report() -> dict[str, object]:
             "request_count": 4,
         },
     ]
-    records.sort(key=lambda row: (str(row["endpoint_id"]), str(row["mode"])))
-    return {
-        "counts": {
-            "sqli.boolean": {
-                "confirmation": {
-                    "fn": 0,
-                    "fp": 0,
-                    "non_decision": 1,
-                    "tn": 0,
-                    "tp": 1,
-                },
-                "six_probe": {
-                    "fn": 0,
-                    "fp": 0,
-                    "non_decision": 1,
-                    "tn": 0,
-                    "tp": 1,
-                },
+    for record in records:
+        record["target_id"] = "dsvw"
+    records.sort(
+        key=lambda row: (
+            str(row["target_id"]),
+            str(row["endpoint_id"]),
+            str(row["mode"]),
+        )
+    )
+    aggregate = {
+        "sqli.boolean": {
+            "confirmation": {
+                "fn": 0,
+                "fp": 0,
+                "non_decision": 1,
+                "tn": 0,
+                "tp": 1,
             },
-            "sqli.time": {
-                "nine_probe": {
-                    "fn": 0,
-                    "fp": 0,
-                    "non_decision": 0,
-                    "tn": 1,
-                    "tp": 1,
-                }
-            },
-            "sqli.error": {
-                "error_probe": {
-                    "candidate": 1,
-                    "fn": 0,
-                    "fp": 0,
-                    "non_decision": 0,
-                    "tn": 1,
-                }
+            "six_probe": {
+                "fn": 0,
+                "fp": 0,
+                "non_decision": 1,
+                "tn": 0,
+                "tp": 1,
             },
         },
+        "sqli.time": {
+            "nine_probe": {
+                "fn": 0,
+                "fp": 0,
+                "non_decision": 0,
+                "tn": 1,
+                "tp": 1,
+            }
+        },
+        "sqli.error": {
+            "error_probe": {
+                "candidate": 1,
+                "fn": 0,
+                "fp": 0,
+                "non_decision": 0,
+                "tn": 1,
+            }
+        },
+    }
+    return {
+        "counts": {
+            "overall": aggregate,
+            "by_target": {"dsvw": json.loads(json.dumps(aggregate))},
+        },
         "records": records,
-        "schema_version": 3,
-        "target": {
-            "archive_sha256": "archive",
-            "commit": "commit",
-            "image_id": "sha256:image",
-            "license": "Unlicense",
-            "name": "DSVW",
+        "schema_version": 4,
+        "targets": {
+            "dsvw": {
+                "archive_sha256": "96690f62ac0fba8a4f0aeac22f2370853bc02b96fb3efd1b8fc3a39398bf302b",
+                "commit": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+                "dbms": "sqlite",
+                "image_ids": {"app": "sha256:image"},
+                "license": "Unlicense",
+                "name": "DSVW",
+                "repository": "https://github.com/stamparm/DSVW",
+                "source_manifest_sha256": "b" * 64,
+            },
         },
     }
 
 
 def test_reviewed_declarations_are_exact_and_digest_bound():
     document = declarations()
-    assert document["version"] == 1
-    target = document["target"]
+    assert document["version"] == 2
+    [target] = document["targets"]
     assert target == {
         "archive_sha256": "96690f62ac0fba8a4f0aeac22f2370853bc02b96fb3efd1b8fc3a39398bf302b",
         "archive_url": "https://github.com/stamparm/DSVW/archive/9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908.tar.gz",
         "commit": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+        "compose_path": "dsvw/compose.yaml",
+        "configs_path": "dsvw/configs",
+        "dbms": "sqlite",
+        "fresh_volumes": [],
+        "id": "dsvw",
+        "image_environment": "DSVW_IMAGE",
         "license": "Unlicense",
         "name": "DSVW",
+        "parameter_names": ["id", "v"],
         "repository": "https://github.com/stamparm/DSVW",
+        "service_images": [],
+        "service_name": "dsvw",
+        "service_port": 65412,
+        "spec_path": "dsvw/openapi.json",
     }
     records = document["records"]
     assert [record["id"] for record in records] == [
@@ -534,7 +561,7 @@ def test_aggregation_separates_boolean_time_and_error_results():
     records = expected_report()["records"]
 
     assert runner.counts(records) == expected_report()["counts"]
-    assert set(runner.counts(records)) == {
+    assert set(runner.counts(records)["overall"]) == {
         "sqli.boolean",
         "sqli.time",
         "sqli.error",
@@ -565,13 +592,14 @@ def test_error_acceptance_contract_keeps_candidate_distinct_from_vulnerability()
         "mode": "error_probe",
         "reason_code": "dbms_error_disclosed",
         "request_count": 4,
+        "target_id": "dsvw",
     }
     assert records["dsvw-error-version-query"]["actual_verdict"] == "not_detected"
     assert records["dsvw-error-version-query"]["reason_code"] == (
         "dbms_error_not_observed"
     )
     assert records["dsvw-error-version-query"]["request_count"] == 4
-    assert report["counts"]["sqli.error"]["error_probe"] == {
+    assert report["counts"]["overall"]["sqli.error"]["error_probe"] == {
         "candidate": 1,
         "fn": 0,
         "fp": 0,
@@ -736,7 +764,7 @@ def test_expected_verdict_must_follow_declared_ground_truth(
         runner.validate_measurement_report(report)
 
 
-def test_stored_v3_report_fixture_still_validates_unchanged():
+def test_stored_v4_report_fixture_still_validates_unchanged():
     runner = load_runner()
     report = expected_report()
 
@@ -777,25 +805,29 @@ def test_reviewed_documentation_matches_the_report_contract():
     assert rendered.count("dsvw-version-query") == 2
 
 
-def test_measurement_output_declares_schema_version_three():
+def test_measurement_output_declares_schema_version_four():
     runner = load_runner()
     report = expected_report()
 
-    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 3
+    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 4
     assert runner.validate_measurement_report(report) is report
 
 
 def test_zeroed_counts_cannot_hide_recorded_non_decisions():
     runner = load_runner()
     report = expected_report()
-    for check_counts in report["counts"].values():
-        for mode_counts in check_counts.values():
-            for field in mode_counts:
-                mode_counts[field] = 0
+    for count_tree in (
+        report["counts"]["overall"],
+        report["counts"]["by_target"]["dsvw"],
+    ):
+        for check_counts in count_tree.values():
+            for mode_counts in check_counts.values():
+                for field in mode_counts:
+                    mode_counts[field] = 0
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"(?i)counts disagree with records for check type sqli.boolean, mode six_probe, field tp.*rerun the measurement",
+        match=r"(?i)counts disagree with records at counts.overall.sqli.boolean.six_probe.*rerun the measurement",
     ):
         runner.unhealthy_count(report)
 
@@ -803,11 +835,11 @@ def test_zeroed_counts_cannot_hide_recorded_non_decisions():
 def test_single_off_by_one_count_is_rejected():
     runner = load_runner()
     report = expected_report()
-    report["counts"]["sqli.time"]["nine_probe"]["tn"] += 1
+    report["counts"]["overall"]["sqli.time"]["nine_probe"]["tn"] += 1
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"counts disagree with records for check type sqli.time, mode nine_probe, field tn.*Rerun the measurement",
+        match=r"counts disagree with records at counts.overall.sqli.time.nine_probe.*Rerun the measurement",
     ):
         runner.validate_measurement_report(report)
 
@@ -816,7 +848,7 @@ def test_single_off_by_one_count_is_rejected():
 def test_extra_or_missing_count_key_is_rejected(operation):
     runner = load_runner()
     report = expected_report()
-    counts = report["counts"]["sqli.boolean"]["six_probe"]
+    counts = report["counts"]["overall"]["sqli.boolean"]["six_probe"]
     if operation == "extra":
         counts["other"] = 0
         field = "other"
@@ -826,7 +858,7 @@ def test_extra_or_missing_count_key_is_rejected(operation):
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"check type sqli.boolean, mode six_probe, field {field}.*rerun the measurement",
+        match=rf"(?i)counts disagree with records at counts.overall.sqli.boolean.six_probe.{field}.*rerun the measurement",
     ):
         runner.validate_measurement_report(report)
 
@@ -847,7 +879,7 @@ def test_removed_non_decisions_are_rejected_before_counts(recompute_counts):
     for reader in (runner.validate_measurement_report, runner.unhealthy_count):
         with pytest.raises(
             runner.MeasurementError,
-            match=r"incomplete: missing endpoint_id 'dsvw-version-query', check_type 'sqli.boolean', mode 'confirmation'.*full measurement run",
+            match=r"incomplete: missing target_id 'dsvw', endpoint_id 'dsvw-version-query', check_type 'sqli.boolean', mode 'confirmation'.*full measurement run",
         ):
             reader(report)
 
@@ -883,24 +915,35 @@ def test_undeclared_record_key_is_rejected(field, value):
 
 def test_report_keys_follow_reviewed_measurement_plan(monkeypatch, tmp_path):
     runner = load_runner()
-    target, records = runner.load_declarations()
+    targets, records = runner.load_declarations()
     old_id = records[0]["id"]
     new_id = "renamed-endpoint"
     records[0]["id"] = new_id
-    monkeypatch.setattr(runner, "load_declarations", lambda: (target, records))
-    monkeypatch.setattr(runner, "CONFIGS", tmp_path)
+    monkeypatch.setattr(runner, "load_declarations", lambda: (targets, records))
+    original_adapter = runner.target_adapter
+
+    def temporary_adapter(target_id, target):
+        adapter = original_adapter(target_id, target)
+        return adapter._replace(configs=tmp_path)
+
+    monkeypatch.setattr(runner, "target_adapter", temporary_adapter)
     for config in CONFIGS.glob("*.toml"):
         (tmp_path / config.name.replace(old_id, new_id)).write_bytes(
             config.read_bytes()
         )
 
-    planned = list(runner.plan_measurements(records))
+    planned = list(runner.plan_measurements(targets, records))
     report = expected_report()
     for record in report["records"]:
         if record["endpoint_id"] == old_id:
             record["endpoint_id"] = new_id
     assert {entry.key for entry in planned} == {
-        (record["endpoint_id"], record["check_type"], record["mode"])
+        (
+            record["target_id"],
+            record["endpoint_id"],
+            record["check_type"],
+            record["mode"],
+        )
         for record in report["records"]
     }
     assert runner.validate_measurement_report(report) is report
@@ -922,7 +965,102 @@ def test_consistent_counts_and_health_match_records():
     assert runner.unhealthy_count(report) == len(unhealthy_records) == 2
 
 
-@pytest.mark.parametrize("old_version", [1, 2])
+def test_v4_preserves_v3_records_and_aggregate_counts():
+    report = expected_report()
+    legacy_records = [
+        {key: value for key, value in record.items() if key != "target_id"}
+        for record in report["records"]
+    ]
+
+    assert all(record["target_id"] == "dsvw" for record in report["records"])
+    assert legacy_records == [
+        {key: value for key, value in record.items() if key != "target_id"}
+        for record in expected_report()["records"]
+    ]
+    assert report["counts"]["overall"] == report["counts"]["by_target"]["dsvw"]
+
+
+def test_unknown_target_id_is_rejected_before_counts():
+    runner = load_runner()
+    report = expected_report()
+    report["records"][0]["target_id"] = "unknown"
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"Unexpected measurement record.*target_id 'unknown'.*not in targets.toml.*Regenerate",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize("tree", ["overall", "by_target"])
+def test_each_v4_count_tree_is_recomputed(tree):
+    runner = load_runner()
+    report = expected_report()
+    count_tree = (
+        report["counts"]["overall"]
+        if tree == "overall"
+        else report["counts"]["by_target"]["dsvw"]
+    )
+    count_tree["sqli.time"]["nine_probe"]["tn"] += 1
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"counts disagree with records at counts.{tree}.*Rerun",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_report_target_metadata_must_match_declaration():
+    runner = load_runner()
+    report = expected_report()
+    report["targets"]["dsvw"]["commit"] = "changed"
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw.*prepared provenance at field commit.*Rerun preparation and measurement",
+    ):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize("missing_label", ["positive", "negative"])
+def test_declaration_requires_both_labels_per_target_and_check(
+    missing_label, monkeypatch
+):
+    runner = load_runner()
+    document = declarations()
+    document["records"] = [
+        record
+        for record in document["records"]
+        if not (
+            record["check_type"] == "sqli.error" and record["label"] == missing_label
+        )
+    ]
+    monkeypatch.setattr(runner.tomllib, "load", lambda stream: document)
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw.*sqli.error.*lacks a positive or negative record.*Supply both",
+    ):
+        runner.load_declarations()
+
+
+def test_tag_only_service_image_is_rejected(monkeypatch, tmp_path):
+    runner = load_runner()
+    content = TARGETS.read_text(encoding="utf-8").replace(
+        "service_images = []", 'service_images = ["postgres:16"]'
+    )
+    declaration = tmp_path / "targets.toml"
+    declaration.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(runner, "DECLARATIONS", declaration)
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw.*unpinned service image.*image@sha256.*mutable tag",
+    ):
+        runner.load_declarations()
+
+
+@pytest.mark.parametrize("old_version", [1, 2, 3])
 def test_old_measurement_report_is_rejected_with_regeneration_guidance(old_version):
     runner = load_runner()
     report = expected_report()
@@ -930,34 +1068,33 @@ def test_old_measurement_report_is_rejected_with_regeneration_guidance(old_versi
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"found {old_version}; this reader supports version 3.*Rerun the measurement",
+        match=rf"found {old_version}; this reader supports version 4.*rerun the measurement",
     ):
         runner.render_summary(report)
 
 
-def test_v3_report_with_v2_shape_is_rejected():
+def test_v4_report_with_v3_shape_is_rejected():
     runner = load_runner()
     report = expected_report()
-    boolean_counts = report["counts"]["sqli.boolean"]
-    report["counts"] = boolean_counts
+    report["counts"] = report["counts"]["overall"]
     boolean_record = report["records"][0]
     boolean_record["confirmation"] = boolean_record.pop("detail")
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"counts disagree with records.*count_group.*sqli.boolean, sqli.time, and sqli.error.*rerun the measurement",
+        match=r"v4 record.*sibling detail object.*rerun",
     ):
         runner.check_documented_summary(report)
 
 
-def test_v2_version_with_v3_shape_is_rejected_before_shape_parsing():
+def test_v3_version_with_v4_shape_is_rejected_before_shape_parsing():
     runner = load_runner()
     report = expected_report()
-    report["schema_version"] = 2
+    report["schema_version"] = 3
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"found 2; this reader supports version 3.*Rerun the measurement",
+        match=r"found 3; this reader supports version 4.*rerun the measurement",
     ):
         runner.unhealthy_count(report)
 
@@ -992,30 +1129,25 @@ def test_prepare_ignores_modified_stale_extraction(tmp_path, monkeypatch):
     stale.mkdir(parents=True)
     (stale / "Dockerfile").write_text("MODIFIED STALE FILE\n", encoding="utf-8")
     archive_digest = preparer.sha256_file(archive)
-    monkeypatch.setattr(
-        preparer,
-        "load_target",
-        lambda: {
-            "archive_sha256": archive_digest,
-            "archive_url": "https://invalid.example/archive",
-            "commit": commit,
-        },
-    )
-    monkeypatch.setattr(
-        preparer,
-        "load_records",
-        lambda: [
-            {
-                "id": "reviewed",
-                "source_path": "dsvw.py",
-                "source_start_line": 1,
-                "source_end_line": 1,
-            }
-        ],
-    )
+    target = {
+        "id": "dsvw",
+        "archive_sha256": archive_digest,
+        "archive_url": "https://invalid.example/archive",
+        "commit": commit,
+    }
+    records = [
+        {
+            "id": "reviewed",
+            "target_id": "dsvw",
+            "source_path": "dsvw.py",
+            "source_start_line": 1,
+            "source_end_line": 1,
+        }
+    ]
+    monkeypatch.setattr(preparer, "load_declarations", lambda: ([target], records))
     observed: dict[str, object] = {}
 
-    def fake_docker(arguments):
+    def fake_docker(arguments, target_id):
         if arguments[0] == "build":
             context = Path(arguments[-1])
             observed["context"] = context
@@ -1031,8 +1163,10 @@ def test_prepare_ignores_modified_stale_extraction(tmp_path, monkeypatch):
     state = json.loads(state_path.read_text(encoding="utf-8"))
 
     assert observed["dockerfile"] == "FROM scratch\n"
-    assert observed["manifest"] == state["source_manifest_sha256"]
-    assert state["source_evidence"] == {
+    target_state = state["targets"]["dsvw"]
+    assert state["schema_version"] == 2
+    assert observed["manifest"] == target_state["source_manifest_sha256"]
+    assert target_state["source_evidence"] == {
         "reviewed": {
             "source_end_line": 1,
             "source_fragment_sha256": (
@@ -1051,85 +1185,25 @@ def test_prepare_ignores_modified_stale_extraction(tmp_path, monkeypatch):
 
 def test_compose_projects_are_unique_and_teardown_uses_own_run(monkeypatch, tmp_path):
     runner = load_runner()
-    first = runner.compose_project_name(runner.new_run_id(), 0, "six")
-    second = runner.compose_project_name(runner.new_run_id(), 0, "six")
+    first = runner.compose_project_name("dsvw", runner.new_run_id(), 0, "six")
+    second = runner.compose_project_name("dsvw", runner.new_run_id(), 0, "six")
     assert first != second
     assert re.fullmatch(r"vintar-dsvw-[0-9a-f]{12}-0-six", first)
     assert len(first) < 64
-    assert runner.compose_project_name("0123456789ab", 2, "time") == (
+    assert runner.compose_project_name("dsvw", "0123456789ab", 2, "time") == (
         "vintar-dsvw-0123456789ab-2-time"
     )
-
+    targets, _ = runner.load_declarations()
+    adapter = runner.target_adapter("dsvw", targets["dsvw"])
+    stopped: list[str] = []
     monkeypatch.setattr(
         runner,
-        "load_declarations",
-        lambda: (
-            {
-                "archive_sha256": "archive",
-                "commit": "commit",
-                "license": "Unlicense",
-                "name": "DSVW",
-            },
-            [
-                {
-                    "id": "dsvw-blind-boolean-id",
-                    "check_type": "sqli.boolean",
-                    "label": "negative",
-                }
-            ],
-        ),
+        "compose",
+        lambda target, image, project, arguments, **kwargs: stopped.append(project),
     )
-    monkeypatch.setattr(runner, "load_document", lambda path: {})
-    monkeypatch.setattr(
-        runner, "validate_provenance", lambda state, target, records: ("image", "id")
-    )
-    monkeypatch.setattr(runner, "new_run_id", lambda: "0123456789ab")
-    started: list[str] = []
-    stopped: list[str] = []
-
-    def fake_start(image_tag, project):
-        started.append(project)
-        return "172.20.0.2"
-
-    @contextmanager
-    def fake_bridge(upstream):
-        yield "http://127.0.0.1:12345"
-
-    def fake_result(folder, origin, planned):
-        endpoint_id, check_type, mode = planned.key
-        return {
-            "actual_verdict": "inconclusive",
-            "classification": "non_decision",
-            "check_type": check_type,
-            "detail": {"status": "not_eligible"},
-            "endpoint_id": endpoint_id,
-            "expected_label": "negative",
-            "expected_verdict": "not_detected",
-            "mode": mode,
-            "reason_code": "unexpected_difference",
-            "request_count": 6,
-        }
-
-    monkeypatch.setattr(runner, "start_target", fake_start)
-    monkeypatch.setattr(
-        runner, "stop_target", lambda image, project: stopped.append(project)
-    )
-    monkeypatch.setattr(runner, "loopback_bridge", fake_bridge)
-    monkeypatch.setattr(runner, "run_pipeline_case", fake_result)
-    monkeypatch.setattr(runner, "write_report", lambda path, report: None)
-    monkeypatch.setattr(runner, "check_documented_summary", lambda report: None)
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    report = runner.measure(workspace, tmp_path / "report.json")
-
-    assert report["schema_version"] == 3
-    assert started == [
-        "vintar-dsvw-0123456789ab-0-six",
-        "vintar-dsvw-0123456789ab-0-confirmation",
-    ]
-    assert stopped == started
-    assert runner.validate_measurement_report(report) is report
+    runner.stop_target(adapter, "image", first)
+    runner.stop_target(adapter, "image", second)
+    assert stopped == [first, second]
 
 
 def prepared_provenance():
@@ -1151,7 +1225,7 @@ def prepared_provenance():
         },
         "source_manifest_sha256": "b" * 64,
     }
-    target = {"archive_sha256": "archive", "commit": "commit"}
+    target = {"archive_sha256": "archive", "commit": "commit", "id": "dsvw"}
     return state, target, record
 
 

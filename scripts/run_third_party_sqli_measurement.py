@@ -1,8 +1,9 @@
-"""Run the reviewed DSVW OpenAPI-to-verify measurement locally."""
+"""Run reviewed third-party SQLi OpenAPI-to-verify measurements locally."""
 
 import argparse
 import json
 import os
+import re
 import select
 import socket
 import socketserver
@@ -24,11 +25,8 @@ from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
 DECLARATIONS = THIRD_PARTY / "targets.toml"
-COMPOSE = THIRD_PARTY / "dsvw" / "compose.yaml"
-SPEC = THIRD_PARTY / "dsvw" / "openapi.json"
-CONFIGS = THIRD_PARTY / "dsvw" / "configs"
 DOCS = ROOT / "docs" / "sqli-third-party-evaluation.md"
-STATE_NAME = "prepared-target.json"
+STATE_NAME = "prepared-targets.json"
 SUMMARY_START = "<!-- third-party-measurement:start -->"
 SUMMARY_END = "<!-- third-party-measurement:end -->"
 CLASSIFICATIONS = {
@@ -36,7 +34,7 @@ CLASSIFICATIONS = {
     "sqli.time": ("tp", "fn", "fp", "tn", "non_decision"),
     "sqli.error": ("candidate", "fn", "fp", "tn", "non_decision"),
 }
-MEASUREMENT_SCHEMA_VERSION = 3
+MEASUREMENT_SCHEMA_VERSION = 4
 PROBE_MODES = {
     "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
     "sqli.time": {"time": "nine_probe"},
@@ -46,10 +44,29 @@ PROBE_MODES = {
 
 class PlannedMeasurement(NamedTuple):
     index: int
+    target: "TargetAdapter"
     declaration: dict[str, object]
     mode: str
-    key: tuple[str, str, str]
+    key: tuple[str, str, str, str]
     config: Path
+
+
+class TargetAdapter(NamedTuple):
+    """Declaration-driven paths and runtime identity for one target."""
+
+    target_id: str
+    declaration: dict[str, object]
+    compose: Path
+    spec: Path
+    configs: Path
+    service_name: str
+    service_port: int
+    image_environment: str
+    parameter_names: tuple[str, ...]
+
+
+_TARGET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+_PINNED_IMAGE = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
 
 
 class MeasurementError(RuntimeError):
@@ -113,53 +130,113 @@ def _validate_error_detail(record: dict[str, object]) -> None:
         )
 
 
+def _first_difference(
+    actual: object, expected: object, path: tuple[str, ...] = ()
+) -> tuple[str, ...] | None:
+    if type(actual) is not type(expected):
+        return path
+    if type(expected) is dict:
+        if actual.keys() != expected.keys():
+            return (*path, min(actual.keys() ^ expected.keys(), key=str))
+        for key in expected:
+            difference = _first_difference(actual[key], expected[key], (*path, key))
+            if difference is not None:
+                return difference
+        return None
+    return path if actual != expected else None
+
+
 def validate_measurement_report(report: object) -> dict[str, object]:
-    """Accept only the current manual measurement report contract."""
+    """Accept only the current multi-target measurement report contract."""
     if type(report) is not dict:
         raise MeasurementError(
-            "The third-party measurement report is not a JSON object. This reader supports schema version 3; rerun the measurement to regenerate the report."
+            "The third-party measurement report is not a JSON object. This reader supports schema version 4; rerun the measurement to regenerate the report."
         )
     version = report.get("schema_version")
     if type(version) is not int or version != MEASUREMENT_SCHEMA_VERSION:
         found = repr(version) if version is not None else "missing"
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema version: found {found}; this reader supports version 3. Rerun the measurement to regenerate the report."
+            f"Unsupported third-party measurement report schema version: found {found}; this reader supports version 4. The multi-target shape cannot be inferred from an older report; rerun the measurement to regenerate it."
         )
-    if report.keys() != {"counts", "records", "schema_version", "target"}:
+    if report.keys() != {"counts", "records", "schema_version", "targets"}:
         raise MeasurementError(
-            "Invalid third-party measurement report v3 top-level keys. Use counts grouped by check type, records with detail objects, schema_version, and target; rerun the measurement to regenerate the report."
+            "Invalid third-party measurement report v4 top-level keys. Use targets, records, counts.overall, counts.by_target, and schema_version; rerun the current measurement instead of mixing v3 and v4 keys."
         )
     records = report["records"]
     counts_value = report["counts"]
-    target = report["target"]
-    if type(records) is not list or type(target) is not dict:
+    metadata = report["targets"]
+    if type(records) is not list or type(metadata) is not dict:
         raise MeasurementError(
-            "Invalid third-party measurement report v3 structure. Use grouped counts, record objects, and target metadata; rerun the measurement to regenerate the report."
+            "Invalid third-party measurement report v4 structure. Use target-keyed metadata, record objects, and both count trees; rerun the measurement."
         )
-    _, declarations = load_declarations()
-    planned_measurements = list(plan_measurements(declarations))
-    expected_keys = {planned.key for planned in planned_measurements}
-    declarations_by_key = {
-        planned.key: planned.declaration for planned in planned_measurements
-    }
-    record_keys: Counter[tuple[str, str, str]] = Counter()
-    recomputed_records: list[dict[str, object]] = []
+    targets, declarations = load_declarations()
+    if metadata.keys() != targets.keys():
+        changed = min(metadata.keys() ^ targets.keys(), key=str)
+        raise MeasurementError(
+            f"Measurement target metadata differs for target {changed!r}. Regenerate the report from prepared provenance instead of hand-editing it."
+        )
+    for target_id, target in targets.items():
+        value = metadata[target_id]
+        required = {
+            "archive_sha256",
+            "commit",
+            "dbms",
+            "image_ids",
+            "license",
+            "name",
+            "repository",
+            "source_manifest_sha256",
+        }
+        if type(value) is not dict or value.keys() != required:
+            raise MeasurementError(
+                f"Measurement target metadata differs for target {target_id!r}. Use complete v4 prepared provenance and rerun the measurement."
+            )
+        for field in (
+            "archive_sha256",
+            "commit",
+            "dbms",
+            "license",
+            "name",
+            "repository",
+        ):
+            if value.get(field) != target.get(field):
+                raise MeasurementError(
+                    f"Measurement target metadata for {target_id!r} differs from prepared provenance at field {field}. Rerun preparation and measurement instead of hand-editing the report."
+                )
+        manifest = value.get("source_manifest_sha256")
+        image_ids = value.get("image_ids")
+        if (
+            type(manifest) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", manifest) is None
+            or type(image_ids) is not dict
+            or image_ids.keys() != {"app"}
+            or type(image_ids.get("app")) is not str
+            or not image_ids["app"].startswith("sha256:")
+        ):
+            raise MeasurementError(
+                f"Measurement target metadata for {target_id!r} is not content-addressed. Rerun preparation so the manifest and app image ID come from verified provenance."
+            )
+
+    planned = list(plan_measurements(targets, declarations))
+    expected_keys = {item.key for item in planned}
+    declarations_by_key = {item.key: item.declaration for item in planned}
+    record_keys: Counter[tuple[str, str, str, str]] = Counter()
     for record in records:
         if type(record) is not dict:
             raise MeasurementError(
-                "The third-party measurement report contains a non-object record. Rerun the measurement to regenerate the report."
+                "The third-party measurement report contains a non-object record. Rerun the measurement to regenerate it."
             )
         key = (
+            required_text(record, "target_id", "report record"),
             required_text(record, "endpoint_id", "report record"),
             required_text(record, "check_type", "report record"),
             required_text(record, "mode", "report record"),
         )
         record_keys[key] += 1
-
     for key, occurrences in record_keys.items():
-        endpoint_id, check_type, mode = key
         description = (
-            f"endpoint_id {endpoint_id!r}, check_type {check_type!r}, mode {mode!r}"
+            f"target_id {key[0]!r}, endpoint_id {key[1]!r}, "
+            f"check_type {key[2]!r}, mode {key[3]!r}"
         )
         if occurrences > 1:
             raise MeasurementError(
@@ -170,53 +247,16 @@ def validate_measurement_report(report: object) -> dict[str, object]:
                 f"Unexpected measurement record for {description} is not in targets.toml. Regenerate the report with a full measurement run."
             )
     if missing := expected_keys.difference(record_keys):
-        endpoint_id, check_type, mode = min(missing)
+        target_id, endpoint_id, check_type, mode = min(missing)
         raise MeasurementError(
-            f"The measurement report is incomplete: missing endpoint_id {endpoint_id!r}, check_type {check_type!r}, mode {mode!r}. Regenerate the report with a full measurement run."
+            f"The measurement report is incomplete: missing target_id {target_id!r}, endpoint_id {endpoint_id!r}, check_type {check_type!r}, mode {mode!r}. Regenerate the report with a full measurement run."
         )
 
-    expected_modes = {
-        check_type: tuple(modes.values()) for check_type, modes in PROBE_MODES.items()
-    }
-    if type(counts_value) is not dict:
-        raise MeasurementError(
-            "Invalid third-party measurement report v3 counts. Use counts grouped by check type and mode; rerun the measurement to regenerate the report."
-        )
-    if counts_value.keys() != expected_modes.keys():
-        changed = min(counts_value.keys() ^ expected_modes.keys(), key=str)
-        raise MeasurementError(
-            f"Measurement counts disagree with records for check type {changed}, mode all, field count_group. Include exactly sqli.boolean, sqli.time, and sqli.error counts and rerun the measurement to regenerate the report."
-        )
-    for check_type, modes in expected_modes.items():
-        type_counts = counts_value[check_type]
-        if type(type_counts) is not dict:
-            raise MeasurementError(
-                f"Measurement counts disagree with records for check type {check_type}, mode all, field mode_group. Supply a mode-count object and rerun the measurement to regenerate the report."
-            )
-        if set(type_counts) != set(modes):
-            changed = min(set(type_counts) ^ set(modes), key=str)
-            raise MeasurementError(
-                f"Measurement counts disagree with records for check type {check_type}, mode {changed}, field mode_group. Use exactly the supported mode keys and rerun the measurement to regenerate the report."
-            )
-        for mode, values in type_counts.items():
-            if type(values) is not dict:
-                raise MeasurementError(
-                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field classification_group. Supply classification counts and rerun the measurement to regenerate the report."
-                )
-            classifications = set(CLASSIFICATIONS[check_type])
-            if values.keys() != classifications:
-                changed = min(values.keys() ^ classifications, key=str)
-                raise MeasurementError(
-                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field {changed}. Use exactly the classifications defined for that check type and rerun the measurement to regenerate the report."
-                )
-            if any(type(value) is not int or value < 0 for value in values.values()):
-                raise MeasurementError(
-                    f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field value. Supply nonnegative integer counts and rerun the measurement to regenerate the report."
-                )
+    recomputed_records: list[dict[str, object]] = []
     for record in records:
         if type(record.get("detail")) is not dict or "confirmation" in record:
             raise MeasurementError(
-                "Invalid third-party measurement report v3 record. Use check_type and the sibling detail object instead of the v1 confirmation field; rerun the measurement to regenerate the report."
+                "Invalid third-party measurement report v4 record. Use target_id, check_type, and the sibling detail object; rerun instead of mixing an older record shape."
             )
         check_type = record.get("check_type")
         if (
@@ -224,9 +264,10 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             or record.get("classification") not in CLASSIFICATIONS[check_type]
         ):
             raise MeasurementError(
-                f"Measurement record for check type {record['check_type']}, mode {record['mode']} has an invalid classification. Use the classifications defined for that check type and rerun the measurement to regenerate the report."
+                f"Measurement record for check type {record.get('check_type')}, mode {record.get('mode')} has an invalid classification. Use the classifications defined for that check type and rerun the measurement."
             )
         key = (
+            required_text(record, "target_id", "report record"),
             required_text(record, "endpoint_id", "report record"),
             required_text(record, "check_type", "report record"),
             required_text(record, "mode", "report record"),
@@ -236,41 +277,37 @@ def validate_measurement_report(report: object) -> dict[str, object]:
         expected_verdict = expected_verdict_for_label(ground_truth)
         if record.get("expected_label") != ground_truth:
             raise MeasurementError(
-                f"Measurement record {key[0]!r} expected_label contradicts reviewed ground truth {ground_truth!r}. Remeasure from targets.toml; do not hand-edit reports."
+                f"Measurement record {key[1]!r} expected_label contradicts reviewed ground truth {ground_truth!r}. Remeasure from targets.toml; do not hand-edit reports."
             )
         if record.get("expected_verdict") != expected_verdict:
             raise MeasurementError(
-                f"Measurement record {key[0]!r} stored expected_verdict {record.get('expected_verdict')!r} contradicts ground-truth label {ground_truth!r}; expected {expected_verdict!r}. Remeasure the target; do not hand-edit reports."
+                f"Measurement record {key[1]!r} stored expected_verdict {record.get('expected_verdict')!r} contradicts ground-truth label {ground_truth!r}; expected {expected_verdict!r}. Remeasure the target; do not hand-edit reports."
             )
         verdict = required_text(record, "actual_verdict", "report record")
         reason = required_text(record, "reason_code", "report record")
-        recomputed_classification = classify(
-            required_text(record, "check_type", "report record"),
-            ground_truth,
-            verdict,
-            reason,
-        )
-        stored_classification = record.get("classification")
-        if stored_classification != recomputed_classification:
+        classification = classify(key[2], ground_truth, verdict, reason)
+        if record.get("classification") != classification:
             raise MeasurementError(
-                f"Measurement record {key[0]!r} stored classification {stored_classification!r} contradicts ground truth {ground_truth!r} with {verdict}/{reason}; expected {recomputed_classification!r}. Remeasure the target; do not hand-edit reports."
+                f"Measurement record {key[1]!r} stored classification {record.get('classification')!r} contradicts ground truth {ground_truth!r} with {verdict}/{reason}; expected {classification!r}. Remeasure the target; do not hand-edit reports."
             )
         if check_type == "sqli.error":
             _validate_error_detail(record)
-        recomputed_records.append(
-            {**record, "classification": recomputed_classification}
-        )
+        recomputed_records.append({**record, "classification": classification})
+
     recomputed = counts(recomputed_records)
-    for check_type, modes in expected_modes.items():
-        for mode in modes:
-            for field in CLASSIFICATIONS[check_type]:
-                if (
-                    counts_value[check_type][mode][field]
-                    != recomputed[check_type][mode][field]
-                ):
-                    raise MeasurementError(
-                        f"Measurement counts disagree with records for check type {check_type}, mode {mode}, field {field}. Rerun the measurement to regenerate the report."
-                    )
+    if type(counts_value) is not dict or counts_value.keys() != {
+        "overall",
+        "by_target",
+    }:
+        raise MeasurementError(
+            "Invalid third-party measurement report v4 counts. Supply exactly counts.overall and counts.by_target, then rerun the measurement."
+        )
+    difference = _first_difference(counts_value, recomputed)
+    if difference is not None:
+        location = ".".join(("counts", *difference))
+        raise MeasurementError(
+            f"Measurement counts disagree with records at {location}. Rerun the measurement to regenerate the report instead of correcting counts by hand."
+        )
     return report
 
 
@@ -311,13 +348,13 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
 
 
 @contextmanager
-def loopback_bridge(upstream_host: str) -> Iterator[str]:
+def loopback_bridge(upstream_host: str, target: TargetAdapter) -> Iterator[str]:
     """Expose one private container only through an ephemeral loopback socket."""
     try:
-        server = _BridgeServer((upstream_host, 65412))
+        server = _BridgeServer((upstream_host, target.service_port))
     except OSError as exc:
         raise MeasurementError(
-            "The DSVW loopback bridge could not bind. Check IPv4 loopback permissions instead of using a public address."
+            f"The {target.target_id} loopback bridge could not bind. Check IPv4 loopback permissions instead of using a public address."
         ) from exc
     started = threading.Event()
 
@@ -325,12 +362,12 @@ def loopback_bridge(upstream_host: str) -> Iterator[str]:
         started.set()
         server.serve_forever(poll_interval=0.05)
 
-    thread = threading.Thread(target=serve, name="dsvw-loopback-bridge")
+    thread = threading.Thread(target=serve, name=f"{target.target_id}-loopback-bridge")
     thread.start()
     if not started.wait(timeout=5):
         server.server_close()
         raise MeasurementError(
-            "The DSVW loopback bridge did not start. Check thread scheduling and local socket setup."
+            f"The {target.target_id} loopback bridge did not start. Check thread scheduling and local socket setup."
         )
     try:
         port = server.server_address[1]
@@ -341,7 +378,7 @@ def loopback_bridge(upstream_host: str) -> Iterator[str]:
         thread.join(timeout=5)
         if thread.is_alive() or server.handler_failed:
             raise MeasurementError(
-                "The DSVW loopback bridge failed or did not stop. Check private-network reachability and outstanding requests."
+                f"The {target.target_id} loopback bridge failed or did not stop. Check private-network reachability and outstanding requests."
             )
 
 
@@ -401,61 +438,175 @@ def required_text(mapping: dict[str, object], key: str, source: str) -> str:
     return value
 
 
-def load_declarations() -> tuple[dict[str, object], list[dict[str, object]]]:
-    """Validate the bounded declaration shape used by the runner."""
+def _relative_path(target_id: str, target: dict[str, object], key: str) -> Path:
+    value = required_text(target, key, f"target {target_id!r}")
+    candidate = (THIRD_PARTY / value).resolve()
+    if candidate == THIRD_PARTY or THIRD_PARTY not in candidate.parents:
+        raise MeasurementError(
+            f"Target {target_id!r} has an invalid {key}. Use a relative path inside third_party/sqli instead."
+        )
+    return candidate
+
+
+def load_declarations() -> tuple[dict[str, dict[str, object]], list[dict[str, object]]]:
+    """Validate declaration v2 and its per-target ground-truth balance."""
     with DECLARATIONS.open("rb") as stream:
         document = tomllib.load(stream)
     if (
-        document.keys() != {"version", "target", "records"}
-        or document.get("version") != 1
+        document.keys() != {"version", "targets", "records"}
+        or document.get("version") != 2
     ):
         raise MeasurementError(
-            "The third-party declaration shape is invalid. Use version 1 with target and records tables."
+            "The third-party declaration shape is invalid. Use declaration version 2 with targets and records tables."
         )
-    target = document["target"]
+    raw_targets = document["targets"]
     records = document["records"]
-    if type(target) is not dict or type(records) is not list or len(records) != 6:
+    if type(raw_targets) is not list or not raw_targets or type(records) is not list:
         raise MeasurementError(
-            "The third-party declaration must contain the reviewed DSVW target and exactly six Boolean/Time/Error records."
+            "The third-party declaration must contain at least one reviewed target and its records."
         )
+    targets: dict[str, dict[str, object]] = {}
+    for target in raw_targets:
+        if type(target) is not dict:
+            raise MeasurementError(
+                "A third-party target declaration is invalid. Supply a reviewed target table instead."
+            )
+        target_id = required_text(target, "id", "target declaration")
+        if _TARGET_ID.fullmatch(target_id) is None or target_id in targets:
+            raise MeasurementError(
+                "A third-party target id is invalid or duplicated. Use a unique lowercase id containing letters, digits, or hyphens."
+            )
+        for field in (
+            "name",
+            "repository",
+            "license",
+            "dbms",
+            "commit",
+            "archive_url",
+            "archive_sha256",
+            "compose_path",
+            "spec_path",
+            "configs_path",
+            "service_name",
+            "image_environment",
+        ):
+            required_text(target, field, f"target {target_id!r}")
+        for key in ("compose_path", "spec_path", "configs_path"):
+            path = _relative_path(target_id, target, key)
+            if not path.exists():
+                raise MeasurementError(
+                    f"Target {target_id!r} {key} does not exist. Restore the reviewed target asset before measuring."
+                )
+        service_port = target.get("service_port")
+        if type(service_port) is not int or not 1 <= service_port <= 65535:
+            raise MeasurementError(
+                f"Target {target_id!r} has an invalid service_port. Supply the reviewed integer port from 1 through 65535."
+            )
+        names = target.get("parameter_names")
+        if (
+            type(names) is not list
+            or not names
+            or any(type(name) is not str or not name for name in names)
+            or len(set(names)) != len(names)
+        ):
+            raise MeasurementError(
+                f"Target {target_id!r} has invalid parameter_names. Supply unique nonempty OpenAPI query parameter names."
+            )
+        images = target.get("service_images")
+        if type(images) is not list or any(
+            type(image) is not str or _PINNED_IMAGE.fullmatch(image) is None
+            for image in images
+        ):
+            raise MeasurementError(
+                f"Target {target_id!r} has an unpinned service image. Use image@sha256:<64 lowercase hex characters>, not a mutable tag."
+            )
+        volumes = target.get("fresh_volumes")
+        if type(volumes) is not list or any(
+            type(volume) is not str or _TARGET_ID.fullmatch(volume) is None
+            for volume in volumes
+        ):
+            raise MeasurementError(
+                f"Target {target_id!r} has invalid fresh volumes. Use lowercase names with letters, digits, or hyphens."
+            )
+        targets[target_id] = target
     typed_records: list[dict[str, object]] = []
+    labels: dict[tuple[str, str], set[str]] = {}
     for record in records:
         if type(record) is not dict:
             raise MeasurementError(
                 "A third-party record is invalid. Supply a reviewed TOML table instead."
             )
+        target_id = required_text(record, "target_id", "record")
+        check_type = required_text(record, "check_type", "record")
+        label = required_text(record, "label", "record")
+        if target_id not in targets:
+            raise MeasurementError(
+                f"Record {record.get('id')!r} references unknown target_id {target_id!r}. Bind it to a reviewed target."
+            )
+        if check_type not in PROBE_MODES or label not in {"positive", "negative"}:
+            raise MeasurementError(
+                f"Record {record.get('id')!r} has an unsupported check type or label. Use a supported SQLi check and positive or negative ground truth."
+            )
+        labels.setdefault((target_id, check_type), set()).add(label)
         typed_records.append(record)
-    check_types = [
-        required_text(record, "check_type", "record") for record in typed_records
-    ]
-    if any(check_types.count(check_type) != 2 for check_type in PROBE_MODES):
+    for (target_id, check_type), observed in labels.items():
+        if observed != {"positive", "negative"}:
+            raise MeasurementError(
+                f"Target {target_id!r} check type {check_type!r} lacks a positive or negative record. Supply both reviewed ground-truth labels before measuring."
+            )
+    unused_targets = targets.keys() - {target_id for target_id, _ in labels}
+    if unused_targets:
+        target_id = min(unused_targets)
         raise MeasurementError(
-            "The third-party declaration must contain exactly two records for each of sqli.boolean, sqli.time, and sqli.error. Review targets.toml instead of changing labels after measurement."
+            f"Target {target_id!r} has no measurement records. Supply a reviewed check type with both positive and negative ground truth before measuring."
         )
-    return target, typed_records
+    return targets, typed_records
+
+
+def target_adapter(target_id: str, target: dict[str, object]) -> TargetAdapter:
+    """Resolve one validated declaration into runtime paths and names."""
+    names = target["parameter_names"]
+    if type(names) is not list:
+        raise MeasurementError(
+            f"Target {target_id!r} lost its parameter names. Reload the validated declarations."
+        )
+    return TargetAdapter(
+        target_id,
+        target,
+        _relative_path(target_id, target, "compose_path"),
+        _relative_path(target_id, target, "spec_path"),
+        _relative_path(target_id, target, "configs_path"),
+        required_text(target, "service_name", f"target {target_id!r}"),
+        target["service_port"],
+        required_text(target, "image_environment", f"target {target_id!r}"),
+        tuple(names),
+    )
 
 
 def plan_measurements(
+    targets: dict[str, dict[str, object]],
     declarations: list[dict[str, object]],
 ) -> Iterator[PlannedMeasurement]:
     """Plan one report record per reviewed endpoint and probe config."""
-    keys: set[tuple[str, str, str]] = set()
+    keys: set[tuple[str, str, str, str]] = set()
     for index, declaration in enumerate(declarations):
+        target_id = required_text(declaration, "target_id", "record")
+        adapter = target_adapter(target_id, targets[target_id])
         endpoint_id = required_text(declaration, "id", "record")
         check_type = required_text(declaration, "check_type", "record")
         for mode, report_mode in PROBE_MODES[check_type].items():
-            key = (endpoint_id, check_type, report_mode)
+            key = (target_id, endpoint_id, check_type, report_mode)
             if key in keys:
                 raise MeasurementError(
                     f"Duplicate measurement declaration {key!r}. Keep one declaration per endpoint_id, check_type, and mode in targets.toml."
                 )
             keys.add(key)
-            config = CONFIGS / f"{endpoint_id}-{mode}.toml"
+            config = adapter.configs / f"{endpoint_id}-{mode}.toml"
             if not config.is_file():
                 raise MeasurementError(
                     f"Missing reviewed configuration {config.name!r} for check type {check_type}. Restore the corresponding TOML config before running or validating measurements."
                 )
-            yield PlannedMeasurement(index, declaration, mode, key, config)
+            yield PlannedMeasurement(index, adapter, declaration, mode, key, config)
 
 
 def validate_provenance(
@@ -464,14 +615,15 @@ def validate_provenance(
     records: list[dict[str, object]],
 ) -> tuple[str, str]:
     """Bind local image and reviewed source evidence to the pinned declaration."""
+    target_id = required_text(target, "id", "target declaration")
     commit = required_text(target, "commit", "target declaration")
-    if state.get("schema_version") != 1 or state.get("commit") != commit:
+    if state.get("commit") != commit:
         raise MeasurementError(
-            "Prepared target metadata does not match the reviewed commit. Rerun preparation in a fresh workspace."
+            f"Prepared {target_id} metadata does not match the reviewed commit. Rerun preparation in a fresh workspace."
         )
     if state.get("archive_sha256") != target.get("archive_sha256"):
         raise MeasurementError(
-            "Prepared archive evidence does not match targets.toml. Rerun preparation with the reviewed archive."
+            f"Prepared {target_id} archive evidence does not match targets.toml. Rerun preparation with the reviewed archive."
         )
     image_tag = required_text(state, "image_tag", "prepared target metadata")
     image_id = required_text(state, "image_id", "prepared target metadata")
@@ -479,7 +631,7 @@ def validate_provenance(
     source_evidence = state.get("source_evidence")
     if type(source_evidence) is not dict:
         raise MeasurementError(
-            "Prepared source evidence is missing. Rerun preparation so the verified archive supplies the build manifest and source fragments."
+            f"Prepared {target_id} source evidence is missing. Rerun preparation so the verified archive supplies the build manifest and source fragments."
         )
     for record in records:
         record_id = required_text(record, "id", "record")
@@ -504,12 +656,12 @@ def validate_provenance(
         ["docker", "image", "inspect", "--format", "{{.Id}}", image_tag],
         timeout=30,
         diagnostic=(
-            "The prepared DSVW image is unavailable. Run prepare_third_party_sqli.py and keep the recorded local image."
+            f"The prepared {target_id} image is unavailable. Run prepare_third_party_sqli.py and keep the recorded local image."
         ),
     ).stdout.strip()
     if observed_image_id != image_id:
         raise MeasurementError(
-            "The local DSVW image digest differs from preparation metadata. Rebuild from the pinned archive instead of measuring a changed image."
+            f"The local {target_id} image digest differs from preparation metadata. Rebuild from the pinned archive instead of measuring a changed image."
         )
     return image_tag, image_id
 
@@ -579,14 +731,15 @@ def cli(
     return report
 
 
-def compose_environment(image_tag: str) -> dict[str, str]:
+def compose_environment(target: TargetAdapter, image_tag: str) -> dict[str, str]:
     """Create the minimal Compose substitution environment."""
     environment = os.environ.copy()
-    environment["DSVW_IMAGE"] = image_tag
+    environment[target.image_environment] = image_tag
     return environment
 
 
 def compose(
+    target: TargetAdapter,
     image_tag: str,
     project: str,
     arguments: list[str],
@@ -600,14 +753,14 @@ def compose(
             "docker",
             "compose",
             "--file",
-            str(COMPOSE),
+            str(target.compose),
             "--project-name",
             project,
             *arguments,
         ],
         timeout=timeout,
         diagnostic=diagnostic,
-        environment=compose_environment(image_tag),
+        environment=compose_environment(target, image_tag),
     )
 
 
@@ -616,10 +769,13 @@ def new_run_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def compose_project_name(run_id: str, case_index: int, mode: str) -> str:
+def compose_project_name(
+    target_id: str, run_id: str, case_index: int, mode: str
+) -> str:
     """Build one bounded Compose namespace for a case in a specific run."""
     if (
-        len(run_id) != 12
+        _TARGET_ID.fullmatch(target_id) is None
+        or len(run_id) != 12
         or any(character not in "0123456789abcdef" for character in run_id)
         or type(case_index) is not int
         or case_index < 0
@@ -628,21 +784,22 @@ def compose_project_name(run_id: str, case_index: int, mode: str) -> str:
         raise MeasurementError(
             "The measurement project identity is invalid. Use the generated run ID, nonnegative case index, and supported probe mode instead."
         )
-    return f"vintar-dsvw-{run_id}-{case_index}-{mode}"
+    return f"vintar-{target_id}-{run_id}-{case_index}-{mode}"
 
 
-def start_target(image_tag: str, project: str) -> str:
+def start_target(target: TargetAdapter, image_tag: str, project: str) -> str:
     """Start a fresh target and return its private internal-network address."""
     compose(
+        target,
         image_tag,
         project,
         ["up", "--detach", "--wait", "--wait-timeout", "30", "--pull", "never"],
         timeout=60,
         diagnostic=(
-            "The pinned DSVW container did not become healthy. Check Docker, loopback publishing, and the prepared image instead of retrying the measurement."
+            f"The pinned {target.target_id} container did not become healthy. Check Docker, loopback publishing, and the prepared image instead of retrying the measurement."
         ),
     )
-    container = f"{project}-dsvw-1"
+    container = f"{project}-{target.service_name}-1"
     address = run_command(
         [
             "docker",
@@ -653,31 +810,32 @@ def start_target(image_tag: str, project: str) -> str:
         ],
         timeout=30,
         diagnostic=(
-            "The DSVW private address could not be resolved. Check the internal Compose network and prepared container."
+            f"The {target.target_id} private address could not be resolved. Check the internal Compose network and prepared container."
         ),
     ).stdout.strip()
     try:
         packed = socket.inet_aton(address)
     except OSError as exc:
         raise MeasurementError(
-            "Docker returned an invalid DSVW private address. Check the internal network instead of using an external target."
+            f"Docker returned an invalid {target.target_id} private address. Check the internal network instead of using an external target."
         ) from exc
     if len(packed) != 4 or address.startswith("127."):
         raise MeasurementError(
-            "Docker did not assign DSVW a private container address. Check the internal network instead of weakening target isolation."
+            f"Docker did not assign {target.target_id} a private container address. Check the internal network instead of weakening target isolation."
         )
     return address
 
 
-def stop_target(image_tag: str, project: str) -> None:
+def stop_target(target: TargetAdapter, image_tag: str, project: str) -> None:
     """Remove the target and its private network with a bounded shutdown."""
     compose(
+        target,
         image_tag,
         project,
         ["down", "--volumes", "--remove-orphans", "--timeout", "10"],
         timeout=30,
         diagnostic=(
-            "The DSVW container did not shut down cleanly. Check Docker state and remove the named measurement project before rerunning."
+            f"The {target.target_id} container did not shut down cleanly. Check Docker state and remove the named measurement project before rerunning."
         ),
     )
 
@@ -711,13 +869,13 @@ def run_pipeline_case(
     """Run all four CLI stages for one reviewed record and probe mode."""
     record = planned.declaration
     mode = planned.mode
-    record_id, check_type, report_mode = planned.key
+    target_id, record_id, check_type, report_mode = planned.key
     input_id = required_text(record, "input_id", "record")
     parameter = required_text(record, "parameter", "record")
     label = required_text(record, "label", "record")
     expected_verdict = expected_verdict_for_label(label)
     local_spec = folder / "openapi.json"
-    local_spec.write_bytes(SPEC.read_bytes())
+    local_spec.write_bytes(planned.target.spec.read_bytes())
 
     inventory = folder / "inventory.json"
     discovery = cli(
@@ -726,7 +884,7 @@ def run_pipeline_case(
     )
     if discovery.get("operations") != 1:
         raise MeasurementError(
-            "DSVW discovery did not find exactly one operation. Check the reviewed OpenAPI document instead of changing the record."
+            f"Target {target_id!r} discovery did not find exactly one operation. Check the reviewed OpenAPI document instead of changing the record."
         )
     inventory_document = load_document(inventory)
     operations = inventory_document.get("operations")
@@ -743,7 +901,7 @@ def run_pipeline_case(
     )
     if discovered_ids != {input_id}:
         raise MeasurementError(
-            "DSVW discovery input IDs drifted from reviewed declarations. Review the OpenAPI change and regenerate configs instead of measuring it silently."
+            f"Target {target_id!r} discovery input IDs drifted from reviewed declarations. Review the OpenAPI change and regenerate configs instead of measuring it silently."
         )
 
     selection = folder / "selection.toml"
@@ -763,24 +921,29 @@ def run_pipeline_case(
     drafts = draft_summary.get("drafts")
     if type(drafts) is not list or len(drafts) != 1 or type(drafts[0]) is not str:
         raise MeasurementError(
-            "DSVW discovery did not emit exactly one draft. Check the reviewed selection and OpenAPI input."
+            f"Target {target_id!r} discovery did not emit exactly one draft. Check the reviewed selection and OpenAPI input."
         )
     draft = folder / "drafts" / drafts[0]
 
-    selected_index = 0 if parameter == "id" else 1
-    other_parameter = "v" if parameter == "id" else "id"
+    try:
+        selected_index = planned.target.parameter_names.index(parameter)
+    except ValueError as exc:
+        raise MeasurementError(
+            f"Record {record_id!r} uses a parameter absent from target {target_id!r}. Update the reviewed target declaration before measuring."
+        ) from exc
+    parameter_answers: dict[str, object] = {
+        name: {"omit": True} for name in planned.target.parameter_names
+    }
+    parameter_answers[parameter] = {
+        "pointer": f"/paths/~1/get/parameters/{selected_index}/schema/example"
+    }
     answers = folder / "answers.json"
     answers.write_text(
         json.dumps(
             {
                 "version": 1,
                 "expected_verdict": expected_verdict,
-                "parameters": {
-                    parameter: {
-                        "pointer": f"/paths/~1/get/parameters/{selected_index}/schema/example"
-                    },
-                    other_parameter: {"omit": True},
-                },
+                "parameters": parameter_answers,
             }
         ),
         encoding="utf-8",
@@ -861,7 +1024,7 @@ def run_pipeline_case(
         or type(outcomes[0]) is not dict
     ):
         raise MeasurementError(
-            "Verification did not emit exactly one DSVW outcome. Check the generated case and request budget."
+            f"Verification did not emit exactly one {target_id} outcome. Check the generated case and request budget."
         )
     outcome = outcomes[0]
     verdict = required_text(outcome, "actual_verdict", "verification outcome")
@@ -888,13 +1051,12 @@ def run_pipeline_case(
         "mode": report_mode,
         "reason_code": reason,
         "request_count": request_count,
+        "target_id": target_id,
     }
 
 
-def counts(
-    records: list[dict[str, object]],
-) -> dict[str, dict[str, dict[str, int]]]:
-    """Count classifications separately by check type and request mode."""
+def _count_tree(records: list[dict[str, object]]) -> dict[str, object]:
+    """Build one complete check-type/mode aggregate."""
     result: dict[str, dict[str, dict[str, int]]] = {}
     for check_type, check_modes in PROBE_MODES.items():
         result[check_type] = {}
@@ -910,6 +1072,22 @@ def counts(
     return result
 
 
+def counts(records: list[dict[str, object]]) -> dict[str, object]:
+    """Count records overall and independently for each declared target."""
+    target_ids = sorted(
+        {required_text(record, "target_id", "measurement record") for record in records}
+    )
+    return {
+        "overall": _count_tree(records),
+        "by_target": {
+            target_id: _count_tree(
+                [record for record in records if record.get("target_id") == target_id]
+            )
+            for target_id in target_ids
+        },
+    }
+
+
 def render_summary(report: dict[str, object]) -> str:
     """Render the exact reviewed Markdown block checked after every run."""
     validate_measurement_report(report)
@@ -920,8 +1098,8 @@ def render_summary(report: dict[str, object]) -> str:
         )
     lines = [
         SUMMARY_START,
-        "| Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |",
-        "| --- | --- | --- | --- | --- | --- | --- | ---: | --- |",
+        "| Target | Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- |",
     ]
     for record in records:
         if type(record) is not dict or type(record.get("detail")) is not dict:
@@ -930,16 +1108,17 @@ def render_summary(report: dict[str, object]) -> str:
             )
         detail = record["detail"]
         lines.append(
-            "| {check_type} | {endpoint_id} | {mode} | {expected_label} | {actual_verdict} | {reason_code} | {status} | {request_count} | {classification} |".format(
+            "| {target_id} | {check_type} | {endpoint_id} | {mode} | {expected_label} | {actual_verdict} | {reason_code} | {status} | {request_count} | {classification} |".format(
                 **record,
                 status=detail.get("status"),
             )
         )
-    report_counts = report["counts"]
-    if type(report_counts) is not dict:
+    count_trees = report["counts"]
+    if type(count_trees) is not dict or type(count_trees.get("overall")) is not dict:
         raise MeasurementError(
             "The measurement report contains invalid counts. Check the runner before updating documentation."
         )
+    report_counts = count_trees["overall"]
     lines.extend(
         (
             "",
@@ -983,7 +1162,7 @@ def check_documented_summary(
         ) from exc
     if expected not in text:
         raise MeasurementError(
-            "Actual DSVW results differ from docs/sqli-third-party-evaluation.md. Review the saved report and update the documented summary instead of accepting drift silently."
+            "Actual third-party results differ from docs/sqli-third-party-evaluation.md. Review the saved report and update the documented summary instead of accepting drift silently."
         )
 
 
@@ -1007,34 +1186,71 @@ def write_report(path: Path, report: dict[str, object]) -> None:
 
 def measure(workspace: Path, output: Path) -> dict[str, object]:
     """Measure all reviewed records in both modes and save every observation."""
-    target, declarations = load_declarations()
-    plan = list(plan_measurements(declarations))
+    targets, declarations = load_declarations()
+    plan = list(plan_measurements(targets, declarations))
     state = load_document(workspace / STATE_NAME)
-    image_tag, image_id = validate_provenance(state, target, declarations)
+    prepared_targets = state.get("targets")
+    if state.get("schema_version") != 2 or type(prepared_targets) is not dict:
+        raise MeasurementError(
+            "Prepared metadata is not multi-target schema version 2. Rerun prepare_third_party_sqli.py before measuring."
+        )
+    if prepared_targets.keys() != targets.keys():
+        raise MeasurementError(
+            "Prepared target IDs differ from targets.toml. Rerun preparation so every reviewed target has current provenance."
+        )
+    prepared: dict[str, tuple[str, str, dict[str, object]]] = {}
+    for target_id, target in targets.items():
+        target_state = prepared_targets[target_id]
+        if type(target_state) is not dict:
+            raise MeasurementError(
+                f"Prepared metadata for target {target_id!r} is invalid. Rerun preparation before measuring."
+            )
+        image_tag, image_id = validate_provenance(
+            target_state,
+            target,
+            [row for row in declarations if row.get("target_id") == target_id],
+        )
+        prepared[target_id] = (image_tag, image_id, target_state)
     records: list[dict[str, object]] = []
     run_id = new_run_id()
-    run_root = Path(tempfile.mkdtemp(prefix="vintar-dsvw-run-", dir=workspace))
+    run_root = Path(tempfile.mkdtemp(prefix="vintar-third-party-run-", dir=workspace))
     for planned in plan:
-        project = compose_project_name(run_id, planned.index, planned.mode)
+        target_id = planned.target.target_id
+        image_tag = prepared[target_id][0]
+        project = compose_project_name(target_id, run_id, planned.index, planned.mode)
         case_folder = run_root / project
         case_folder.mkdir()
         try:
-            upstream = start_target(image_tag, project)
-            with loopback_bridge(upstream) as origin:
+            upstream = start_target(planned.target, image_tag, project)
+            with loopback_bridge(upstream, planned.target) as origin:
                 records.append(run_pipeline_case(case_folder, origin, planned))
         finally:
-            stop_target(image_tag, project)
-    records.sort(key=lambda row: (str(row["endpoint_id"]), str(row["mode"])))
+            stop_target(planned.target, image_tag, project)
+    records.sort(
+        key=lambda row: (
+            str(row["target_id"]),
+            str(row["endpoint_id"]),
+            str(row["mode"]),
+        )
+    )
     report: dict[str, object] = {
         "counts": counts(records),
         "records": records,
         "schema_version": MEASUREMENT_SCHEMA_VERSION,
-        "target": {
-            "archive_sha256": target["archive_sha256"],
-            "commit": target["commit"],
-            "image_id": image_id,
-            "license": target["license"],
-            "name": target["name"],
+        "targets": {
+            target_id: {
+                "archive_sha256": target["archive_sha256"],
+                "commit": target["commit"],
+                "dbms": target["dbms"],
+                "image_ids": {"app": prepared[target_id][1]},
+                "license": target["license"],
+                "name": target["name"],
+                "repository": target["repository"],
+                "source_manifest_sha256": prepared[target_id][2][
+                    "source_manifest_sha256"
+                ],
+            }
+            for target_id, target in targets.items()
         },
     }
     write_report(output, report)
@@ -1070,10 +1286,10 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     unhealthy = unhealthy_count(report)
-    print(f"Saved the DSVW measurement report to {arguments.output.resolve()}")
+    print(f"Saved the third-party measurement report to {arguments.output.resolve()}")
     if unhealthy:
         print(
-            "Error: The DSVW measurement contains a false negative, false positive, or non-decision. Review the saved report and the documented limitation instead of treating it as a passing precision result.",
+            "Error: The third-party measurement contains a false negative, false positive, or non-decision. Review the saved report and the documented limitation instead of treating it as a passing precision result.",
             file=sys.stderr,
         )
         return 1
