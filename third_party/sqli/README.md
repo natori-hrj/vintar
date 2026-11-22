@@ -46,6 +46,9 @@ Its repository-owned build recipe pins the PHP/Apache base image, and its Compos
 file pins MySQL 8 by digest. Every case gets a fresh project-scoped MySQL volume;
 the readiness healthcheck uses `/index.php`, never the measured
 `/lookup_person.php` endpoint.
+Preparation records the repository-relative build-recipe path and SHA-256 in the
+prepared state. Measurement recomputes that digest before any container starts
+and refuses a stale image when the recipe has changed or its evidence is missing.
 
 The saved manual measurement artifact uses schema version 4. `targets` is keyed
 by target id, records carry `target_id`, and counts contain both `overall` and

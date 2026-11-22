@@ -15,6 +15,7 @@ from pathlib import Path
 
 from third_party_sqli_contract import (
     is_image_digest,
+    is_sha256,
     pinned_image_digest,
 )
 
@@ -342,17 +343,23 @@ def prepare_target(
         )
         build_arguments = ["build", "--pull=false", "--tag", image_tag]
         dockerfile = target.get("dockerfile_path")
+        recipe: dict[str, str] | None = None
         if dockerfile is not None:
-            build_arguments.extend(
-                ["--file", str(target_asset(target_id, target, "dockerfile_path"))]
-            )
+            recipe_path = target_asset(target_id, target, "dockerfile_path")
+            recipe_sha256 = sha256_file(recipe_path)
+            if type(dockerfile) is not str or not is_sha256(recipe_sha256):
+                raise PreparationError(
+                    f"Target {target_id!r} build recipe identity is invalid. Restore the reviewed Dockerfile and rerun preparation."
+                )
+            recipe = {"path": dockerfile, "sha256": recipe_sha256}
+            build_arguments.extend(["--file", str(recipe_path)])
         build_arguments.append(str(source_root))
         run_docker(build_arguments, target_id)
     image_id = run_docker(
         ["image", "inspect", "--format", "{{.Id}}", image_tag], target_id
     )
     image_id = validate_prepared_image_id(image_id, target_id)
-    return {
+    prepared = {
         "archive_sha256": observed_archive_digest,
         "commit": commit,
         "image_id": image_id,
@@ -360,6 +367,9 @@ def prepare_target(
         "source_evidence": source_evidence,
         "source_manifest_sha256": manifest_digest,
     }
+    if recipe is not None:
+        prepared["build_recipe"] = recipe
+    return prepared
 
 
 def prepare(workspace: Path) -> Path:

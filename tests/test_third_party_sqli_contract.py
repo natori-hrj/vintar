@@ -1766,6 +1766,7 @@ def test_prepare_ignores_modified_stale_extraction(tmp_path, monkeypatch):
     assert observed["dockerfile"] == "FROM scratch\n"
     target_state = state["targets"]["dsvw"]
     assert state["schema_version"] == 2
+    assert "build_recipe" not in target_state
     assert observed["manifest"] == target_state["source_manifest_sha256"]
     assert target_state["source_evidence"] == {
         "reviewed": {
@@ -1878,3 +1879,147 @@ def test_unchanged_source_reference_passes_before_docker(monkeypatch):
     assert docker_calls == [
         ["docker", "image", "inspect", "--format", "{{.Id}}", "image:tag"]
     ]
+
+
+def prepared_recipe_provenance(tmp_path, monkeypatch):
+    preparer = load_preparer()
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    archive_source = tmp_path / "archive-source" / f"dojo-{commit}"
+    archive_source.mkdir(parents=True)
+    (archive_source / "upstream.txt").write_text("reviewed\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    archive = workspace / f"dojo-{commit}.tar.gz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        bundle.add(archive_source, arcname=archive_source.name)
+    recipe_path = tmp_path / "Dockerfile"
+    recipe_path.write_text("FROM scratch\n", encoding="utf-8")
+    target = {
+        "archive_sha256": preparer.sha256_file(archive),
+        "archive_url": "https://invalid.example/archive",
+        "commit": commit,
+        "dockerfile_path": "sqli-dojo/Dockerfile",
+        "id": "dojo",
+        "service_images": [],
+    }
+    record = {
+        "id": "dojo-record",
+        "source_end_line": 1,
+        "source_fragment_sha256": (
+            "a9f2d25d1f71f8065e2119e538bde8846570fcdad320388236e99d9e225c290d"
+        ),
+        "source_path": "upstream.txt",
+        "source_start_line": 1,
+        "target_id": "dojo",
+    }
+    monkeypatch.setattr(
+        preparer,
+        "target_asset",
+        lambda target_id, declaration, key: recipe_path,
+    )
+    monkeypatch.setattr(
+        preparer,
+        "run_docker",
+        lambda arguments, target_id: (
+            "sha256:" + "a" * 64 if arguments[0] == "image" else ""
+        ),
+    )
+    state = preparer.prepare_target(workspace, target, [record])
+    return state, target, record, recipe_path
+
+
+def test_changed_build_recipe_is_rejected_before_docker(tmp_path, monkeypatch):
+    runner = load_runner()
+    state, target, record, recipe_path = prepared_recipe_provenance(
+        tmp_path, monkeypatch
+    )
+    recipe_path.write_text("FROM changed\n", encoding="utf-8")
+    docker_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        runner,
+        "_relative_path",
+        lambda target_id, declaration, key: recipe_path,
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_command",
+        lambda command, **kwargs: docker_calls.append(command),
+    )
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"build recipe.*target 'dojo'.*changed since prepare.*image may be stale.*Rerun scripts/prepare_third_party_sqli.py",
+    ):
+        runner.validate_provenance(state, target, [record])
+
+    assert docker_calls == []
+
+
+def test_missing_build_recipe_is_rejected_before_docker(monkeypatch):
+    runner = load_runner()
+    state, target, record = prepared_provenance()
+    target["dockerfile_path"] = "sqli-dojo/Dockerfile"
+    docker_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        runner,
+        "run_command",
+        lambda command, **kwargs: docker_calls.append(command),
+    )
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"build recipe metadata.*target 'dsvw'.*missing or invalid.*image may be stale.*rerun scripts/prepare_third_party_sqli.py",
+    ):
+        runner.validate_provenance(state, target, [record])
+
+    assert docker_calls == []
+
+
+def test_unchanged_build_recipe_passes_before_docker(tmp_path, monkeypatch):
+    runner = load_runner()
+    state, target, record, recipe_path = prepared_recipe_provenance(
+        tmp_path, monkeypatch
+    )
+    docker_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        runner,
+        "_relative_path",
+        lambda target_id, declaration, key: recipe_path,
+    )
+
+    def fake_run(command, **kwargs):
+        docker_calls.append(command)
+        return SimpleNamespace(stdout="sha256:" + "a" * 64 + "\n")
+
+    monkeypatch.setattr(runner, "run_command", fake_run)
+
+    assert runner.validate_provenance(state, target, [record]) == (
+        state["image_tag"],
+        state["image_id"],
+    )
+    assert docker_calls == [
+        ["docker", "image", "inspect", "--format", "{{.Id}}", state["image_tag"]]
+    ]
+
+
+def test_build_recipe_on_archive_only_target_is_rejected(monkeypatch):
+    runner = load_runner()
+    state, target, record = prepared_provenance()
+    state["build_recipe"] = {
+        "path": "unexpected/Dockerfile",
+        "sha256": "c" * 64,
+    }
+    docker_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        runner,
+        "run_command",
+        lambda command, **kwargs: docker_calls.append(command),
+    )
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"build recipe metadata exists.*target 'dsvw'.*no dockerfile_path.*Rerun scripts/prepare_third_party_sqli.py",
+    ):
+        runner.validate_provenance(state, target, [record])
+
+    assert docker_calls == []

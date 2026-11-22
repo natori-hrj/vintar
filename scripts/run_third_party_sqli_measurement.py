@@ -1,6 +1,7 @@
 """Run reviewed third-party SQLi OpenAPI-to-verify measurements locally."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from typing import NamedTuple
 from third_party_sqli_contract import (
     ServiceImageMismatch,
     is_image_digest,
+    is_sha256,
     pinned_image_digest,
     validate_service_image_mapping,
 )
@@ -663,6 +665,30 @@ def validate_provenance(
         raise MeasurementError(
             f"Prepared {target_id} archive evidence does not match targets.toml. Rerun preparation with the reviewed archive."
         )
+    dockerfile = target.get("dockerfile_path")
+    recipe = state.get("build_recipe")
+    if dockerfile is None:
+        if "build_recipe" in state:
+            raise MeasurementError(
+                f"Prepared build recipe metadata exists for target {target_id!r}, but the target has no dockerfile_path. Rerun scripts/prepare_third_party_sqli.py for that target so prepared provenance matches its build inputs."
+            )
+    else:
+        if (
+            type(dockerfile) is not str
+            or type(recipe) is not dict
+            or recipe.keys() != {"path", "sha256"}
+            or recipe.get("path") != dockerfile
+            or not is_sha256(recipe.get("sha256"))
+        ):
+            raise MeasurementError(
+                f"Prepared build recipe metadata for target {target_id!r} is missing or invalid. The recipe may have changed since prepare and the image may be stale; rerun scripts/prepare_third_party_sqli.py for that target."
+            )
+        recipe_path = _relative_path(target_id, target, "dockerfile_path")
+        current_sha256 = hashlib.sha256(recipe_path.read_bytes()).hexdigest()
+        if current_sha256 != recipe["sha256"]:
+            raise MeasurementError(
+                f"The build recipe for target {target_id!r} changed since prepare, so the prepared image may be stale. Rerun scripts/prepare_third_party_sqli.py for that target before measurement."
+            )
     image_tag = required_text(state, "image_tag", "prepared target metadata")
     image_id = required_text(state, "image_id", "prepared target metadata")
     if not is_image_digest(image_id):
