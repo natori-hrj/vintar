@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator, ValidationError
+from workflow_actions import collect_workflow_uses
 
 from vintar.checks.sqli import confirmation_runner
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
@@ -1027,7 +1028,11 @@ def test_conclusive_verification_requires_observations_and_evidence(tmp_path):
 
 def test_workflow_uses_pinned_actions_and_manual_trigger_only():
     workflow = Path(".github/workflows/vintar-security.yml").read_text(encoding="utf-8")
-    action_refs = re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", workflow)
+    action_refs = [
+        action.rpartition("@")[2]
+        for action in collect_workflow_uses(workflow)
+        if not action.startswith("./")
+    ]
 
     assert action_refs
     assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs)

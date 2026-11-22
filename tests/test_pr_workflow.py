@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-import yaml
+from workflow_actions import collect_workflow_uses
 
 WORKFLOW_PATH = Path(".github/workflows/vintar-pr.yml")
 
@@ -63,20 +63,17 @@ def test_all_actions_are_sha_pinned():
         "No workflow files found. Restore the workflows before checking action pins."
     )
     for path in workflows:
-        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for job in workflow["jobs"].values():
-            for entry in (job, *job.get("steps", [])):
-                action = entry.get("uses")
-                if action is None or action.startswith("./"):
-                    continue
-                if action.startswith("docker://"):
-                    assert re.fullmatch(r"docker://.+@sha256:[0-9a-f]{64}", action), (
-                        f"{path}: {action} is mutable. Pin the container to its full SHA-256 digest."
-                    )
-                else:
-                    assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), (
-                        f"{path}: {action} is mutable. Pin the action or reusable workflow to its full commit SHA."
-                    )
+        for action in collect_workflow_uses(path.read_text(encoding="utf-8")):
+            if action.startswith("./"):
+                continue
+            if action.startswith("docker://"):
+                assert re.fullmatch(r"docker://.+@sha256:[0-9a-f]{64}", action), (
+                    f"{path}: {action} is mutable. Pin the container to its full SHA-256 digest."
+                )
+            else:
+                assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), (
+                    f"{path}: {action} is mutable. Pin the action or reusable workflow to its full commit SHA."
+                )
 
 
 def test_checkout_does_not_keep_credentials():

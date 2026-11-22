@@ -9,6 +9,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from workflow_actions import collect_workflow_uses
 
 from vintar.regression.cases import load_regression_case
 
@@ -26,7 +27,7 @@ _E2E_ACTIONS = {
 
 def _assert_action_policy(workflow: str, allowed_actions: set[str]) -> None:
     """Require reviewed action names and immutable commit references."""
-    uses_values = re.findall(r"uses:\s+([^\s#]+)", workflow)
+    uses_values = collect_workflow_uses(workflow)
     action_names: set[str] = set()
     for uses_value in uses_values:
         action, separator, reference = uses_value.rpartition("@")
@@ -177,6 +178,41 @@ jobs:
             workflow,
             {"actions/checkout", "astral-sh/setup-uv"},
         )
+
+
+def test_action_policy_ignores_uses_in_comments():
+    workflow = f"""
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@{"a" * 40}
+      # - uses: actions/upload-artifact@{"b" * 40}
+"""
+
+    with pytest.raises(
+        AssertionError,
+        match=r"workflow actions.*differ from the deliberately allowed set.*add or remove an allowed action deliberately",
+    ):
+        _assert_action_policy(
+            workflow,
+            {"actions/checkout", "actions/upload-artifact"},
+        )
+
+
+def test_action_policy_accepts_quoted_pinned_references():
+    workflow = f"""
+jobs:
+  test:
+    uses: 'owner/reusable@{"a" * 40}'
+  steps:
+    steps:
+      - uses: "owner/action@{"b" * 40}"
+"""
+
+    _assert_action_policy(
+        workflow,
+        {"owner/action", "owner/reusable"},
+    )
 
 
 def test_installed_loopback_uses_console_executable_outside_checkout(
