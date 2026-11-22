@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
 TARGETS = THIRD_PARTY / "targets.toml"
 CONFIGS = THIRD_PARTY / "dsvw" / "configs"
+DOJO_CONFIGS = THIRD_PARTY / "sqli-dojo" / "configs"
 RUNNER = ROOT / "scripts" / "run_third_party_sqli_measurement.py"
 PREPARER = ROOT / "scripts" / "prepare_third_party_sqli.py"
 IMAGE_CONTRACT = ROOT / "scripts" / "third_party_sqli_contract.py"
@@ -201,6 +202,152 @@ def expected_report() -> dict[str, object]:
     ]
     for record in records:
         record["target_id"] = "dsvw"
+    records.extend(
+        [
+            {
+                "actual_verdict": "inconclusive",
+                "classification": "non_decision",
+                "check_type": "sqli.boolean",
+                "detail": {
+                    "configured": True,
+                    "reason_code": "candidate_confirmation_mismatch",
+                    "request_count": 12,
+                    "status": "mismatch",
+                },
+                "endpoint_id": "sqli-dojo-boolean-id",
+                "expected_label": "positive",
+                "expected_verdict": "inconclusive",
+                "mode": "confirmation",
+                "reason_code": "candidate_confirmation_mismatch",
+                "request_count": 18,
+                "target_id": "sqli-dojo",
+            },
+            {
+                "actual_verdict": "inconclusive",
+                "classification": "tp",
+                "check_type": "sqli.boolean",
+                "detail": {
+                    "configured": False,
+                    "reason_code": None,
+                    "request_count": 0,
+                    "status": "not_configured",
+                },
+                "endpoint_id": "sqli-dojo-boolean-id",
+                "expected_label": "positive",
+                "expected_verdict": "inconclusive",
+                "mode": "six_probe",
+                "reason_code": "boolean_candidate",
+                "request_count": 6,
+                "target_id": "sqli-dojo",
+            },
+            {
+                "actual_verdict": "not_detected",
+                "classification": "tn",
+                "check_type": "sqli.boolean",
+                "detail": {
+                    "configured": True,
+                    "reason_code": "initial_not_eligible",
+                    "request_count": 0,
+                    "status": "not_eligible",
+                },
+                "endpoint_id": "sqli-dojo-boolean-source",
+                "expected_label": "negative",
+                "expected_verdict": "not_detected",
+                "mode": "confirmation",
+                "reason_code": "no_boolean_difference",
+                "request_count": 6,
+                "target_id": "sqli-dojo",
+            },
+            {
+                "actual_verdict": "not_detected",
+                "classification": "tn",
+                "check_type": "sqli.boolean",
+                "detail": {
+                    "configured": False,
+                    "reason_code": None,
+                    "request_count": 0,
+                    "status": "not_configured",
+                },
+                "endpoint_id": "sqli-dojo-boolean-source",
+                "expected_label": "negative",
+                "expected_verdict": "not_detected",
+                "mode": "six_probe",
+                "reason_code": "no_boolean_difference",
+                "request_count": 6,
+                "target_id": "sqli-dojo",
+            },
+            {
+                "actual_verdict": "inconclusive",
+                "classification": "candidate",
+                "check_type": "sqli.error",
+                "detail": {
+                    "dbms": "mysql",
+                    "reason_code": "dbms_error_disclosed",
+                    "request_count": 4,
+                    "signature_id": "mysql_syntax_error_1064",
+                    "status": "matched",
+                },
+                "endpoint_id": "sqli-dojo-error-id",
+                "expected_label": "positive",
+                "expected_verdict": "inconclusive",
+                "mode": "error_probe",
+                "reason_code": "dbms_error_disclosed",
+                "request_count": 4,
+                "target_id": "sqli-dojo",
+            },
+            {
+                "actual_verdict": "not_detected",
+                "classification": "tn",
+                "check_type": "sqli.error",
+                "detail": {
+                    "reason_code": "dbms_error_not_observed",
+                    "request_count": 4,
+                    "status": "not_matched",
+                },
+                "endpoint_id": "sqli-dojo-error-source",
+                "expected_label": "negative",
+                "expected_verdict": "not_detected",
+                "mode": "error_probe",
+                "reason_code": "dbms_error_not_observed",
+                "request_count": 4,
+                "target_id": "sqli-dojo",
+            },
+            {
+                "actual_verdict": "inconclusive",
+                "classification": "tp",
+                "check_type": "sqli.time",
+                "detail": {
+                    "reason_code": "timing_pattern_matched",
+                    "request_count": 9,
+                    "status": "candidate",
+                },
+                "endpoint_id": "sqli-dojo-time-id",
+                "expected_label": "positive",
+                "expected_verdict": "inconclusive",
+                "mode": "nine_probe",
+                "reason_code": "timing_pattern_matched",
+                "request_count": 9,
+                "target_id": "sqli-dojo",
+            },
+            {
+                "actual_verdict": "not_detected",
+                "classification": "tn",
+                "check_type": "sqli.time",
+                "detail": {
+                    "reason_code": "timing_pattern_not_matched",
+                    "request_count": 9,
+                    "status": "not_confirmed",
+                },
+                "endpoint_id": "sqli-dojo-time-source",
+                "expected_label": "negative",
+                "expected_verdict": "not_detected",
+                "mode": "nine_probe",
+                "reason_code": "timing_pattern_not_matched",
+                "request_count": 9,
+                "target_id": "sqli-dojo",
+            },
+        ]
+    )
     records.sort(
         key=lambda row: (
             str(row["target_id"]),
@@ -208,7 +355,7 @@ def expected_report() -> dict[str, object]:
             str(row["mode"]),
         )
     )
-    aggregate = {
+    dsvw_counts = {
         "sqli.boolean": {
             "confirmation": {
                 "fn": 0,
@@ -244,10 +391,54 @@ def expected_report() -> dict[str, object]:
             }
         },
     }
+    dojo_counts = {
+        "sqli.boolean": {
+            "confirmation": {
+                "fn": 0,
+                "fp": 0,
+                "non_decision": 1,
+                "tn": 1,
+                "tp": 0,
+            },
+            "six_probe": {
+                "fn": 0,
+                "fp": 0,
+                "non_decision": 0,
+                "tn": 1,
+                "tp": 1,
+            },
+        },
+        "sqli.time": {
+            "nine_probe": {
+                "fn": 0,
+                "fp": 0,
+                "non_decision": 0,
+                "tn": 1,
+                "tp": 1,
+            }
+        },
+        "sqli.error": {
+            "error_probe": {
+                "candidate": 1,
+                "fn": 0,
+                "fp": 0,
+                "non_decision": 0,
+                "tn": 1,
+            }
+        },
+    }
+    overall = json.loads(json.dumps(dsvw_counts))
+    for check_type, modes in dojo_counts.items():
+        for mode, values in modes.items():
+            for field, value in values.items():
+                overall[check_type][mode][field] += value
     return {
         "counts": {
-            "overall": aggregate,
-            "by_target": {"dsvw": json.loads(json.dumps(aggregate))},
+            "overall": overall,
+            "by_target": {
+                "dsvw": dsvw_counts,
+                "sqli-dojo": dojo_counts,
+            },
         },
         "records": records,
         "schema_version": 4,
@@ -263,6 +454,19 @@ def expected_report() -> dict[str, object]:
                 "service_images": {},
                 "source_manifest_sha256": "b" * 64,
             },
+            "sqli-dojo": {
+                "archive_sha256": "6c0218fef749fddec28560af883865eb4178ed998d5cc927a5e3592add50b88f",
+                "commit": "81f20037de323376d8a7651377e3a3971efdbae8",
+                "dbms": "mysql",
+                "image_ids": {"app": "sha256:" + "c" * 64},
+                "license": "GPL-3.0",
+                "name": "sqli-dojo-docker",
+                "repository": "https://github.com/h1pmnh/sqli-dojo-docker",
+                "service_images": {
+                    "mysql": "mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+                },
+                "source_manifest_sha256": "d" * 64,
+            },
         },
     }
 
@@ -270,8 +474,8 @@ def expected_report() -> dict[str, object]:
 def test_reviewed_declarations_are_exact_and_digest_bound():
     document = declarations()
     assert document["version"] == 2
-    [target] = document["targets"]
-    assert target == {
+    targets = {target["id"]: target for target in document["targets"]}
+    assert targets["dsvw"] == {
         "archive_sha256": "96690f62ac0fba8a4f0aeac22f2370853bc02b96fb3efd1b8fc3a39398bf302b",
         "archive_url": "https://github.com/stamparm/DSVW/archive/9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908.tar.gz",
         "commit": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
@@ -283,15 +487,41 @@ def test_reviewed_declarations_are_exact_and_digest_bound():
         "image_environment": "DSVW_IMAGE",
         "license": "Unlicense",
         "name": "DSVW",
+        "operation_path": "/",
         "parameter_names": ["id", "v"],
         "repository": "https://github.com/stamparm/DSVW",
         "service_images": [],
         "service_name": "dsvw",
         "service_port": 65412,
         "spec_path": "dsvw/openapi.json",
+        "startup_timeout_seconds": 30,
+    }
+    assert targets["sqli-dojo"] == {
+        "archive_sha256": "6c0218fef749fddec28560af883865eb4178ed998d5cc927a5e3592add50b88f",
+        "archive_url": "https://github.com/h1pmnh/sqli-dojo-docker/archive/81f20037de323376d8a7651377e3a3971efdbae8.tar.gz",
+        "commit": "81f20037de323376d8a7651377e3a3971efdbae8",
+        "compose_path": "sqli-dojo/compose.yaml",
+        "configs_path": "sqli-dojo/configs",
+        "dbms": "mysql",
+        "dockerfile_path": "sqli-dojo/Dockerfile",
+        "fresh_volumes": ["mysql-data"],
+        "id": "sqli-dojo",
+        "image_environment": "SQLI_DOJO_IMAGE",
+        "license": "GPL-3.0",
+        "name": "sqli-dojo-docker",
+        "operation_path": "/lookup_person.php",
+        "parameter_names": ["id", "source"],
+        "repository": "https://github.com/h1pmnh/sqli-dojo-docker",
+        "service_images": [
+            "mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+        ],
+        "service_name": "dojo",
+        "service_port": 80,
+        "spec_path": "sqli-dojo/openapi.json",
+        "startup_timeout_seconds": 120,
     }
     records = document["records"]
-    assert [record["id"] for record in records] == [
+    assert [record["id"] for record in records if record["target_id"] == "dsvw"] == [
         "dsvw-blind-boolean-id",
         "dsvw-version-query",
         "dsvw-time-id",
@@ -299,7 +529,18 @@ def test_reviewed_declarations_are_exact_and_digest_bound():
         "dsvw-error-id",
         "dsvw-error-version-query",
     ]
-    assert [record["check_type"] for record in records] == [
+    assert [
+        record["id"] for record in records if record["target_id"] == "sqli-dojo"
+    ] == [
+        "sqli-dojo-boolean-id",
+        "sqli-dojo-boolean-source",
+        "sqli-dojo-time-id",
+        "sqli-dojo-time-source",
+        "sqli-dojo-error-id",
+        "sqli-dojo-error-source",
+    ]
+    dsvw_records = [record for record in records if record["target_id"] == "dsvw"]
+    assert [record["check_type"] for record in dsvw_records] == [
         "sqli.boolean",
         "sqli.boolean",
         "sqli.time",
@@ -307,7 +548,7 @@ def test_reviewed_declarations_are_exact_and_digest_bound():
         "sqli.error",
         "sqli.error",
     ]
-    assert [record["label"] for record in records] == [
+    assert [record["label"] for record in dsvw_records] == [
         "positive",
         "negative",
         "positive",
@@ -315,7 +556,7 @@ def test_reviewed_declarations_are_exact_and_digest_bound():
         "positive",
         "negative",
     ]
-    assert [record["evidence_type"] for record in records] == [
+    assert [record["evidence_type"] for record in dsvw_records] == [
         "non_parameterized_sql_sink",
         "parameter_does_not_reach_sql_sink",
         "non_parameterized_sql_sink",
@@ -323,7 +564,16 @@ def test_reviewed_declarations_are_exact_and_digest_bound():
         "non_parameterized_sql_sink_with_exposed_exception",
         "parameter_does_not_reach_sql_sink",
     ]
-    assert all(record["source_path"] == "dsvw.py" for record in records)
+    assert all(
+        record["source_path"] == "dsvw.py"
+        for record in records
+        if record["target_id"] == "dsvw"
+    )
+    assert {
+        record["source_path"]
+        for record in records
+        if record["target_id"] == "sqli-dojo"
+    } == {"src/lookup_person.php", "src/common/view_source.php"}
     assert all(
         re.fullmatch(r"[0-9a-f]{64}", record["source_fragment_sha256"])
         for record in records
@@ -376,10 +626,68 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
     assert all(config["probes"]["error_payload"] == "'" for config in error_configs)
 
 
+def test_sqli_dojo_openapi_configs_and_images_are_reviewed_and_pinned():
+    spec = json.loads((THIRD_PARTY / "sqli-dojo" / "openapi.json").read_text())
+    parameters = spec["paths"]["/lookup_person.php"]["get"]["parameters"]
+    assert [(item["name"], item["in"]) for item in parameters] == [
+        ("id", "query"),
+        ("source", "query"),
+    ]
+    configs = sorted(DOJO_CONFIGS.glob("*.toml"))
+    assert [path.name for path in configs] == [
+        "sqli-dojo-boolean-id-confirmation.toml",
+        "sqli-dojo-boolean-id-six.toml",
+        "sqli-dojo-boolean-source-confirmation.toml",
+        "sqli-dojo-boolean-source-six.toml",
+        "sqli-dojo-error-id-error.toml",
+        "sqli-dojo-error-source-error.toml",
+        "sqli-dojo-time-id-time.toml",
+        "sqli-dojo-time-source-time.toml",
+    ]
+    parsed = []
+    for path in configs:
+        with path.open("rb") as stream:
+            config = tomllib.load(stream)
+        assert config["target"] == {
+            "allowed_origin": "__ORIGIN__",
+            "url": "__ORIGIN__/lookup_person.php",
+        }
+        assert config["injection"]["location"] == "query"
+        parsed.append(config)
+    assert sorted(config["limits"]["max_requests"] for config in parsed) == [
+        4,
+        4,
+        6,
+        6,
+        9,
+        9,
+        18,
+        18,
+    ]
+    compose = (THIRD_PARTY / "sqli-dojo" / "compose.yaml").read_text()
+    mysql = "mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+    assert mysql in compose
+    assert "mysql-data:/var/lib/mysql" in compose
+    dockerfile = (THIRD_PARTY / "sqli-dojo" / "Dockerfile").read_text()
+    assert (
+        "php:8.4-apache@sha256:3550aedd1c7bdfe26283c7b1550ef76509e6c2b1284aef814e6f2e325b7c9688"
+        in dockerfile
+    )
+
+
 @pytest.mark.parametrize(
-    ("record_id", "config_mode", "input_id", "parameter", "index", "expected"),
+    (
+        "target_id",
+        "record_id",
+        "config_mode",
+        "input_id",
+        "parameter",
+        "index",
+        "expected",
+    ),
     [
         (
+            "dsvw",
             "dsvw-time-id",
             "time",
             "input-0927742c7a4ae9527f51f8c541502371",
@@ -388,6 +696,7 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
             "inconclusive",
         ),
         (
+            "dsvw",
             "dsvw-time-version-query",
             "time",
             "input-ffe5bfa38242d9cad17138d92bb38efd",
@@ -396,6 +705,7 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
             "not_detected",
         ),
         (
+            "dsvw",
             "dsvw-error-id",
             "error",
             "input-0927742c7a4ae9527f51f8c541502371",
@@ -404,10 +714,47 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
             "inconclusive",
         ),
         (
+            "dsvw",
             "dsvw-error-version-query",
             "error",
             "input-ffe5bfa38242d9cad17138d92bb38efd",
             "v",
+            1,
+            "not_detected",
+        ),
+        (
+            "sqli-dojo",
+            "sqli-dojo-time-id",
+            "time",
+            "input-cd830e9d6b74c85da764108226a46c4e",
+            "id",
+            0,
+            "inconclusive",
+        ),
+        (
+            "sqli-dojo",
+            "sqli-dojo-time-source",
+            "time",
+            "input-ad87295e6521cda804be52b80e0ee734",
+            "source",
+            1,
+            "not_detected",
+        ),
+        (
+            "sqli-dojo",
+            "sqli-dojo-error-id",
+            "error",
+            "input-cd830e9d6b74c85da764108226a46c4e",
+            "id",
+            0,
+            "inconclusive",
+        ),
+        (
+            "sqli-dojo",
+            "sqli-dojo-error-source",
+            "error",
+            "input-ad87295e6521cda804be52b80e0ee734",
+            "source",
             1,
             "not_detected",
         ),
@@ -416,6 +763,7 @@ def test_openapi_and_configs_bind_only_the_two_reviewed_inputs():
 def test_time_and_error_configs_materialize_and_load_offline(
     tmp_path,
     monkeypatch,
+    target_id,
     record_id,
     config_mode,
     input_id,
@@ -425,7 +773,7 @@ def test_time_and_error_configs_materialize_and_load_offline(
 ):
     monkeypatch.chdir(tmp_path)
     spec = tmp_path / "openapi.json"
-    spec.write_bytes((THIRD_PARTY / "dsvw" / "openapi.json").read_bytes())
+    spec.write_bytes((THIRD_PARTY / target_id / "openapi.json").read_bytes())
     selection = tmp_path / "selection.toml"
     selection.write_text(f'version = 1\napproved = ["{input_id}"]\n', encoding="utf-8")
     runner = CliRunner()
@@ -444,7 +792,13 @@ def test_time_and_error_configs_materialize_and_load_offline(
     assert discovered.exit_code == 0 and discovered.stderr == ""
     draft_name = json.loads(discovered.stdout)["drafts"][0]
     draft = tmp_path / "drafts" / draft_name
-    other = "v" if parameter == "id" else "id"
+    other = (
+        ("v" if parameter == "id" else "id")
+        if target_id == "dsvw"
+        else ("source" if parameter == "id" else "id")
+    )
+    operation_path = "/" if target_id == "dsvw" else "/lookup_person.php"
+    pointer_path = operation_path.replace("~", "~0").replace("/", "~1")
     answers = tmp_path / "answers.json"
     answers.write_text(
         json.dumps(
@@ -453,7 +807,7 @@ def test_time_and_error_configs_materialize_and_load_offline(
                 "expected_verdict": expected,
                 "parameters": {
                     parameter: {
-                        "pointer": f"/paths/~1/get/parameters/{index}/schema/example"
+                        "pointer": f"/paths/{pointer_path}/get/parameters/{index}/schema/example"
                     },
                     other: {"omit": True},
                 },
@@ -479,9 +833,17 @@ def test_time_and_error_configs_materialize_and_load_offline(
     assert reviewed.exit_code == 0 and reviewed.stderr == ""
     config = tmp_path / "config.toml"
     config.write_text(
-        (CONFIGS / f"{record_id}-{config_mode}.toml")
+        (
+            (CONFIGS if target_id == "dsvw" else DOJO_CONFIGS)
+            / f"{record_id}-{config_mode}.toml"
+        )
         .read_text(encoding="utf-8")
-        .replace("__ORIGIN__", "http://127.0.0.1:65412"),
+        .replace(
+            "__ORIGIN__",
+            "http://127.0.0.1:65412"
+            if target_id == "dsvw"
+            else "http://127.0.0.1:18080",
+        ),
         encoding="utf-8",
     )
     output = tmp_path / "case.toml"
@@ -611,7 +973,7 @@ def test_error_acceptance_contract_keeps_candidate_distinct_from_vulnerability()
         "dbms_error_not_observed"
     )
     assert records["dsvw-error-version-query"]["request_count"] == 4
-    assert report["counts"]["overall"]["sqli.error"]["error_probe"] == {
+    assert report["counts"]["by_target"]["dsvw"]["sqli.error"]["error_probe"] == {
         "candidate": 1,
         "fn": 0,
         "fp": 0,
@@ -799,7 +1161,7 @@ def test_non_decisions_keep_the_manual_runner_exit_one(tmp_path, monkeypatch, ca
         ],
     )
 
-    assert runner.unhealthy_count(report) == 2
+    assert runner.unhealthy_count(report) == 3
     assert runner.main() == 1
     captured = capsys.readouterr()
     assert "contains a false negative, false positive, or non-decision" in (
@@ -815,6 +1177,23 @@ def test_reviewed_documentation_matches_the_report_contract():
     assert "n=2" not in rendered
     assert rendered.count("dsvw-blind-boolean-id") == 2
     assert rendered.count("dsvw-version-query") == 2
+    assert rendered.count("sqli-dojo-boolean-id") == 2
+    assert rendered.count("sqli-dojo-boolean-source") == 2
+    assert "| Target sqli-dojo |" in rendered
+
+
+def test_mysql_by_target_counts_are_recomputed_from_records():
+    runner = load_runner()
+    report = expected_report()
+    mysql_records = [
+        record for record in report["records"] if record["target_id"] == "sqli-dojo"
+    ]
+
+    assert (
+        runner.counts(mysql_records)["by_target"]["sqli-dojo"]
+        == report["counts"]["by_target"]["sqli-dojo"]
+    )
+    assert runner.validate_measurement_report(report) is report
 
 
 def test_measurement_output_declares_schema_version_four():
@@ -943,6 +1322,8 @@ def test_report_keys_follow_reviewed_measurement_plan(monkeypatch, tmp_path):
         (tmp_path / config.name.replace(old_id, new_id)).write_bytes(
             config.read_bytes()
         )
+    for config in DOJO_CONFIGS.glob("*.toml"):
+        (tmp_path / config.name).write_bytes(config.read_bytes())
 
     planned = list(runner.plan_measurements(targets, records))
     report = expected_report()
@@ -974,22 +1355,28 @@ def test_consistent_counts_and_health_match_records():
     ]
 
     assert runner.validate_measurement_report(report) is report
-    assert runner.unhealthy_count(report) == len(unhealthy_records) == 2
+    assert runner.unhealthy_count(report) == len(unhealthy_records) == 3
 
 
 def test_v4_preserves_v3_records_and_aggregate_counts():
     report = expected_report()
+    dsvw_records = [
+        record for record in report["records"] if record["target_id"] == "dsvw"
+    ]
     legacy_records = [
         {key: value for key, value in record.items() if key != "target_id"}
-        for record in report["records"]
+        for record in dsvw_records
     ]
 
-    assert all(record["target_id"] == "dsvw" for record in report["records"])
     assert legacy_records == [
         {key: value for key, value in record.items() if key != "target_id"}
         for record in expected_report()["records"]
+        if record["target_id"] == "dsvw"
     ]
-    assert report["counts"]["overall"] == report["counts"]["by_target"]["dsvw"]
+    assert (
+        report["counts"]["by_target"]["dsvw"]
+        == expected_report()["counts"]["by_target"]["dsvw"]
+    )
 
 
 def test_unknown_target_id_is_rejected_before_counts():
@@ -1260,7 +1647,7 @@ def test_pre_start_and_report_use_the_same_service_image_rule(
     monkeypatch.setattr(
         runner,
         "load_declarations",
-        lambda: ({"dsvw": target_declaration}, records),
+        lambda: ({**targets, "dsvw": target_declaration}, records),
     )
 
     if entry_point == "pre_start":
@@ -1347,6 +1734,7 @@ def test_prepare_ignores_modified_stale_extraction(tmp_path, monkeypatch):
         "archive_sha256": archive_digest,
         "archive_url": "https://invalid.example/archive",
         "commit": commit,
+        "service_images": [],
     }
     records = [
         {

@@ -133,6 +133,22 @@ def target_text(target: dict[str, object], key: str) -> str:
     return value
 
 
+def target_asset(target_id: str, target: dict[str, object], key: str) -> Path:
+    """Resolve one reviewed repository-owned target asset."""
+    value = target_text(target, key)
+    third_party = ROOT / "third_party" / "sqli"
+    candidate = (third_party / value).resolve()
+    if candidate == third_party or third_party not in candidate.parents:
+        raise PreparationError(
+            f"Target {target_id!r} has an invalid {key}. Use a relative path inside third_party/sqli instead."
+        )
+    if not candidate.is_file():
+        raise PreparationError(
+            f"Target {target_id!r} {key} is missing. Restore the reviewed build recipe before preparation."
+        )
+    return candidate
+
+
 def download_archive(url: str, destination: Path, target_id: str) -> None:
     """Download to a temporary file and publish only a complete archive."""
     try:
@@ -305,6 +321,17 @@ def prepare_target(
         )
 
     image_tag = f"vintar-third-party-{target_id}:{commit[:12]}"
+    service_images = target.get("service_images")
+    if type(service_images) is not list:
+        raise PreparationError(
+            f"Target {target_id!r} lost its reviewed service images. Reload targets.toml before preparation."
+        )
+    for service_image in service_images:
+        if type(service_image) is not str:
+            raise PreparationError(
+                f"Target {target_id!r} has an invalid service image. Use a digest-pinned image reference."
+            )
+        run_docker(["pull", service_image], target_id)
     with tempfile.TemporaryDirectory(
         prefix=f".{target_id}-verified-source-", dir=workspace
     ) as temporary_source:
@@ -313,16 +340,14 @@ def prepare_target(
         source_evidence = dict(
             source_fragment_evidence(source_root, record) for record in records
         )
-        run_docker(
-            [
-                "build",
-                "--pull=false",
-                "--tag",
-                image_tag,
-                str(source_root),
-            ],
-            target_id,
-        )
+        build_arguments = ["build", "--pull=false", "--tag", image_tag]
+        dockerfile = target.get("dockerfile_path")
+        if dockerfile is not None:
+            build_arguments.extend(
+                ["--file", str(target_asset(target_id, target, "dockerfile_path"))]
+            )
+        build_arguments.append(str(source_root))
+        run_docker(build_arguments, target_id)
     image_id = run_docker(
         ["image", "inspect", "--format", "{{.Id}}", image_tag], target_id
     )

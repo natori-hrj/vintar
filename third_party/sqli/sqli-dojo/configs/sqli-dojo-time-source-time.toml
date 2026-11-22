@@ -1,0 +1,25 @@
+# This uses the same pre-measurement payloads where source terminates before SQL.
+config_version = 1
+type = "sqli.time"
+input_id = "input-ad87295e6521cda804be52b80e0ee734"
+
+[target]
+url = "__ORIGIN__/lookup_person.php"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "source"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "explicit"
+delay_payload = " AND IF(1=1,SLEEP(0.5),0)"
+control_payload = " AND IF(1=2,SLEEP(0.5),0)"
+expected_delay_seconds = 0.5
+
+[limits]
+max_requests = 9
+requests_per_second = 10.0
+timeout_seconds = 5.0

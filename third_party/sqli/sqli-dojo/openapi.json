@@ -1,0 +1,44 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Reviewed sqli-dojo-docker SQLi measurement surface",
+    "version": "81f20037de323376d8a7651377e3a3971efdbae8"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:80"
+    }
+  ],
+  "paths": {
+    "/lookup_person.php": {
+      "get": {
+        "operationId": "lookupPerson",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "example": 2
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "1"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "sqli-dojo-docker demonstration response"
+          }
+        }
+      }
+    }
+  }
+}
