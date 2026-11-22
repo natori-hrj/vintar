@@ -11,6 +11,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import yaml
 from test_sqli_candidate_reliability import classify as reliability_classify
 from typer.testing import CliRunner
 
@@ -939,6 +940,30 @@ def test_owasp_lab_openapi_configs_and_images_are_reviewed_and_pinned():
         "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
         in dockerfile
     )
+
+
+def test_postgres_compose_healthchecks_require_tcp_readiness():
+    for compose_path in sorted(THIRD_PARTY.glob("*/compose.yaml")):
+        document = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+        assert isinstance(document, dict)
+        services = document.get("services")
+        assert isinstance(services, dict)
+        for service_name, service in services.items():
+            assert isinstance(service, dict)
+            image = service.get("image")
+            if not isinstance(image, str) or not image.startswith("postgres:"):
+                continue
+            healthcheck = service.get("healthcheck")
+            test = healthcheck.get("test") if isinstance(healthcheck, dict) else None
+            command = " ".join(test) if isinstance(test, list) else ""
+            has_tcp_host = re.search(
+                r"(?:^|\s)-h(?:\s+|=)(?:127\.0\.0\.1|localhost)(?:\s|$)", command
+            )
+            assert "pg_isready" in command and has_tcp_host is not None, (
+                f"{compose_path}:{service_name} does not wait for PostgreSQL TCP readiness; "
+                "the image's init server is Unix-socket-only and can make a hostless "
+                "pg_isready pass too early. Use pg_isready -h 127.0.0.1 (or -h localhost) instead."
+            )
 
 
 @pytest.mark.parametrize(
