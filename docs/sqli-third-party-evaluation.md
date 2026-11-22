@@ -48,8 +48,9 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
-The manual maintainer report uses schema version 3. Version 2 introduced the
-following changes from version 1:
+The manual maintainer report uses schema version 4. Versions 2 and 3 introduced
+per-technique records and Error evidence. Version 4 generalizes that contract to
+multiple independently prepared targets:
 
 - `schema_version` changes from `1` to `2`.
 - `counts["six_probe"]` moves to
@@ -63,28 +64,36 @@ following changes from version 1:
   `detail`. Time records also use `detail` for their timing status, reason, and
   request count.
 
-Version 3 adds `counts["sqli.error"]["error_probe"]`, Error records whose `detail`
+Version 3 added `counts["sqli.error"]["error_probe"]`, Error records whose `detail`
 contains the redacted Error result evidence, and the Error-only `candidate`
 classification. A candidate means the positive ground-truth record produced
 `INCONCLUSIVE / dbms_error_disclosed` with the reviewed DBMS evidence. It is not a
 TP or a `VULNERABLE` verdict. Error negatives retain TN/FP/FN/non-decision under
 the existing decision contract.
 
-Readers accept only version 3 and reject a report whose version or shape differs.
-Version 1 and 2 artifacts must be regenerated with the current measurement script;
+Version 4 moves the former `target` object to target-id-keyed `targets`, adds
+`target_id` to every record, moves the former counts tree to `counts.overall`, and
+adds the same complete tree for each target under `counts.by_target`. Readers
+accept only version 4 and reject a report whose version or shape differs. Version
+1, 2, and 3 artifacts must be regenerated with the current measurement script;
 there is no silent fallback or dual-shape parsing.
 
+Each v4 target metadata object records the prepared app image ID and the resolved
+digest-pinned auxiliary `service_images` map. The runner compares that map with
+the declaration before starting Compose, so the report identifies every image
+that participated in the measurement.
+
 <!-- third-party-measurement:start -->
-| Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |
-| --- | --- | --- | --- | --- | --- | --- | ---: | --- |
-| sqli.boolean | dsvw-blind-boolean-id | confirmation | positive | inconclusive | boolean_candidate | matched | 18 | tp |
-| sqli.boolean | dsvw-blind-boolean-id | six_probe | positive | inconclusive | boolean_candidate | not_configured | 6 | tp |
-| sqli.error | dsvw-error-id | error_probe | positive | inconclusive | dbms_error_disclosed | matched | 4 | candidate |
-| sqli.error | dsvw-error-version-query | error_probe | negative | not_detected | dbms_error_not_observed | not_matched | 4 | tn |
-| sqli.time | dsvw-time-id | nine_probe | positive | inconclusive | timing_pattern_matched | candidate | 9 | tp |
-| sqli.time | dsvw-time-version-query | nine_probe | negative | not_detected | timing_pattern_not_matched | not_confirmed | 9 | tn |
-| sqli.boolean | dsvw-version-query | confirmation | negative | inconclusive | unexpected_difference | not_eligible | 6 | non_decision |
-| sqli.boolean | dsvw-version-query | six_probe | negative | inconclusive | unexpected_difference | not_configured | 6 | non_decision |
+| Target | Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |
+| --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- |
+| dsvw | sqli.boolean | dsvw-blind-boolean-id | confirmation | positive | inconclusive | boolean_candidate | matched | 18 | tp |
+| dsvw | sqli.boolean | dsvw-blind-boolean-id | six_probe | positive | inconclusive | boolean_candidate | not_configured | 6 | tp |
+| dsvw | sqli.error | dsvw-error-id | error_probe | positive | inconclusive | dbms_error_disclosed | matched | 4 | candidate |
+| dsvw | sqli.error | dsvw-error-version-query | error_probe | negative | not_detected | dbms_error_not_observed | not_matched | 4 | tn |
+| dsvw | sqli.time | dsvw-time-id | nine_probe | positive | inconclusive | timing_pattern_matched | candidate | 9 | tp |
+| dsvw | sqli.time | dsvw-time-version-query | nine_probe | negative | not_detected | timing_pattern_not_matched | not_confirmed | 9 | tn |
+| dsvw | sqli.boolean | dsvw-version-query | confirmation | negative | inconclusive | unexpected_difference | not_eligible | 6 | non_decision |
+| dsvw | sqli.boolean | dsvw-version-query | six_probe | negative | inconclusive | unexpected_difference | not_configured | 6 | non_decision |
 
 | Check type | Mode | Candidate | TP | TN | FP | FN | Non-decision |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |

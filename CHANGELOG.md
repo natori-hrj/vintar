@@ -4,6 +4,9 @@
 
 **Changed**
 
+- Generalize the manual third-party SQLi evaluation harness to declaration
+  version 2 and report version 4, with target-bound provenance and both overall
+  and per-target aggregates. DSVW remains the only target in this phase.
 - Classify `sqli.time` candidates by their relation to stable Baseline and Control
   responses. Delayed-sample variance no longer blocks a clearly separated
   candidate, but it still prevents a `NOT_DETECTED` verdict when the candidate
