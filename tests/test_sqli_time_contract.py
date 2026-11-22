@@ -19,6 +19,10 @@ from vintar.checks.sqli.time_contract import (
     TIME_RESULT_RULES,
     time_product_result,
 )
+from vintar.checks.sqli.time_runner import TimeRunReport
+from vintar.regression.batch import RegressionBatchResult
+from vintar.regression.report import CIExitCode, batch_exit_code
+from vintar.regression.runner import RegressionStatus, TimeRegressionOutcome
 
 
 def _analyses_by_reason():
@@ -81,6 +85,40 @@ def test_every_timing_reason_maps_to_its_product_verdict():
     assert time_product_result(analyses["timing_pattern_not_matched"]).verdict is (
         Verdict.NOT_DETECTED
     )
+
+
+def test_variable_delay_without_separation_fails_closed_through_product_exit():
+    analysis = run_analysis(
+        baseline=(0.10, 0.10, 0.10),
+        control=(0.10, 0.10, 0.10),
+        delay=(0.10, 0.10, 2.00),
+    )
+    product = time_product_result(analysis)
+    time_run = TimeRunReport(
+        analysis=analysis,
+        budget_used=9,
+        transport_attempts=9,
+        total_elapsed_seconds=2.6,
+        deadline_exceeded=False,
+    )
+    outcome = TimeRegressionOutcome(
+        case_id="variable-delay",
+        expected_verdict=Verdict.NOT_DETECTED,
+        time_run=time_run,
+        expectation_match=False,
+        status=RegressionStatus.INCONCLUSIVE,
+    )
+    batch = RegressionBatchResult(
+        planned_case_ids=(outcome.case_id,),
+        outcomes=(outcome,),
+        status=RegressionStatus.INCONCLUSIVE,
+        requests_used=9,
+    )
+
+    assert product.verdict is Verdict.INCONCLUSIVE
+    assert product.reason_code == "unstable_timing"
+    assert batch_exit_code(batch) is CIExitCode.INCONCLUSIVE
+    assert int(batch_exit_code(batch)) == 3
 
 
 def test_timing_reason_registry_matches_analyzer_reasons():

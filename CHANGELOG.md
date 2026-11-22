@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+**Changed**
+
+- Classify `sqli.time` candidates by their relation to stable Baseline and Control
+  responses. Delayed-sample variance no longer blocks a clearly separated
+  candidate, but it still prevents a `NOT_DETECTED` verdict when the candidate
+  relation is absent.
+
 ## [0.4.0] - 2026-11-21
 
 **Added**
