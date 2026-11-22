@@ -472,6 +472,7 @@ def test_candidate_report_is_sorted_and_counts_match_records(measurements, tmp_p
     assert "counts" not in report["known_limitations"]
 
 
+@pytest.mark.doc_drift
 def test_known_limitation_ids_match_evaluation_document():
     documentation = (
         test_sqli_http_e2e.ROOT / "docs" / "sqli-boolean-evaluation.md"

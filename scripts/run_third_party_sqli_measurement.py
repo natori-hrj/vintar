@@ -1331,38 +1331,53 @@ def render_summary(report: dict[str, object]) -> str:
         raise MeasurementError(
             "The measurement report is missing per-target counts. Check the runner before updating documentation."
         )
-    for target_id in sorted(by_target):
-        target_counts = by_target[target_id]
-        if type(target_counts) is not dict:
-            raise MeasurementError(
-                "The measurement report has invalid per-target counts. Check the runner before updating documentation."
-            )
-        lines.extend(
+    lines.extend(
+        (
+            "",
+            "### Cross-target results",
+            "",
             (
-                "",
-                f"| Target {target_id} | Mode | Candidate | TP | TN | FP | FN | Non-decision |",
-                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-            )
+                "Cells list TP/TN/FP/FN/non-decision. Error cells append candidate. "
+                "A dash means the technique does not use TP."
+            ),
+            "",
+            "| Target (DBMS) | Boolean six_probe | Boolean confirmation | Time nine_probe | Error error_probe |",
+            "| --- | --- | --- | --- | --- |",
         )
-        for check_type, modes in (
-            ("sqli.boolean", ("six_probe", "confirmation")),
-            ("sqli.time", ("nine_probe",)),
-            ("sqli.error", ("error_probe",)),
+    )
+    for target_id, target_counts in sorted(by_target.items()):
+        cells = []
+        for check_type, mode in (
+            ("sqli.boolean", "six_probe"),
+            ("sqli.boolean", "confirmation"),
+            ("sqli.time", "nine_probe"),
+            ("sqli.error", "error_probe"),
         ):
-            type_counts = target_counts.get(check_type)
-            if type(type_counts) is not dict:
-                raise MeasurementError(
-                    "The measurement report is missing per-target check counts. Check the runner before updating documentation."
-                )
-            for mode in modes:
-                values = type_counts.get(mode)
-                if type(values) is not dict:
-                    raise MeasurementError(
-                        "The measurement report is missing per-target mode counts. Check the runner before updating documentation."
-                    )
-                lines.append(
-                    f"| {check_type} | {mode} | {values.get('candidate', '-')} | {values.get('tp', '-')} | {values.get('tn')} | {values.get('fp')} | {values.get('fn')} | {values.get('non_decision')} |"
-                )
+            values = target_counts[check_type][mode]
+            fields = ("tp", "tn", "fp", "fn", "non_decision")
+            if check_type == "sqli.error":
+                fields += ("candidate",)
+            cells.append("/".join(str(values.get(field, "—")) for field in fields))
+        dbms = report["targets"][target_id]["dbms"]
+        lines.append(f"| {target_id} ({dbms}) | " + " | ".join(cells) + " |")
+    lines.extend(("", "### Known non-decisions", ""))
+    non_decisions = sorted(
+        (
+            row["target_id"],
+            row["endpoint_id"],
+            row["check_type"],
+            row["mode"],
+            row["reason_code"],
+        )
+        for row in records
+        if row["classification"] == "non_decision"
+    )
+    lines.extend(
+        f"- `{target_id}` / `{endpoint_id}` / `{check_type}` / `{mode}`: `{reason}`."
+        for target_id, endpoint_id, check_type, mode, reason in non_decisions
+    )
+    if not non_decisions:
+        lines.append("None recorded.")
     lines.append(SUMMARY_END)
     return "\n".join(lines)
 

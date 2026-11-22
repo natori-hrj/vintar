@@ -40,7 +40,7 @@ CASE_PATH = "security/cases/a-case.toml"
 ORIGIN_VARIABLES = {"VINTAR_TARGET_ORIGIN", "VINTAR_ALLOWED_ORIGIN"}
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def readme_blocks():
     source = README.read_text(encoding="utf-8")
     markers = re.finditer(r"^<!-- cli-example: ([^\n]+) -->$", source, re.MULTILINE)
@@ -97,6 +97,7 @@ def read_command(example, command):
 
 
 @pytest.mark.parametrize("example", EXAMPLES)
+@pytest.mark.doc_drift
 def test_readme_cli_example(example, readme_blocks, tmp_path):
     args, env = read_command(example, readme_blocks[f"{example}/command"])
     if example == "verify-pass":

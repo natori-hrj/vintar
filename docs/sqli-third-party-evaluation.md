@@ -147,26 +147,26 @@ that participated in the measurement.
 | sqli.time | nine_probe | - | 3 | 3 | 0 | 0 | 0 |
 | sqli.error | error_probe | 2 | - | 3 | 0 | 0 | 1 |
 
-| Target dsvw | Mode | Candidate | TP | TN | FP | FN | Non-decision |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| sqli.boolean | six_probe | - | 1 | 0 | 0 | 0 | 1 |
-| sqli.boolean | confirmation | - | 1 | 0 | 0 | 0 | 1 |
-| sqli.time | nine_probe | - | 1 | 1 | 0 | 0 | 0 |
-| sqli.error | error_probe | 1 | - | 1 | 0 | 0 | 0 |
+### Cross-target results
 
-| Target owasp-lab | Mode | Candidate | TP | TN | FP | FN | Non-decision |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| sqli.boolean | six_probe | - | 0 | 0 | 0 | 0 | 2 |
-| sqli.boolean | confirmation | - | 0 | 0 | 0 | 0 | 2 |
-| sqli.time | nine_probe | - | 1 | 1 | 0 | 0 | 0 |
-| sqli.error | error_probe | 0 | - | 1 | 0 | 0 | 1 |
+Cells list TP/TN/FP/FN/non-decision. Error cells append candidate. A dash means the technique does not use TP.
 
-| Target sqli-dojo | Mode | Candidate | TP | TN | FP | FN | Non-decision |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| sqli.boolean | six_probe | - | 1 | 1 | 0 | 0 | 0 |
-| sqli.boolean | confirmation | - | 0 | 1 | 0 | 0 | 1 |
-| sqli.time | nine_probe | - | 1 | 1 | 0 | 0 | 0 |
-| sqli.error | error_probe | 1 | - | 1 | 0 | 0 | 0 |
+| Target (DBMS) | Boolean six_probe | Boolean confirmation | Time nine_probe | Error error_probe |
+| --- | --- | --- | --- | --- |
+| dsvw (sqlite) | 1/0/0/0/1 | 1/0/0/0/1 | 1/1/0/0/0 | —/1/0/0/0/1 |
+| owasp-lab (postgresql) | 0/0/0/0/2 | 0/0/0/0/2 | 1/1/0/0/0 | —/1/0/0/1/0 |
+| sqli-dojo (mysql) | 1/1/0/0/0 | 0/1/0/0/1 | 1/1/0/0/0 | —/1/0/0/0/1 |
+
+### Known non-decisions
+
+- `dsvw` / `dsvw-version-query` / `sqli.boolean` / `confirmation`: `unexpected_difference`.
+- `dsvw` / `dsvw-version-query` / `sqli.boolean` / `six_probe`: `unexpected_difference`.
+- `owasp-lab` / `owasp-lab-boolean-greet` / `sqli.boolean` / `confirmation`: `unexpected_difference`.
+- `owasp-lab` / `owasp-lab-boolean-greet` / `sqli.boolean` / `six_probe`: `unexpected_difference`.
+- `owasp-lab` / `owasp-lab-boolean-search` / `sqli.boolean` / `confirmation`: `unexpected_difference`.
+- `owasp-lab` / `owasp-lab-boolean-search` / `sqli.boolean` / `six_probe`: `unexpected_difference`.
+- `owasp-lab` / `owasp-lab-error-search` / `sqli.error` / `error_probe`: `non_success_status`.
+- `sqli-dojo` / `sqli-dojo-boolean-id` / `sqli.boolean` / `confirmation`: `candidate_confirmation_mismatch`.
 <!-- third-party-measurement:end -->
 
 This Time run was measured on an AMD Ryzen AI 5 PRO 340 (12 logical CPUs) with
