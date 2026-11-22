@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+**Added**
+
+- Extend the pinned-source third-party SQLi evaluation with the independent
+  MySQL 8-backed sqli-dojo-docker target, including reviewed positive and
+  non-SQL negative records for Boolean, Time, and Error checks.
+
 **Changed**
 
 - Generalize the manual third-party SQLi evaluation harness to declaration

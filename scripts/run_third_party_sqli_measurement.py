@@ -1,6 +1,7 @@
 """Run reviewed third-party SQLi OpenAPI-to-verify measurements locally."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from typing import NamedTuple
 from third_party_sqli_contract import (
     ServiceImageMismatch,
     is_image_digest,
+    is_sha256,
     pinned_image_digest,
     validate_service_image_mapping,
 )
@@ -70,6 +72,7 @@ class TargetAdapter(NamedTuple):
     service_port: int
     image_environment: str
     parameter_names: tuple[str, ...]
+    startup_timeout_seconds: int
 
 
 _TARGET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
@@ -501,18 +504,37 @@ def load_declarations() -> tuple[dict[str, dict[str, object]], list[dict[str, ob
             "configs_path",
             "service_name",
             "image_environment",
+            "operation_path",
         ):
             required_text(target, field, f"target {target_id!r}")
+        if not required_text(
+            target, "operation_path", f"target {target_id!r}"
+        ).startswith("/"):
+            raise MeasurementError(
+                f"Target {target_id!r} has an invalid operation_path. Supply the reviewed absolute OpenAPI path beginning with '/'."
+            )
         for key in ("compose_path", "spec_path", "configs_path"):
             path = _relative_path(target_id, target, key)
             if not path.exists():
                 raise MeasurementError(
                     f"Target {target_id!r} {key} does not exist. Restore the reviewed target asset before measuring."
                 )
+        dockerfile = target.get("dockerfile_path")
+        if dockerfile is not None:
+            path = _relative_path(target_id, target, "dockerfile_path")
+            if not path.is_file():
+                raise MeasurementError(
+                    f"Target {target_id!r} dockerfile_path does not exist. Restore the reviewed build recipe before measuring."
+                )
         service_port = target.get("service_port")
         if type(service_port) is not int or not 1 <= service_port <= 65535:
             raise MeasurementError(
                 f"Target {target_id!r} has an invalid service_port. Supply the reviewed integer port from 1 through 65535."
+            )
+        startup_timeout = target.get("startup_timeout_seconds")
+        if type(startup_timeout) is not int or not 1 <= startup_timeout <= 300:
+            raise MeasurementError(
+                f"Target {target_id!r} has an invalid startup_timeout_seconds. Supply one bounded integer from 1 through 300."
             )
         names = target.get("parameter_names")
         if (
@@ -577,9 +599,15 @@ def load_declarations() -> tuple[dict[str, dict[str, object]], list[dict[str, ob
 def target_adapter(target_id: str, target: dict[str, object]) -> TargetAdapter:
     """Resolve one validated declaration into runtime paths and names."""
     names = target["parameter_names"]
-    if type(names) is not list:
+    service_port = target.get("service_port")
+    startup_timeout = target.get("startup_timeout_seconds")
+    if (
+        type(names) is not list
+        or type(service_port) is not int
+        or type(startup_timeout) is not int
+    ):
         raise MeasurementError(
-            f"Target {target_id!r} lost its parameter names. Reload the validated declarations."
+            f"Target {target_id!r} lost its runtime settings. Reload the validated declarations."
         )
     return TargetAdapter(
         target_id,
@@ -588,9 +616,10 @@ def target_adapter(target_id: str, target: dict[str, object]) -> TargetAdapter:
         _relative_path(target_id, target, "spec_path"),
         _relative_path(target_id, target, "configs_path"),
         required_text(target, "service_name", f"target {target_id!r}"),
-        target["service_port"],
+        service_port,
         required_text(target, "image_environment", f"target {target_id!r}"),
         tuple(names),
+        startup_timeout,
     )
 
 
@@ -636,6 +665,30 @@ def validate_provenance(
         raise MeasurementError(
             f"Prepared {target_id} archive evidence does not match targets.toml. Rerun preparation with the reviewed archive."
         )
+    dockerfile = target.get("dockerfile_path")
+    recipe = state.get("build_recipe")
+    if dockerfile is None:
+        if "build_recipe" in state:
+            raise MeasurementError(
+                f"Prepared build recipe metadata exists for target {target_id!r}, but the target has no dockerfile_path. Rerun scripts/prepare_third_party_sqli.py for that target so prepared provenance matches its build inputs."
+            )
+    else:
+        if (
+            type(dockerfile) is not str
+            or type(recipe) is not dict
+            or recipe.keys() != {"path", "sha256"}
+            or recipe.get("path") != dockerfile
+            or not is_sha256(recipe.get("sha256"))
+        ):
+            raise MeasurementError(
+                f"Prepared build recipe metadata for target {target_id!r} is missing or invalid. The recipe may have changed since prepare and the image may be stale; rerun scripts/prepare_third_party_sqli.py for that target."
+            )
+        recipe_path = _relative_path(target_id, target, "dockerfile_path")
+        current_sha256 = hashlib.sha256(recipe_path.read_bytes()).hexdigest()
+        if current_sha256 != recipe["sha256"]:
+            raise MeasurementError(
+                f"The build recipe for target {target_id!r} changed since prepare, so the prepared image may be stale. Rerun scripts/prepare_third_party_sqli.py for that target before measurement."
+            )
     image_tag = required_text(state, "image_tag", "prepared target metadata")
     image_id = required_text(state, "image_id", "prepared target metadata")
     if not is_image_digest(image_id):
@@ -880,8 +933,16 @@ def start_target(
         target,
         image_tag,
         project,
-        ["up", "--detach", "--wait", "--wait-timeout", "30", "--pull", "never"],
-        timeout=60,
+        [
+            "up",
+            "--detach",
+            "--wait",
+            "--wait-timeout",
+            str(target.startup_timeout_seconds),
+            "--pull",
+            "never",
+        ],
+        timeout=target.startup_timeout_seconds + 30,
         diagnostic=(
             f"The pinned {target.target_id} container did not become healthy. Check Docker, loopback publishing, and the prepared image instead of retrying the measurement."
         ),
@@ -1021,8 +1082,14 @@ def run_pipeline_case(
     parameter_answers: dict[str, object] = {
         name: {"omit": True} for name in planned.target.parameter_names
     }
+    operation_path = required_text(
+        planned.target.declaration,
+        "operation_path",
+        f"target {target_id!r}",
+    )
+    pointer_path = operation_path.replace("~", "~0").replace("/", "~1")
     parameter_answers[parameter] = {
-        "pointer": f"/paths/~1/get/parameters/{selected_index}/schema/example"
+        "pointer": f"/paths/{pointer_path}/get/parameters/{selected_index}/schema/example"
     }
     answers = folder / "answers.json"
     answers.write_text(
@@ -1232,6 +1299,43 @@ def render_summary(report: dict[str, object]) -> str:
             lines.append(
                 f"| {check_type} | {mode} | {values.get('candidate', '-')} | {values.get('tp', '-')} | {values.get('tn')} | {values.get('fp')} | {values.get('fn')} | {values.get('non_decision')} |"
             )
+    by_target = count_trees.get("by_target")
+    if type(by_target) is not dict:
+        raise MeasurementError(
+            "The measurement report is missing per-target counts. Check the runner before updating documentation."
+        )
+    for target_id in sorted(by_target):
+        target_counts = by_target[target_id]
+        if type(target_counts) is not dict:
+            raise MeasurementError(
+                "The measurement report has invalid per-target counts. Check the runner before updating documentation."
+            )
+        lines.extend(
+            (
+                "",
+                f"| Target {target_id} | Mode | Candidate | TP | TN | FP | FN | Non-decision |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            )
+        )
+        for check_type, modes in (
+            ("sqli.boolean", ("six_probe", "confirmation")),
+            ("sqli.time", ("nine_probe",)),
+            ("sqli.error", ("error_probe",)),
+        ):
+            type_counts = target_counts.get(check_type)
+            if type(type_counts) is not dict:
+                raise MeasurementError(
+                    "The measurement report is missing per-target check counts. Check the runner before updating documentation."
+                )
+            for mode in modes:
+                values = type_counts.get(mode)
+                if type(values) is not dict:
+                    raise MeasurementError(
+                        "The measurement report is missing per-target mode counts. Check the runner before updating documentation."
+                    )
+                lines.append(
+                    f"| {check_type} | {mode} | {values.get('candidate', '-')} | {values.get('tp', '-')} | {values.get('tn')} | {values.get('fp')} | {values.get('fn')} | {values.get('non_decision')} |"
+                )
     lines.append(SUMMARY_END)
     return "\n".join(lines)
 

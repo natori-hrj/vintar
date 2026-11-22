@@ -16,8 +16,32 @@ service_name = "dsvw"
 service_port = 65412
 image_environment = "DSVW_IMAGE"
 parameter_names = ["id", "v"]
+operation_path = "/"
 service_images = []
 fresh_volumes = []
+startup_timeout_seconds = 30
+
+[[targets]]
+id = "sqli-dojo"
+name = "sqli-dojo-docker"
+repository = "https://github.com/h1pmnh/sqli-dojo-docker"
+license = "GPL-3.0"
+dbms = "mysql"
+commit = "81f20037de323376d8a7651377e3a3971efdbae8"
+archive_url = "https://github.com/h1pmnh/sqli-dojo-docker/archive/81f20037de323376d8a7651377e3a3971efdbae8.tar.gz"
+archive_sha256 = "6c0218fef749fddec28560af883865eb4178ed998d5cc927a5e3592add50b88f"
+compose_path = "sqli-dojo/compose.yaml"
+spec_path = "sqli-dojo/openapi.json"
+configs_path = "sqli-dojo/configs"
+dockerfile_path = "sqli-dojo/Dockerfile"
+service_name = "dojo"
+service_port = 80
+image_environment = "SQLI_DOJO_IMAGE"
+parameter_names = ["id", "source"]
+operation_path = "/lookup_person.php"
+service_images = ["mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"]
+fresh_volumes = ["mysql-data"]
+startup_timeout_seconds = 120
 
 [[records]]
 target_id = "dsvw"
@@ -108,3 +132,93 @@ source_start_line = 24
 source_end_line = 25
 source_fragment_sha256 = "8681e2b82b67d8f252482fee5088985a1b722069c02591c33a2154356b0b365d"
 reviewer_note = "The reviewed upstream handler reflects v without using a SQL sink. This is weaker evidence than a parameterized-safe endpoint; the label and explicit payload were fixed before Vintar measurement."
+
+[[records]]
+target_id = "sqli-dojo"
+id = "sqli-dojo-boolean-id"
+check_type = "sqli.boolean"
+input_id = "input-cd830e9d6b74c85da764108226a46c4e"
+parameter = "id"
+initial_value = "2"
+label = "positive"
+evidence_type = "non_parameterized_sql_sink"
+source_path = "src/lookup_person.php"
+source_start_line = 4
+source_end_line = 18
+source_fragment_sha256 = "0557f6f873def725185063e4775a4158f8249855ab11f8e2755d24302761aceb"
+reviewer_note = "The reviewed upstream handler concatenates the id query value into a MySQL statement; the label is independent of Vintar output."
+
+[[records]]
+target_id = "sqli-dojo"
+id = "sqli-dojo-boolean-source"
+check_type = "sqli.boolean"
+input_id = "input-ad87295e6521cda804be52b80e0ee734"
+parameter = "source"
+initial_value = "1"
+label = "negative"
+evidence_type = "parameter_does_not_reach_sql_sink"
+source_path = "src/common/view_source.php"
+source_start_line = 1
+source_end_line = 31
+source_fragment_sha256 = "be2be6bf067658a8572f0449f412de911afb0e0379ff2cd43ec0d1f3f9980d3e"
+reviewer_note = "The reviewed upstream source parameter selects the source-view response and terminates before the page reaches its SQL sink."
+
+[[records]]
+target_id = "sqli-dojo"
+id = "sqli-dojo-time-id"
+check_type = "sqli.time"
+input_id = "input-cd830e9d6b74c85da764108226a46c4e"
+parameter = "id"
+initial_value = "2"
+label = "positive"
+evidence_type = "non_parameterized_sql_sink"
+source_path = "src/lookup_person.php"
+source_start_line = 4
+source_end_line = 18
+source_fragment_sha256 = "0557f6f873def725185063e4775a4158f8249855ab11f8e2755d24302761aceb"
+reviewer_note = "The reviewed upstream handler concatenates id into MySQL; the explicit SLEEP payload and threshold were fixed before measurement."
+
+[[records]]
+target_id = "sqli-dojo"
+id = "sqli-dojo-time-source"
+check_type = "sqli.time"
+input_id = "input-ad87295e6521cda804be52b80e0ee734"
+parameter = "source"
+initial_value = "1"
+label = "negative"
+evidence_type = "parameter_does_not_reach_sql_sink"
+source_path = "src/common/view_source.php"
+source_start_line = 1
+source_end_line = 31
+source_fragment_sha256 = "be2be6bf067658a8572f0449f412de911afb0e0379ff2cd43ec0d1f3f9980d3e"
+reviewer_note = "The reviewed source parameter terminates before SQL; it uses the same fixed Time payloads as the positive."
+
+[[records]]
+target_id = "sqli-dojo"
+id = "sqli-dojo-error-id"
+check_type = "sqli.error"
+input_id = "input-cd830e9d6b74c85da764108226a46c4e"
+parameter = "id"
+initial_value = "2"
+label = "positive"
+evidence_type = "non_parameterized_sql_sink_with_exposed_exception"
+source_path = "src/lookup_person.php"
+source_start_line = 4
+source_end_line = 18
+source_fragment_sha256 = "0557f6f873def725185063e4775a4158f8249855ab11f8e2755d24302761aceb"
+reviewer_note = "The reviewed handler concatenates id into MySQL and routes query exceptions into the HTTP response; the explicit payload was fixed before measurement."
+
+[[records]]
+target_id = "sqli-dojo"
+id = "sqli-dojo-error-source"
+check_type = "sqli.error"
+input_id = "input-ad87295e6521cda804be52b80e0ee734"
+parameter = "source"
+initial_value = "1"
+label = "negative"
+evidence_type = "parameter_does_not_reach_sql_sink"
+source_path = "src/common/view_source.php"
+source_start_line = 1
+source_end_line = 31
+source_fragment_sha256 = "be2be6bf067658a8572f0449f412de911afb0e0379ff2cd43ec0d1f3f9980d3e"
+reviewer_note = "The reviewed source parameter terminates before SQL and uses the same fixed Error payload as the positive."

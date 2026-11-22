@@ -15,6 +15,7 @@ from pathlib import Path
 
 from third_party_sqli_contract import (
     is_image_digest,
+    is_sha256,
     pinned_image_digest,
 )
 
@@ -131,6 +132,22 @@ def target_text(target: dict[str, object], key: str) -> str:
             f"The reviewed target has an invalid {key}. Supply a nonempty value in targets.toml."
         )
     return value
+
+
+def target_asset(target_id: str, target: dict[str, object], key: str) -> Path:
+    """Resolve one reviewed repository-owned target asset."""
+    value = target_text(target, key)
+    third_party = ROOT / "third_party" / "sqli"
+    candidate = (third_party / value).resolve()
+    if candidate == third_party or third_party not in candidate.parents:
+        raise PreparationError(
+            f"Target {target_id!r} has an invalid {key}. Use a relative path inside third_party/sqli instead."
+        )
+    if not candidate.is_file():
+        raise PreparationError(
+            f"Target {target_id!r} {key} is missing. Restore the reviewed build recipe before preparation."
+        )
+    return candidate
 
 
 def download_archive(url: str, destination: Path, target_id: str) -> None:
@@ -305,6 +322,17 @@ def prepare_target(
         )
 
     image_tag = f"vintar-third-party-{target_id}:{commit[:12]}"
+    service_images = target.get("service_images")
+    if type(service_images) is not list:
+        raise PreparationError(
+            f"Target {target_id!r} lost its reviewed service images. Reload targets.toml before preparation."
+        )
+    for service_image in service_images:
+        if type(service_image) is not str:
+            raise PreparationError(
+                f"Target {target_id!r} has an invalid service image. Use a digest-pinned image reference."
+            )
+        run_docker(["pull", service_image], target_id)
     with tempfile.TemporaryDirectory(
         prefix=f".{target_id}-verified-source-", dir=workspace
     ) as temporary_source:
@@ -313,21 +341,28 @@ def prepare_target(
         source_evidence = dict(
             source_fragment_evidence(source_root, record) for record in records
         )
-        run_docker(
-            [
-                "build",
-                "--pull=false",
-                "--tag",
-                image_tag,
-                str(source_root),
-            ],
-            target_id,
-        )
+        build_arguments = ["build", "--pull=false", "--tag", image_tag]
+        dockerfile = target.get("dockerfile_path")
+        recipe: dict[str, str] | None = None
+        if dockerfile is not None:
+            recipe_path = target_asset(target_id, target, "dockerfile_path")
+            recipe_bytes = recipe_path.read_bytes()
+            recipe_sha256 = hashlib.sha256(recipe_bytes).hexdigest()
+            if type(dockerfile) is not str or not is_sha256(recipe_sha256):
+                raise PreparationError(
+                    f"Target {target_id!r} build recipe identity is invalid. Restore the reviewed Dockerfile and rerun preparation."
+                )
+            recipe = {"path": dockerfile, "sha256": recipe_sha256}
+            recipe_snapshot = Path(temporary_source) / "vintar-build-recipe.Dockerfile"
+            recipe_snapshot.write_bytes(recipe_bytes)
+            build_arguments.extend(["--file", str(recipe_snapshot)])
+        build_arguments.append(str(source_root))
+        run_docker(build_arguments, target_id)
     image_id = run_docker(
         ["image", "inspect", "--format", "{{.Id}}", image_tag], target_id
     )
     image_id = validate_prepared_image_id(image_id, target_id)
-    return {
+    prepared = {
         "archive_sha256": observed_archive_digest,
         "commit": commit,
         "image_id": image_id,
@@ -335,6 +370,9 @@ def prepare_target(
         "source_evidence": source_evidence,
         "source_manifest_sha256": manifest_digest,
     }
+    if recipe is not None:
+        prepared["build_recipe"] = recipe
+    return prepared
 
 
 def prepare(workspace: Path) -> Path:
