@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import re
+import sys
 import tarfile
 import tomllib
 from pathlib import Path
@@ -26,10 +27,20 @@ TARGETS = THIRD_PARTY / "targets.toml"
 CONFIGS = THIRD_PARTY / "dsvw" / "configs"
 RUNNER = ROOT / "scripts" / "run_third_party_sqli_measurement.py"
 PREPARER = ROOT / "scripts" / "prepare_third_party_sqli.py"
+IMAGE_CONTRACT = ROOT / "scripts" / "third_party_sqli_contract.py"
 
 
 def load_script(path: Path, name: str) -> ModuleType:
     """Load a standalone script without executing its command-line entry point."""
+    if path in {RUNNER, PREPARER} and "third_party_sqli_contract" not in sys.modules:
+        contract_specification = importlib.util.spec_from_file_location(
+            "third_party_sqli_contract", IMAGE_CONTRACT
+        )
+        assert contract_specification is not None
+        assert contract_specification.loader is not None
+        contract = importlib.util.module_from_spec(contract_specification)
+        sys.modules["third_party_sqli_contract"] = contract
+        contract_specification.loader.exec_module(contract)
     specification = importlib.util.spec_from_file_location(name, path)
     assert specification is not None
     assert specification.loader is not None
@@ -245,10 +256,11 @@ def expected_report() -> dict[str, object]:
                 "archive_sha256": "96690f62ac0fba8a4f0aeac22f2370853bc02b96fb3efd1b8fc3a39398bf302b",
                 "commit": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
                 "dbms": "sqlite",
-                "image_ids": {"app": "sha256:image"},
+                "image_ids": {"app": "sha256:" + "a" * 64},
                 "license": "Unlicense",
                 "name": "DSVW",
                 "repository": "https://github.com/stamparm/DSVW",
+                "service_images": {},
                 "source_manifest_sha256": "b" * 64,
             },
         },
@@ -1111,6 +1123,127 @@ def test_compose_is_internal_loopback_only_and_never_pulls():
     assert "0.0.0.0" not in compose
 
 
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("sha256:", False),
+        ("sha256:" + "a" * 63, False),
+        ("sha256:" + "A" * 64, False),
+        ("sha256:" + "g" * 64, False),
+        ("sha512:" + "a" * 64, False),
+        ("sha256:" + "a" * 64, True),
+    ],
+)
+def test_image_digest_contract_is_exact(value, valid):
+    runner = load_runner()
+    assert runner.is_image_digest(value) is valid
+
+
+@pytest.mark.parametrize(
+    "bad_image_id",
+    [
+        "sha256:",
+        "sha256:" + "a" * 8,
+        "sha256:" + "A" * 64,
+        "sha256:" + "g" * 64,
+        "digest:" + "a" * 64,
+    ],
+)
+def test_prepare_rejects_unidentifiable_local_image_id(bad_image_id):
+    preparer = load_preparer()
+    with pytest.raises(
+        preparer.PreparationError,
+        match=r"cannot be identified.*Rerun prepare",
+    ):
+        preparer.validate_prepared_image_id(bad_image_id, "dsvw")
+
+
+def _target_with_service_images(runner, service_images):
+    targets, _ = runner.load_declarations()
+    declaration = {**targets["dsvw"], "service_images": service_images}
+    return runner.target_adapter("dsvw", declaration)
+
+
+@pytest.mark.parametrize(
+    ("declared", "resolved", "message"),
+    [
+        (
+            [],
+            {
+                "dsvw": {"image": "app:prepared"},
+                "db": {"image": "db@sha256:" + "a" * 64},
+            },
+            r"service 'db'.*declared '<not declared>'.*resolved 'db@sha256:",
+        ),
+        (
+            ["db@sha256:" + "b" * 64],
+            {
+                "dsvw": {"image": "app:prepared"},
+                "db": {"image": "db@sha256:" + "a" * 64},
+            },
+            r"service 'db'.*declared 'db@sha256:b+.*resolved 'db@sha256:a+",
+        ),
+        (
+            ["db@sha256:" + "a" * 64],
+            {"dsvw": {"image": "app:prepared"}},
+            r"service '<unused>'.*declared 'db@sha256:a+.*resolved '<not used>'",
+        ),
+    ],
+)
+def test_resolved_compose_images_must_exactly_match_declaration(
+    declared, resolved, message
+):
+    runner = load_runner()
+    target = _target_with_service_images(runner, declared)
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=message + r".*Update targets.toml or the Compose file",
+    ):
+        runner.validate_resolved_service_images(
+            target, "app:prepared", {"services": resolved}
+        )
+
+
+def test_matching_resolved_compose_images_are_recorded():
+    runner = load_runner()
+    database = "db@sha256:" + "a" * 64
+    target = _target_with_service_images(runner, [database])
+
+    assert runner.validate_resolved_service_images(
+        target,
+        "app:prepared",
+        {
+            "services": {
+                "dsvw": {"image": "app:prepared"},
+                "db": {"image": database},
+            }
+        },
+    ) == {"db": database}
+
+
+@pytest.mark.parametrize(
+    "bad_image_id",
+    [
+        "sha256:",
+        "sha256:" + "a" * 8,
+        "sha256:" + "A" * 64,
+        "sha256:" + "g" * 64,
+        "digest:" + "a" * 64,
+    ],
+)
+def test_report_rejects_bad_app_image_ids(bad_image_id):
+    runner = load_runner()
+    report = expected_report()
+    report["targets"]["dsvw"]["image_ids"]["app"] = bad_image_id
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"cannot be identified.*Rerun prepare",
+    ):
+        runner.validate_measurement_report(report)
+
+
 def test_prepare_ignores_modified_stale_extraction(tmp_path, monkeypatch):
     preparer = load_preparer()
     commit = "0123456789abcdef0123456789abcdef01234567"
@@ -1156,7 +1289,7 @@ def test_prepare_ignores_modified_stale_extraction(tmp_path, monkeypatch):
             )
             observed["manifest"] = preparer.source_manifest_sha256(context)
             return ""
-        return "sha256:prepared-image"
+        return "sha256:" + "a" * 64
 
     monkeypatch.setattr(preparer, "run_docker", fake_docker)
     state_path = preparer.prepare(workspace)
@@ -1217,7 +1350,7 @@ def prepared_provenance():
     state = {
         "archive_sha256": "archive",
         "commit": "commit",
-        "image_id": "sha256:image",
+        "image_id": "sha256:" + "a" * 64,
         "image_tag": "image:tag",
         "schema_version": 1,
         "source_evidence": {
@@ -1266,13 +1399,13 @@ def test_unchanged_source_reference_passes_before_docker(monkeypatch):
 
     def fake_run(command, **kwargs):
         docker_calls.append(command)
-        return SimpleNamespace(stdout="sha256:image\n")
+        return SimpleNamespace(stdout="sha256:" + "a" * 64 + "\n")
 
     monkeypatch.setattr(runner, "run_command", fake_run)
 
     assert runner.validate_provenance(state, target, [record]) == (
         "image:tag",
-        "sha256:image",
+        "sha256:" + "a" * 64,
     )
     assert docker_calls == [
         ["docker", "image", "inspect", "--format", "{{.Id}}", "image:tag"]

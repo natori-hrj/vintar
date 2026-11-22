@@ -13,11 +13,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from third_party_sqli_contract import (
+    is_image_digest,
+    pinned_image_digest,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 DECLARATIONS = ROOT / "third_party" / "sqli" / "targets.toml"
 STATE_NAME = "prepared-targets.json"
 _TARGET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
-_PINNED_IMAGE = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
 
 
 class PreparationError(RuntimeError):
@@ -65,8 +69,7 @@ def load_declarations() -> tuple[list[dict[str, object]], list[dict[str, object]
             )
         images = target.get("service_images")
         if type(images) is not list or any(
-            type(image) is not str or _PINNED_IMAGE.fullmatch(image) is None
-            for image in images
+            pinned_image_digest(image) is None for image in images
         ):
             raise PreparationError(
                 f"Target {target_id!r} has an unpinned service image. Use image@sha256:<64 lowercase hex characters> instead of a mutable tag."
@@ -263,6 +266,15 @@ def run_docker(arguments: list[str], target_id: str) -> str:
     return completed.stdout.strip()
 
 
+def validate_prepared_image_id(image_id: object, target_id: str) -> str:
+    """Require a content-addressed local image before recording state."""
+    if not is_image_digest(image_id):
+        raise PreparationError(
+            f"Docker did not return a valid SHA-256 image ID for {target_id}, so the measured image cannot be identified. Rerun prepare after checking the local image store."
+        )
+    return image_id
+
+
 def write_state(path: Path, state: dict[str, object]) -> None:
     """Atomically write nonsensitive preparation metadata."""
     content = (json.dumps(state, indent=2, sort_keys=True) + "\n").encode()
@@ -314,10 +326,7 @@ def prepare_target(
     image_id = run_docker(
         ["image", "inspect", "--format", "{{.Id}}", image_tag], target_id
     )
-    if not image_id.startswith("sha256:"):
-        raise PreparationError(
-            f"Docker did not return a content-addressed {target_id} image ID. Check the local image store before measurement."
-        )
+    image_id = validate_prepared_image_id(image_id, target_id)
     return {
         "archive_sha256": observed_archive_digest,
         "commit": commit,

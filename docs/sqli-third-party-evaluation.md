@@ -78,6 +78,11 @@ accept only version 4 and reject a report whose version or shape differs. Versio
 1, 2, and 3 artifacts must be regenerated with the current measurement script;
 there is no silent fallback or dual-shape parsing.
 
+Each v4 target metadata object records the prepared app image ID and the resolved
+digest-pinned auxiliary `service_images` map. The runner compares that map with
+the declaration before starting Compose, so the report identifies every image
+that participated in the measurement.
+
 <!-- third-party-measurement:start -->
 | Target | Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |
 | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- |

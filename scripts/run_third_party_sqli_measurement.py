@@ -19,6 +19,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
+from third_party_sqli_contract import (
+    is_image_digest,
+    pinned_image_digest,
+)
+
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
 
@@ -66,7 +71,6 @@ class TargetAdapter(NamedTuple):
 
 
 _TARGET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
-_PINNED_IMAGE = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
 
 
 class MeasurementError(RuntimeError):
@@ -185,6 +189,7 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             "license",
             "name",
             "repository",
+            "service_images",
             "source_manifest_sha256",
         }
         if type(value) is not dict or value.keys() != required:
@@ -205,16 +210,26 @@ def validate_measurement_report(report: object) -> dict[str, object]:
                 )
         manifest = value.get("source_manifest_sha256")
         image_ids = value.get("image_ids")
+        service_images = value.get("service_images")
+        declared_images = target.get("service_images")
         if (
             type(manifest) is not str
             or re.fullmatch(r"[0-9a-f]{64}", manifest) is None
             or type(image_ids) is not dict
             or image_ids.keys() != {"app"}
-            or type(image_ids.get("app")) is not str
-            or not image_ids["app"].startswith("sha256:")
+            or not is_image_digest(image_ids.get("app"))
+            or type(service_images) is not dict
+            or any(
+                type(service) is not str
+                or not service
+                or pinned_image_digest(reference) is None
+                for service, reference in service_images.items()
+            )
+            or type(declared_images) is not list
+            or sorted(service_images.values()) != sorted(declared_images)
         ):
             raise MeasurementError(
-                f"Measurement target metadata for {target_id!r} is not content-addressed. Rerun preparation so the manifest and app image ID come from verified provenance."
+                f"Measurement target metadata for {target_id!r} is not content-addressed or its resolved service images differ from the declaration, so the measured images cannot be identified. Rerun prepare and measurement after making targets.toml and Compose agree."
             )
 
     planned = list(plan_measurements(targets, declarations))
@@ -514,8 +529,7 @@ def load_declarations() -> tuple[dict[str, dict[str, object]], list[dict[str, ob
             )
         images = target.get("service_images")
         if type(images) is not list or any(
-            type(image) is not str or _PINNED_IMAGE.fullmatch(image) is None
-            for image in images
+            pinned_image_digest(image) is None for image in images
         ):
             raise MeasurementError(
                 f"Target {target_id!r} has an unpinned service image. Use image@sha256:<64 lowercase hex characters>, not a mutable tag."
@@ -627,6 +641,10 @@ def validate_provenance(
         )
     image_tag = required_text(state, "image_tag", "prepared target metadata")
     image_id = required_text(state, "image_id", "prepared target metadata")
+    if not is_image_digest(image_id):
+        raise MeasurementError(
+            f"Prepared image ID for target {target_id!r} is not exactly sha256 plus 64 lowercase hexadecimal characters, so the measured image cannot be identified. Rerun prepare to regenerate trusted metadata."
+        )
     required_text(state, "source_manifest_sha256", "prepared target metadata")
     source_evidence = state.get("source_evidence")
     if type(source_evidence) is not dict:
@@ -764,6 +782,93 @@ def compose(
     )
 
 
+def validate_resolved_service_images(
+    target: TargetAdapter,
+    image_tag: str,
+    configuration: object,
+) -> dict[str, str]:
+    """Bind every resolved Compose service image to reviewed identity."""
+    if (
+        type(configuration) is not dict
+        or type(configuration.get("services")) is not dict
+    ):
+        raise MeasurementError(
+            f"Resolved Compose configuration for {target.target_id!r} has no service image map. Check the Compose file before starting the target."
+        )
+    services = configuration["services"]
+    resolved: dict[str, str] = {}
+    for service, settings in services.items():
+        if (
+            type(service) is not str
+            or type(settings) is not dict
+            or type(settings.get("image")) is not str
+        ):
+            raise MeasurementError(
+                f"Resolved Compose service identity for target {target.target_id!r} is incomplete. Give every service an explicit image and update targets.toml to match."
+            )
+        resolved[service] = settings["image"]
+    app_image = resolved.get(target.service_name)
+    if app_image != image_tag:
+        raise MeasurementError(
+            f"Compose image mismatch for target {target.target_id!r}, service {target.service_name!r}: declared prepared app image {image_tag!r}, resolved {app_image!r}. Update targets.toml or the Compose file so they agree before starting the target."
+        )
+    declared = target.declaration.get("service_images")
+    if type(declared) is not list:
+        raise MeasurementError(
+            f"Target {target.target_id!r} lost its declared service images. Reload targets.toml before starting the target."
+        )
+    auxiliaries = {
+        service: image
+        for service, image in resolved.items()
+        if service != target.service_name
+    }
+    declared_set = set(declared)
+    for service, image in auxiliaries.items():
+        if image not in declared_set:
+            same_name = next(
+                (
+                    reference
+                    for reference in declared
+                    if type(reference) is str
+                    and reference.partition("@")[0] == image.partition("@")[0]
+                ),
+                "<not declared>",
+            )
+            raise MeasurementError(
+                f"Compose image mismatch for target {target.target_id!r}, service {service!r}: declared {same_name!r}, resolved {image!r}. Update targets.toml or the Compose file so they agree before starting the target."
+            )
+    unused = declared_set - set(auxiliaries.values())
+    if unused:
+        declared_image = min(unused)
+        raise MeasurementError(
+            f"Compose image mismatch for target {target.target_id!r}, service '<unused>': declared {declared_image!r}, resolved '<not used>'. Update targets.toml or the Compose file so they agree before starting the target."
+        )
+    return auxiliaries
+
+
+def resolve_service_images(
+    target: TargetAdapter, image_tag: str, project: str
+) -> dict[str, str]:
+    """Resolve Compose substitutions and validate images before ``up``."""
+    completed = compose(
+        target,
+        image_tag,
+        project,
+        ["config", "--format", "json"],
+        timeout=30,
+        diagnostic=(
+            f"The {target.target_id} Compose configuration could not be resolved. Check the reviewed file and prepared image before starting it."
+        ),
+    )
+    try:
+        configuration = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise MeasurementError(
+            f"The {target.target_id} Compose configuration was not JSON. Check the installed Docker Compose version before starting it."
+        ) from exc
+    return validate_resolved_service_images(target, image_tag, configuration)
+
+
 def new_run_id() -> str:
     """Return a short lowercase identifier unique to one measurement invocation."""
     return uuid.uuid4().hex[:12]
@@ -787,8 +892,11 @@ def compose_project_name(
     return f"vintar-{target_id}-{run_id}-{case_index}-{mode}"
 
 
-def start_target(target: TargetAdapter, image_tag: str, project: str) -> str:
+def start_target(
+    target: TargetAdapter, image_tag: str, project: str
+) -> tuple[str, dict[str, str]]:
     """Start a fresh target and return its private internal-network address."""
+    service_images = resolve_service_images(target, image_tag, project)
     compose(
         target,
         image_tag,
@@ -823,7 +931,7 @@ def start_target(target: TargetAdapter, image_tag: str, project: str) -> str:
         raise MeasurementError(
             f"Docker did not assign {target.target_id} a private container address. Check the internal network instead of weakening target isolation."
         )
-    return address
+    return address, service_images
 
 
 def stop_target(target: TargetAdapter, image_tag: str, project: str) -> None:
@@ -1212,6 +1320,7 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
         )
         prepared[target_id] = (image_tag, image_id, target_state)
     records: list[dict[str, object]] = []
+    resolved_images: dict[str, dict[str, str]] = {}
     run_id = new_run_id()
     run_root = Path(tempfile.mkdtemp(prefix="vintar-third-party-run-", dir=workspace))
     for planned in plan:
@@ -1221,7 +1330,12 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
         case_folder = run_root / project
         case_folder.mkdir()
         try:
-            upstream = start_target(planned.target, image_tag, project)
+            upstream, service_images = start_target(planned.target, image_tag, project)
+            previous_images = resolved_images.setdefault(target_id, service_images)
+            if previous_images != service_images:
+                raise MeasurementError(
+                    f"Resolved service images changed between cases for target {target_id!r}. Stop and make the Compose configuration deterministic before measuring."
+                )
             with loopback_bridge(upstream, planned.target) as origin:
                 records.append(run_pipeline_case(case_folder, origin, planned))
         finally:
@@ -1246,6 +1360,7 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
                 "license": target["license"],
                 "name": target["name"],
                 "repository": target["repository"],
+                "service_images": resolved_images[target_id],
                 "source_manifest_sha256": prepared[target_id][2][
                     "source_manifest_sha256"
                 ],

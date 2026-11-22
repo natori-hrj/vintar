@@ -34,7 +34,11 @@ service identity, reviewed parameter names, pinned auxiliary service images, and
 fresh volume declarations. Each `[[records]]` table binds to it with `target_id`.
 For every check type declared by a target, both positive and negative ground truth
 are required. Auxiliary images must use `image@sha256:<digest>`; mutable tags are
-rejected before preparation or measurement.
+rejected before preparation or measurement. Before every `compose up`, the runner
+resolves `docker compose config --format json`: the app service must use the
+prepared local image reference, and the exact set of all other resolved images
+must match `service_images`. The resolved auxiliary service-to-image map and the
+prepared app image ID are recorded in report target metadata.
 
 The saved manual measurement artifact uses schema version 4. `targets` is keyed
 by target id, records carry `target_id`, and counts contain both `overall` and
