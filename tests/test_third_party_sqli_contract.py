@@ -1519,17 +1519,18 @@ def test_non_decisions_keep_the_manual_runner_exit_one(tmp_path, monkeypatch, ca
     )
 
 
+@pytest.mark.doc_drift
 def test_reviewed_documentation_matches_the_report_contract():
     runner = load_runner()
     report = expected_report()
     runner.check_documented_summary(report)
     rendered = runner.render_summary(report)
     assert "n=2" not in rendered
-    assert rendered.count("dsvw-blind-boolean-id") == 2
-    assert rendered.count("dsvw-version-query") == 2
-    assert rendered.count("sqli-dojo-boolean-id") == 2
-    assert rendered.count("sqli-dojo-boolean-source") == 2
-    assert "| Target sqli-dojo |" in rendered
+    assert rendered.count("| dsvw-blind-boolean-id |") == 2
+    assert rendered.count("| dsvw-version-query |") == 2
+    assert rendered.count("| sqli-dojo-boolean-id |") == 2
+    assert rendered.count("| sqli-dojo-boolean-source |") == 2
+    assert "| sqli-dojo (mysql) |" in rendered
 
 
 def test_mysql_by_target_counts_are_recomputed_from_records():

@@ -13,6 +13,9 @@
 
 **Changed**
 
+- Render a cross-target DBMS and technique matrix with observed non-decisions
+  from the validated v4 report. Select documentation drift tests with `-m doc_drift`.
+
 - Generalize the manual third-party SQLi evaluation harness to declaration
   version 2 and report version 4, with target-bound provenance and both overall
   and per-target aggregates. DSVW remains the only target in this phase.
