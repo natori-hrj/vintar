@@ -3,6 +3,7 @@
 import builtins
 import io
 import os
+import subprocess
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,8 +13,35 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(scope="session")
+def tracked_markdown() -> frozenset[Path]:
+    try:
+        listing = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.md"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        reason = (
+            os.fsdecode(exc.stderr).strip() or str(exc)
+            if isinstance(exc, subprocess.CalledProcessError)
+            else str(exc)
+        )
+        pytest.exit(
+            f"Could not list Git-tracked Markdown: {reason}. "
+            "Run pytest from a Git checkout with Git installed.",
+            returncode=pytest.ExitCode.TESTS_FAILED,
+        )
+    return frozenset(
+        (ROOT / os.fsdecode(path)).resolve()
+        for path in listing.stdout.split(b"\0")
+        if path
+    )
+
+
 @pytest.fixture(autouse=True)
-def enforce_doc_drift_marker(request, monkeypatch):
+def enforce_doc_drift_marker(request, monkeypatch, tracked_markdown):
     """Check mark membership against actual reads of repository Markdown."""
     documents = set()
 
@@ -26,8 +54,8 @@ def enforce_doc_drift_marker(request, monkeypatch):
                 and os.fsdecode(file).endswith(".md")
             ):
                 path = Path(os.fsdecode(file)).resolve()
-                if path.is_relative_to(ROOT) and ".venv" not in path.parts:
-                    documents.add(path.relative_to(ROOT))
+                if path in tracked_markdown:
+                    documents.add(path.relative_to(ROOT, walk_up=True))
             return stream
 
         return tracked
@@ -46,7 +74,7 @@ def enforce_doc_drift_marker(request, monkeypatch):
         )
     if marked and not documents:
         pytest.fail(
-            f"{request.node.nodeid} is marked doc_drift but read no repository "
+            f"{request.node.nodeid} is marked doc_drift but read no Git-tracked "
             "Markdown. Read the document being checked or remove the marker."
         )
 
