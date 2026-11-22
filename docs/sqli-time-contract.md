@@ -248,7 +248,8 @@ The analysis uses:
 - Delay median
 - Median delay excess
 - Baseline and Control median difference
-- Within-category spans
+- Baseline and Control within-category spans
+- Delay span, used only after the candidate conditions are not met
 - Baseline and Control endpoint drift
 - Minimum Delay versus maximum Control margin
 
@@ -271,7 +272,20 @@ The NOT_CONFIRMED rule requires:
 median_excess <= expected_delay_seconds * 0.25
 ```
 
-Stability failures take precedence over candidate classification.
+Classification uses this precedence:
+
+1. Baseline or Control stability failures produce
+   `INCONCLUSIVE / unstable_timing`.
+2. If both candidate conditions are met, the result is CANDIDATE. Delay span does
+   not affect this path because CPU-bound Delay work can vary with scheduling and
+   host load while every Delay response remains separated from the Control band.
+3. If the candidate conditions are not met, a Delay span above the stability
+   limit produces `INCONCLUSIVE / unstable_timing`.
+4. Only after those checks can the no-delay relation produce `NOT_DETECTED` or an
+   intermediate relation produce `INCONCLUSIVE / ambiguous_timing`.
+
+This asymmetry keeps a clearly separated candidate despite Delay variance while
+preventing incomplete negative evidence from passing the CI gate.
 
 Intermediate or otherwise ambiguous measurements are INCONCLUSIVE.
 
