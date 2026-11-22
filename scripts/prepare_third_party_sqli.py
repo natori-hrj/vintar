@@ -346,13 +346,16 @@ def prepare_target(
         recipe: dict[str, str] | None = None
         if dockerfile is not None:
             recipe_path = target_asset(target_id, target, "dockerfile_path")
-            recipe_sha256 = sha256_file(recipe_path)
+            recipe_bytes = recipe_path.read_bytes()
+            recipe_sha256 = hashlib.sha256(recipe_bytes).hexdigest()
             if type(dockerfile) is not str or not is_sha256(recipe_sha256):
                 raise PreparationError(
                     f"Target {target_id!r} build recipe identity is invalid. Restore the reviewed Dockerfile and rerun preparation."
                 )
             recipe = {"path": dockerfile, "sha256": recipe_sha256}
-            build_arguments.extend(["--file", str(recipe_path)])
+            recipe_snapshot = Path(temporary_source) / "vintar-build-recipe.Dockerfile"
+            recipe_snapshot.write_bytes(recipe_bytes)
+            build_arguments.extend(["--file", str(recipe_snapshot)])
         build_arguments.append(str(source_root))
         run_docker(build_arguments, target_id)
     image_id = run_docker(

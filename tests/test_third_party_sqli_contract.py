@@ -1,5 +1,6 @@
 """Keep the offline third-party declaration and reviewed summary deterministic."""
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -1881,7 +1882,7 @@ def test_unchanged_source_reference_passes_before_docker(monkeypatch):
     ]
 
 
-def prepared_recipe_provenance(tmp_path, monkeypatch):
+def prepared_recipe_provenance(tmp_path, monkeypatch, *, mutate_during_build=False):
     preparer = load_preparer()
     commit = "0123456789abcdef0123456789abcdef01234567"
     archive_source = tmp_path / "archive-source" / f"dojo-{commit}"
@@ -1917,20 +1918,46 @@ def prepared_recipe_provenance(tmp_path, monkeypatch):
         "target_asset",
         lambda target_id, declaration, key: recipe_path,
     )
-    monkeypatch.setattr(
-        preparer,
-        "run_docker",
-        lambda arguments, target_id: (
-            "sha256:" + "a" * 64 if arguments[0] == "image" else ""
-        ),
-    )
+    observed: dict[str, object] = {}
+
+    def fake_docker(arguments, target_id):
+        if arguments[0] == "build":
+            snapshot = Path(arguments[arguments.index("--file") + 1])
+            observed["snapshot_path"] = snapshot
+            observed["snapshot_bytes"] = snapshot.read_bytes()
+            if mutate_during_build:
+                recipe_path.write_text("FROM changed\n", encoding="utf-8")
+            observed["build_bytes"] = snapshot.read_bytes()
+            return ""
+        return "sha256:" + "a" * 64
+
+    monkeypatch.setattr(preparer, "run_docker", fake_docker)
     state = preparer.prepare_target(workspace, target, [record])
-    return state, target, record, recipe_path
+    return state, target, record, recipe_path, observed
+
+
+def test_build_recipe_hash_and_docker_input_share_one_snapshot(tmp_path, monkeypatch):
+    state, _, _, recipe_path, observed = prepared_recipe_provenance(
+        tmp_path, monkeypatch, mutate_during_build=True
+    )
+    snapshot_bytes = observed["snapshot_bytes"]
+    snapshot_path = observed["snapshot_path"]
+
+    assert isinstance(snapshot_bytes, bytes)
+    assert isinstance(snapshot_path, Path)
+    assert snapshot_bytes == observed["build_bytes"] == b"FROM scratch\n"
+    assert recipe_path.read_bytes() == b"FROM changed\n"
+    assert state["build_recipe"] == {
+        "path": "sqli-dojo/Dockerfile",
+        "sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
+    }
+    assert snapshot_path != recipe_path
+    assert not snapshot_path.exists()
 
 
 def test_changed_build_recipe_is_rejected_before_docker(tmp_path, monkeypatch):
     runner = load_runner()
-    state, target, record, recipe_path = prepared_recipe_provenance(
+    state, target, record, recipe_path, _ = prepared_recipe_provenance(
         tmp_path, monkeypatch
     )
     recipe_path.write_text("FROM changed\n", encoding="utf-8")
@@ -1977,7 +2004,7 @@ def test_missing_build_recipe_is_rejected_before_docker(monkeypatch):
 
 def test_unchanged_build_recipe_passes_before_docker(tmp_path, monkeypatch):
     runner = load_runner()
-    state, target, record, recipe_path = prepared_recipe_provenance(
+    state, target, record, recipe_path, _ = prepared_recipe_provenance(
         tmp_path, monkeypatch
     )
     docker_calls: list[list[str]] = []
