@@ -566,12 +566,23 @@ timeout_seconds = 3.0
             mixed_elapsed = tuple(item.elapsed_seconds for item in mixed_observations)
             boolean_outcome, time_outcome = mixed_report["outcomes"]
             mixed_reason = time_outcome["actual_reason_code"]
+            boolean_status = boolean_outcome["status"]
+            boolean_verdict = boolean_outcome["actual_verdict"]
+            boolean_reason = boolean_outcome["actual_reason_code"]
             mixed_diagnostic = (
-                f"reason_code={mixed_reason!r}, elapsed_seconds={mixed_elapsed!r}. "
+                f"Boolean status={boolean_status!r}, verdict={boolean_verdict!r}, "
+                f"reason_code={boolean_reason!r}; Time reason_code={mixed_reason!r}, "
+                f"elapsed_seconds={mixed_elapsed!r}. "
                 "Check fixture SQL behavior, host scheduling, and loopback transport setup."
             )
+            assert boolean_status == "pass", mixed_diagnostic
+            assert boolean_verdict == "not_detected", mixed_diagnostic
             assert mixed_reason in SAFE_LOOPBACK_REASONS, mixed_diagnostic
-            mixed_expected_exit = 3 if mixed_reason == "unstable_timing" else 0
+            time_is_inconclusive = time_outcome["actual_verdict"] == "inconclusive"
+            assert time_is_inconclusive == (mixed_reason == "unstable_timing"), (
+                mixed_diagnostic
+            )
+            mixed_expected_exit = 3 if time_is_inconclusive else 0
             assert mixed.exit_code == mixed_expected_exit, mixed_diagnostic
             mixed_path = Path("mixed-report.json")
             mixed_path.write_text(json.dumps(mixed_report), encoding="utf-8")
