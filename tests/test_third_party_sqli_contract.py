@@ -1222,6 +1222,86 @@ def test_matching_resolved_compose_images_are_recorded():
     ) == {"db": database}
 
 
+@pytest.mark.parametrize("entry_point", ["pre_start", "report"])
+@pytest.mark.parametrize(
+    ("declared", "mapping", "error"),
+    [
+        (
+            ["shared@sha256:" + "a" * 64],
+            {
+                "db": "shared@sha256:" + "a" * 64,
+                "worker": "shared@sha256:" + "a" * 64,
+            },
+            None,
+        ),
+        (
+            [],
+            {"db": "db@sha256:" + "a" * 64},
+            r"service 'db'.*declared '<not declared>'.*resolved 'db@sha256:",
+        ),
+        (
+            ["db@sha256:" + "a" * 64],
+            {},
+            r"service '<unused>'.*declared 'db@sha256:a+.*resolved '<not used>'",
+        ),
+        (
+            ["db@sha256:" + "b" * 64],
+            {"db": "db@sha256:" + "a" * 64},
+            r"service 'db'.*declared 'db@sha256:b+.*resolved 'db@sha256:a+",
+        ),
+    ],
+)
+def test_pre_start_and_report_use_the_same_service_image_rule(
+    entry_point, declared, mapping, error, monkeypatch
+):
+    runner = load_runner()
+    targets, records = runner.load_declarations()
+    target_declaration = {**targets["dsvw"], "service_images": declared}
+    monkeypatch.setattr(
+        runner,
+        "load_declarations",
+        lambda: ({"dsvw": target_declaration}, records),
+    )
+
+    if entry_point == "pre_start":
+        target = runner.target_adapter("dsvw", target_declaration)
+
+        def call_pre_start():
+            return runner.validate_resolved_service_images(
+                target,
+                "app:prepared",
+                {
+                    "services": {
+                        "dsvw": {"image": "app:prepared"},
+                        **{
+                            service: {"image": image}
+                            for service, image in mapping.items()
+                        },
+                    }
+                },
+            )
+
+        call = call_pre_start
+
+    else:
+        report = expected_report()
+        report["targets"]["dsvw"]["service_images"] = mapping
+
+        def call_report():
+            return runner.validate_measurement_report(report)
+
+        call = call_report
+
+    if error is None:
+        assert call() is not None
+    else:
+        with pytest.raises(
+            runner.MeasurementError,
+            match=error + r".*Update targets.toml or the Compose file",
+        ):
+            call()
+
+
 @pytest.mark.parametrize(
     "bad_image_id",
     [

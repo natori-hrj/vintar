@@ -20,8 +20,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 from third_party_sqli_contract import (
+    ServiceImageMismatch,
     is_image_digest,
     pinned_image_digest,
+    validate_service_image_mapping,
 )
 
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
@@ -218,19 +220,14 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             or type(image_ids) is not dict
             or image_ids.keys() != {"app"}
             or not is_image_digest(image_ids.get("app"))
-            or type(service_images) is not dict
-            or any(
-                type(service) is not str
-                or not service
-                or pinned_image_digest(reference) is None
-                for service, reference in service_images.items()
-            )
-            or type(declared_images) is not list
-            or sorted(service_images.values()) != sorted(declared_images)
         ):
             raise MeasurementError(
                 f"Measurement target metadata for {target_id!r} is not content-addressed or its resolved service images differ from the declaration, so the measured images cannot be identified. Rerun prepare and measurement after making targets.toml and Compose agree."
             )
+        try:
+            validate_service_image_mapping(target_id, service_images, declared_images)
+        except ServiceImageMismatch as exc:
+            raise MeasurementError(str(exc)) from exc
 
     planned = list(plan_measurements(targets, declarations))
     expected_keys = {item.key for item in planned}
@@ -822,28 +819,10 @@ def validate_resolved_service_images(
         for service, image in resolved.items()
         if service != target.service_name
     }
-    declared_set = set(declared)
-    for service, image in auxiliaries.items():
-        if image not in declared_set:
-            same_name = next(
-                (
-                    reference
-                    for reference in declared
-                    if type(reference) is str
-                    and reference.partition("@")[0] == image.partition("@")[0]
-                ),
-                "<not declared>",
-            )
-            raise MeasurementError(
-                f"Compose image mismatch for target {target.target_id!r}, service {service!r}: declared {same_name!r}, resolved {image!r}. Update targets.toml or the Compose file so they agree before starting the target."
-            )
-    unused = declared_set - set(auxiliaries.values())
-    if unused:
-        declared_image = min(unused)
-        raise MeasurementError(
-            f"Compose image mismatch for target {target.target_id!r}, service '<unused>': declared {declared_image!r}, resolved '<not used>'. Update targets.toml or the Compose file so they agree before starting the target."
-        )
-    return auxiliaries
+    try:
+        return validate_service_image_mapping(target.target_id, auxiliaries, declared)
+    except ServiceImageMismatch as exc:
+        raise MeasurementError(str(exc)) from exc
 
 
 def resolve_service_images(
