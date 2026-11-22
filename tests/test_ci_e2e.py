@@ -9,6 +9,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from workflow_actions import collect_workflow_uses
 
 from vintar.regression.cases import load_regression_case
 
@@ -16,6 +17,33 @@ _E2E = runpy.run_path("scripts/run_ci_e2e.py")
 _cli_environment = _E2E["_cli_environment"]
 _write_case = _E2E["_write_case"]
 run_e2e = _E2E["run_e2e"]
+
+_E2E_ACTIONS = {
+    "actions/checkout",
+    "actions/upload-artifact",
+    "astral-sh/setup-uv",
+}
+
+
+def _assert_action_policy(workflow: str, allowed_actions: set[str]) -> None:
+    """Require reviewed action names and immutable commit references."""
+    uses_values = collect_workflow_uses(workflow)
+    action_names: set[str] = set()
+    for uses_value in uses_values:
+        action, separator, reference = uses_value.rpartition("@")
+        assert separator and action in allowed_actions, (
+            f"uses: {uses_value} uses action {action or uses_value!r} outside the allowed "
+            "set; add the action to the allowed set deliberately after review"
+        )
+        assert re.fullmatch(r"[0-9a-f]{40}", reference), (
+            f"uses: {uses_value} is not pinned to a full 40-character lowercase "
+            "commit SHA; pin the action to a commit SHA instead of a tag or branch"
+        )
+        action_names.add(action)
+    assert action_names == allowed_actions, (
+        f"workflow actions {sorted(action_names)!r} differ from the deliberately allowed "
+        f"set {sorted(allowed_actions)!r}; add or remove an allowed action deliberately"
+    )
 
 
 def test_fixture_case_is_valid(tmp_path):
@@ -100,15 +128,7 @@ def test_full_loopback_e2e(tmp_path):
 
 def test_e2e_workflow_is_manual_loopback_only():
     workflow = Path(".github/workflows/vintar-e2e.yml").read_text(encoding="utf-8")
-    actions = set(re.findall(r"uses:\s+([^\s#]+)", workflow))
-    action_refs = re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", workflow)
-
-    assert actions == {
-        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
-        "astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2",
-    }
-    assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs)
+    _assert_action_policy(workflow, _E2E_ACTIONS)
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" not in workflow
     assert "pull_request_target" not in workflow
@@ -125,6 +145,74 @@ def test_e2e_workflow_is_manual_loopback_only():
     assert "refs/heads/main" in workflow
     assert "scripts.run_ci_e2e" in workflow
     assert "retention-days: 1" in workflow
+
+
+@pytest.mark.parametrize(
+    ("broken_use", "message"),
+    [
+        (
+            "actions/checkout@v4",
+            r"uses: actions/checkout@v4.*full 40-character lowercase commit SHA.*pin the action to a commit SHA",
+        ),
+        (
+            "actions/checkout@0123456789abcdef",
+            r"uses: actions/checkout@0123456789abcdef.*full 40-character lowercase commit SHA.*pin the action to a commit SHA",
+        ),
+        (
+            "unreviewed/example@" + "a" * 40,
+            r"uses: unreviewed/example@a+.*outside the allowed set.*add the action to the allowed set deliberately",
+        ),
+    ],
+)
+def test_action_policy_rejects_mutable_or_unreviewed_uses(broken_use, message):
+    workflow = f"""
+jobs:
+  test:
+    steps:
+      - uses: {broken_use}
+      - uses: astral-sh/setup-uv@{"b" * 40}
+"""
+
+    with pytest.raises(AssertionError, match=message):
+        _assert_action_policy(
+            workflow,
+            {"actions/checkout", "astral-sh/setup-uv"},
+        )
+
+
+def test_action_policy_ignores_uses_in_comments():
+    workflow = f"""
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@{"a" * 40}
+      # - uses: actions/upload-artifact@{"b" * 40}
+"""
+
+    with pytest.raises(
+        AssertionError,
+        match=r"workflow actions.*differ from the deliberately allowed set.*add or remove an allowed action deliberately",
+    ):
+        _assert_action_policy(
+            workflow,
+            {"actions/checkout", "actions/upload-artifact"},
+        )
+
+
+def test_action_policy_accepts_quoted_pinned_references():
+    workflow = f"""
+jobs:
+  test:
+    uses: 'owner/reusable@{"a" * 40}'
+  steps:
+    steps:
+      - uses: "owner/action@{"b" * 40}"
+"""
+
+    _assert_action_policy(
+        workflow,
+        {"owner/action", "owner/reusable"},
+    )
 
 
 def test_installed_loopback_uses_console_executable_outside_checkout(

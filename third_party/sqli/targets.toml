@@ -1,14 +1,26 @@
-version = 1
+version = 2
 
-[target]
+[[targets]]
+id = "dsvw"
 name = "DSVW"
 repository = "https://github.com/stamparm/DSVW"
 license = "Unlicense"
+dbms = "sqlite"
 commit = "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908"
 archive_url = "https://github.com/stamparm/DSVW/archive/9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908.tar.gz"
 archive_sha256 = "96690f62ac0fba8a4f0aeac22f2370853bc02b96fb3efd1b8fc3a39398bf302b"
+compose_path = "dsvw/compose.yaml"
+spec_path = "dsvw/openapi.json"
+configs_path = "dsvw/configs"
+service_name = "dsvw"
+service_port = 65412
+image_environment = "DSVW_IMAGE"
+parameter_names = ["id", "v"]
+service_images = []
+fresh_volumes = []
 
 [[records]]
+target_id = "dsvw"
 id = "dsvw-blind-boolean-id"
 check_type = "sqli.boolean"
 input_id = "input-0927742c7a4ae9527f51f8c541502371"
@@ -23,6 +35,7 @@ source_fragment_sha256 = "9158ee846fb3660c991028a0380d63a20735b7c715848d39ba4f6e
 reviewer_note = "The reviewed upstream handler concatenates the id query value into a SQLite statement; the label is independent of Vintar output."
 
 [[records]]
+target_id = "dsvw"
 id = "dsvw-version-query"
 check_type = "sqli.boolean"
 input_id = "input-ffe5bfa38242d9cad17138d92bb38efd"
@@ -37,6 +50,7 @@ source_fragment_sha256 = "8681e2b82b67d8f252482fee5088985a1b722069c02591c33a2154
 reviewer_note = "The reviewed upstream handler uses v only to replace displayed version text; it does not reach a SQL sink. This is weaker evidence than a parameterized twin."
 
 [[records]]
+target_id = "dsvw"
 id = "dsvw-time-id"
 check_type = "sqli.time"
 input_id = "input-0927742c7a4ae9527f51f8c541502371"
@@ -51,6 +65,7 @@ source_fragment_sha256 = "9158ee846fb3660c991028a0380d63a20735b7c715848d39ba4f6e
 reviewer_note = "The reviewed upstream handler concatenates the id query value into a SQLite statement; the label is independent of Vintar timing output. The explicit payload is derived from DSVW's documented time attack at dsvw.py line 10."
 
 [[records]]
+target_id = "dsvw"
 id = "dsvw-time-version-query"
 check_type = "sqli.time"
 input_id = "input-ffe5bfa38242d9cad17138d92bb38efd"
@@ -65,6 +80,7 @@ source_fragment_sha256 = "8681e2b82b67d8f252482fee5088985a1b722069c02591c33a2154
 reviewer_note = "The reviewed upstream handler reflects v without using a SQL sink. This is weaker evidence than a parameterized twin. The explicit payload is derived from DSVW's documented time attack at dsvw.py line 10."
 
 [[records]]
+target_id = "dsvw"
 id = "dsvw-error-id"
 check_type = "sqli.error"
 input_id = "input-0927742c7a4ae9527f51f8c541502371"
@@ -79,6 +95,7 @@ source_fragment_sha256 = "f750a3222637edb39a9cc111ad685199723a0b2196b89cae64ff54
 reviewer_note = "The reviewed upstream handler concatenates id into SQLite and returns the caught exception traceback in the HTTP response; the label and explicit payload were fixed before Vintar measurement."
 
 [[records]]
+target_id = "dsvw"
 id = "dsvw-error-version-query"
 check_type = "sqli.error"
 input_id = "input-ffe5bfa38242d9cad17138d92bb38efd"
