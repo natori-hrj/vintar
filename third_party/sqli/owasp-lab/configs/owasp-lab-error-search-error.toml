@@ -1,0 +1,23 @@
+# The explicit unmatched quote was fixed before measurement for both Error records.
+config_version = 1
+type = "sqli.error"
+input_id = "input-576bd25c5162489797c44f04125ea3aa"
+
+[target]
+url = "__ORIGIN__/a03/search"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "q"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "explicit"
+error_payload = "'"
+
+[limits]
+max_requests = 4
+requests_per_second = 10.0
+timeout_seconds = 5.0

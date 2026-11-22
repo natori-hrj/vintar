@@ -1,0 +1,61 @@
+services:
+  lab:
+    image: "${OWASP_LAB_IMAGE:?Run scripts/prepare_third_party_sqli.py first}"
+    pull_policy: never
+    environment:
+      DATABASE_URL: postgresql+psycopg://lab:lab@postgres:5432/owasp_lab
+      SECRET_KEY: vintar-local-measurement
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - >-
+        python -c 'from app import create_app; from app.extensions import db;
+        from app.core.models import Settings; from
+        app.categories.a03_injection.seed import seed_injection_data; app=create_app();
+        app.app_context().push(); db.create_all(); Settings.get(); seed_injection_data()'
+        && exec gunicorn --config /dev/null --bind
+        0.0.0.0:5000 --workers 1 --preload 'app:create_app()'
+    expose:
+      - "5000"
+    networks:
+      - measurement
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=2).read()"
+      interval: 1s
+      timeout: 3s
+      retries: 90
+      start_period: 2s
+
+  postgres:
+    image: "postgres:16-alpine@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d"
+    pull_policy: never
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: owasp_lab
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - measurement
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "pg_isready -h 127.0.0.1 -U lab -d owasp_lab"
+      interval: 1s
+      timeout: 3s
+      retries: 90
+      start_period: 2s
+
+networks:
+  measurement:
+    internal: true
+
+volumes:
+  postgres-data:

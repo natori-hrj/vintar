@@ -580,6 +580,13 @@ def load_declarations() -> tuple[dict[str, dict[str, object]], list[dict[str, ob
             raise MeasurementError(
                 f"Record {record.get('id')!r} has an unsupported check type or label. Use a supported SQLi check and positive or negative ground truth."
             )
+        operation_path = record.get("operation_path")
+        if operation_path is not None and (
+            type(operation_path) is not str or not operation_path.startswith("/")
+        ):
+            raise MeasurementError(
+                f"Record {record.get('id')!r} has an invalid operation_path. Supply the reviewed absolute OpenAPI path beginning with '/'."
+            )
         labels.setdefault((target_id, check_type), set()).add(label)
         typed_records.append(record)
     for (target_id, check_type), observed in labels.items():
@@ -1026,28 +1033,47 @@ def run_pipeline_case(
     local_spec.write_bytes(planned.target.spec.read_bytes())
 
     inventory = folder / "inventory.json"
-    discovery = cli(
+    cli(
         ["discover", "--spec", str(local_spec), "--output", str(inventory)],
         cwd=folder,
     )
-    if discovery.get("operations") != 1:
-        raise MeasurementError(
-            f"Target {target_id!r} discovery did not find exactly one operation. Check the reviewed OpenAPI document instead of changing the record."
-        )
     inventory_document = load_document(inventory)
     operations = inventory_document.get("operations")
-    discovered_ids = (
-        {
-            item.get("id")
-            for operation in operations
-            if type(operation) is dict
-            for item in operation.get("inputs", [])
-            if type(item) is dict and item.get("name") == parameter
-        }
-        if type(operations) is list
-        else set()
-    )
-    if discovered_ids != {input_id}:
+    operation_path = record.get("operation_path")
+    if operation_path is None:
+        operation_path = required_text(
+            planned.target.declaration,
+            "operation_path",
+            f"target {target_id!r}",
+        )
+    if type(operations) is not list:
+        raise MeasurementError(
+            f"Target {target_id!r} discovery omitted its operation list. Check the reviewed OpenAPI document instead of changing the record."
+        )
+    matching_operations = [
+        operation
+        for operation in operations
+        if type(operation) is dict
+        and operation.get("path") == operation_path
+        and operation.get("method") == "GET"
+    ]
+    if len(matching_operations) != 1:
+        raise MeasurementError(
+            f"Record {record_id!r} did not bind to exactly one reviewed GET operation. Check its operation_path and OpenAPI document instead of changing the ground truth."
+        )
+    operation = matching_operations[0]
+    operation_inputs = operation.get("inputs")
+    if type(operation_inputs) is not list:
+        raise MeasurementError(
+            f"Record {record_id!r} discovery operation omitted its inputs. Restore the reviewed OpenAPI query parameters before measuring."
+        )
+    selected_inputs = [
+        item
+        for item in operation_inputs
+        if type(item) is dict and item.get("name") == parameter
+    ]
+    discovered_ids = {item.get("id") for item in selected_inputs}
+    if len(selected_inputs) != 1 or discovered_ids != {input_id}:
         raise MeasurementError(
             f"Target {target_id!r} discovery input IDs drifted from reviewed declarations. Review the OpenAPI change and regenerate configs instead of measuring it silently."
         )
@@ -1073,24 +1099,25 @@ def run_pipeline_case(
         )
     draft = folder / "drafts" / drafts[0]
 
-    try:
-        selected_index = planned.target.parameter_names.index(parameter)
-    except ValueError as exc:
+    if parameter not in planned.target.parameter_names:
         raise MeasurementError(
             f"Record {record_id!r} uses a parameter absent from target {target_id!r}. Update the reviewed target declaration before measuring."
-        ) from exc
-    parameter_answers: dict[str, object] = {
-        name: {"omit": True} for name in planned.target.parameter_names
-    }
-    operation_path = required_text(
-        planned.target.declaration,
-        "operation_path",
-        f"target {target_id!r}",
-    )
-    pointer_path = operation_path.replace("~", "~0").replace("/", "~1")
-    parameter_answers[parameter] = {
-        "pointer": f"/paths/{pointer_path}/get/parameters/{selected_index}/schema/example"
-    }
+        )
+    parameter_answers: dict[str, object] = {}
+    for item in operation_inputs:
+        if type(item) is not dict or type(item.get("name")) is not str:
+            raise MeasurementError(
+                f"Record {record_id!r} has an invalid discovered input. Restore the reviewed OpenAPI query parameters before measuring."
+            )
+        parameter_answers[item["name"]] = {"omit": True}
+    selected = selected_inputs[0]
+    source = selected.get("source")
+    pointer = source.get("pointer") if type(source) is dict else None
+    if type(pointer) is not str or not pointer:
+        raise MeasurementError(
+            f"Record {record_id!r} discovery input omitted its source pointer. Restore the reviewed OpenAPI document before measuring."
+        )
+    parameter_answers[parameter] = {"pointer": f"{pointer}/schema/example"}
     answers = folder / "answers.json"
     answers.write_text(
         json.dumps(
