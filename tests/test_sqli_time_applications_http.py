@@ -103,48 +103,100 @@ DELAY_SIGNAL_LIVE_OUTCOMES = frozenset(
 # these fixed observations; live HTTP tests cover mechanics and bounded outcomes.
 RECORDED_ELAPSED_SECONDS = {
     "unsafe_sqlite": (
-        0.015715,
-        0.003466,
-        0.403446,
-        0.003033,
-        0.403137,
-        0.002695,
-        0.404679,
-        0.002409,
-        0.001751,
+        (
+            0.015715,
+            0.003466,
+            0.403446,
+            0.003033,
+            0.403137,
+            0.002695,
+            0.404679,
+            0.002409,
+            0.001751,
+        ),
+        (
+            0.005938,
+            0.002817,
+            0.403902,
+            0.002461,
+            0.402684,
+            0.002193,
+            0.404221,
+            0.001986,
+            0.002104,
+        ),
     ),
     "prepared_sqlite": (
-        0.004221,
-        0.002726,
-        0.002584,
-        0.001933,
-        0.001789,
-        0.001635,
-        0.001891,
-        0.001503,
-        0.001778,
+        (
+            0.004221,
+            0.002726,
+            0.002584,
+            0.001933,
+            0.001789,
+            0.001635,
+            0.001891,
+            0.001503,
+            0.001778,
+        ),
+        (
+            0.003744,
+            0.002281,
+            0.002366,
+            0.001851,
+            0.001962,
+            0.001714,
+            0.001803,
+            0.001681,
+            0.001824,
+        ),
     ),
     "non_sql_mimic": (
-        0.003603,
-        0.002308,
-        0.402937,
-        0.002518,
-        0.402779,
-        0.024741,
-        0.403522,
-        0.002458,
-        0.001915,
+        (
+            0.003603,
+            0.002308,
+            0.402937,
+            0.002518,
+            0.402779,
+            0.024741,
+            0.403522,
+            0.002458,
+            0.001915,
+        ),
+        (
+            0.004112,
+            0.002105,
+            0.403418,
+            0.002264,
+            0.403006,
+            0.002731,
+            0.404089,
+            0.002019,
+            0.001862,
+        ),
     ),
     "non_sql_plain": (
-        0.004068,
-        0.002188,
-        0.002177,
-        0.001874,
-        0.001879,
-        0.001813,
-        0.001617,
-        0.002148,
-        0.002070,
+        (
+            0.004068,
+            0.002188,
+            0.002177,
+            0.001874,
+            0.001879,
+            0.001813,
+            0.001617,
+            0.002148,
+            0.002070,
+        ),
+        (
+            0.003829,
+            0.002013,
+            0.002241,
+            0.001722,
+            0.001916,
+            0.001764,
+            0.001695,
+            0.001987,
+            0.001841,
+        ),
     ),
 }
 
@@ -385,7 +437,7 @@ def run_application(origin: str):
     return report
 
 
-def fixed_application_analysis(application_id: str):
+def analyze_fixed_elapsed(elapsed_values: tuple[float, ...]):
     origin = "http://127.0.0.1:18083"
     context = ExecutionContext(
         scope=ScopePolicy(
@@ -421,13 +473,17 @@ def fixed_application_analysis(application_id: str):
         for sequence, (kind, elapsed) in enumerate(
             zip(
                 TIME_PROBE_ORDER,
-                RECORDED_ELAPSED_SECONDS[application_id],
+                elapsed_values,
                 strict=True,
             ),
             start=1,
         )
     )
     return analyze_time_probes(plan=plan, observations=observations)
+
+
+def fixed_application_analysis(application_id: str, iteration: int):
+    return analyze_fixed_elapsed(RECORDED_ELAPSED_SECONDS[application_id][iteration])
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,13 +587,13 @@ def test_application_level_http_mechanics(live_application_runs):
 
 
 @pytest.mark.parametrize(
-    ("application_id", "expected_status"),
-    [(case[0], case[4]) for case in CASES],
+    ("application_id", "iteration", "expected_status"),
+    [(case[0], iteration, case[4]) for case in CASES for iteration in range(2)],
 )
 def test_recorded_application_observations_classify_exactly(
-    application_id, expected_status
+    application_id, iteration, expected_status
 ):
-    analysis = fixed_application_analysis(application_id)
+    analysis = fixed_application_analysis(application_id, iteration)
     expected_reason = (
         "timing_pattern_matched"
         if expected_status is TimeAnalysisStatus.CANDIDATE
@@ -556,27 +612,38 @@ def test_recorded_application_observations_classify_exactly(
     assert analysis.request_count == 9, diagnostic
 
 
+def test_recorded_application_runs_are_independent():
+    for application_id, runs in RECORDED_ELAPSED_SECONDS.items():
+        assert runs[0] != runs[1], (
+            f"application_id={application_id!r} has identical recorded runs; identical "
+            "runs cannot measure variation. Record a second independent run instead."
+        )
+
+
 @pytest.fixture(scope="module")
 def application_results():
     units = []
 
     for application_id, truth, dbms, sql_context, _ in CASES:
-        analysis = fixed_application_analysis(application_id)
-        samples = tuple(
-            QualitySample(
-                case_id=application_id,
-                iteration=iteration,
-                ground_truth=truth,
-                status=analysis.status,
-                reason_code=analysis.reason_code,
-                budget_used=9,
-                transport_attempts=9,
-                server_received=9,
-                observation_count=9,
-                elapsed_seconds=sum(RECORDED_ELAPSED_SECONDS[application_id]),
+        samples = []
+        for iteration, elapsed_values in enumerate(
+            RECORDED_ELAPSED_SECONDS[application_id]
+        ):
+            analysis = fixed_application_analysis(application_id, iteration)
+            samples.append(
+                QualitySample(
+                    case_id=application_id,
+                    iteration=iteration,
+                    ground_truth=truth,
+                    status=analysis.status,
+                    reason_code=analysis.reason_code,
+                    budget_used=9,
+                    transport_attempts=9,
+                    server_received=9,
+                    observation_count=9,
+                    elapsed_seconds=sum(elapsed_values),
+                )
             )
-            for iteration in range(2)
-        )
 
         units.append(
             ApplicationUnit(
@@ -585,11 +652,59 @@ def application_results():
                 framework="fastapi",
                 dbms=dbms,
                 sql_context=sql_context,
-                samples=samples,
+                samples=tuple(samples),
             )
         )
 
     return summarize_applications(tuple(units))
+
+
+def test_application_aggregate_detects_mixed_fixed_observations():
+    candidate_elapsed = RECORDED_ELAPSED_SECONDS["unsafe_sqlite"][0]
+    not_confirmed_elapsed = (0.1,) * 9
+    analyses = (
+        analyze_fixed_elapsed(candidate_elapsed),
+        analyze_fixed_elapsed(not_confirmed_elapsed),
+    )
+    samples = tuple(
+        QualitySample(
+            case_id="variation_guard",
+            iteration=iteration,
+            ground_truth=GroundTruth.VULNERABLE,
+            status=analysis.status,
+            reason_code=analysis.reason_code,
+            budget_used=9,
+            transport_attempts=9,
+            server_received=9,
+            observation_count=9,
+            elapsed_seconds=sum(elapsed_values),
+        )
+        for iteration, (analysis, elapsed_values) in enumerate(
+            zip(
+                analyses,
+                (candidate_elapsed, not_confirmed_elapsed),
+                strict=True,
+            )
+        )
+    )
+    result = summarize_applications(
+        (
+            ApplicationUnit(
+                application_id="variation_guard",
+                ground_truth=GroundTruth.VULNERABLE,
+                framework="fixed",
+                dbms="sqlite",
+                sql_context="where",
+                samples=samples,
+            ),
+        )
+    )
+
+    assert analyses[0].status is TimeAnalysisStatus.CANDIDATE
+    assert analyses[1].status is TimeAnalysisStatus.NOT_CONFIRMED
+    assert analyses[0].reason_code != analyses[1].reason_code
+    assert result.mixed_case_rate > 0
+    assert result.reason_flaky_rate > 0
 
 
 def test_application_level_http_quality(application_results):
