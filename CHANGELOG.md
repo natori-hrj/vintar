@@ -13,6 +13,7 @@
 
 **Changed**
 
+- Use sqli-dojo confirmation payloads that avoid characters filtered by the fixture target.
 - Render a cross-target DBMS and technique matrix with observed non-decisions
   from the validated v4 report. Select documentation drift tests with `-m doc_drift`.
 

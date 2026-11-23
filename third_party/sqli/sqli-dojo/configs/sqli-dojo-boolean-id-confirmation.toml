@@ -12,8 +12,14 @@ occurrence = 0
 mode = "append"
 
 [probes]
-selection = "preset"
-preset = "numeric"
+selection = "explicit"
+true_payload = " AND 1=1-- "
+false_payload = " AND 1=2-- "
+
+[probes.confirmation]
+true_payload = " AND 2=2-- "
+false_payload = " AND 2=3-- "
+baseline_preserving_control = " AND 7=7-- "
 
 [limits]
 max_requests = 18

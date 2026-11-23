@@ -10,15 +10,32 @@ import tomllib
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import httpx
 import pytest
 import yaml
 from test_sqli_candidate_reliability import classify as reliability_classify
 from typer.testing import CliRunner
 
+from vintar.checks.sqli.confirmation_runner import (
+    ConfirmationStatus,
+    verify_boolean_sqli_with_confirmation,
+)
 from vintar.checks.sqli.models import Verdict
+from vintar.checks.sqli.presets import get_boolean_confirmation_preset
 from vintar.cli import app
+from vintar.core.budget import RequestBudget
+from vintar.core.executor import ExecutionContext
+from vintar.core.rate_limit import RateLimiter
+from vintar.core.request import (
+    InjectionLocation,
+    InjectionMode,
+    InjectionPoint,
+    RequestTemplate,
+)
+from vintar.core.scope import AllowedOrigin, ScopePolicy
 from vintar.regression.cases import (
     ErrorRegressionCase,
+    RegressionCase,
     TimeRegressionCase,
     load_regression_case,
 )
@@ -209,19 +226,19 @@ def expected_report() -> dict[str, object]:
         [
             {
                 "actual_verdict": "inconclusive",
-                "classification": "non_decision",
+                "classification": "tp",
                 "check_type": "sqli.boolean",
                 "detail": {
                     "configured": True,
-                    "reason_code": "candidate_confirmation_mismatch",
+                    "reason_code": "confirmation_pattern_matched",
                     "request_count": 12,
-                    "status": "mismatch",
+                    "status": "matched",
                 },
                 "endpoint_id": "sqli-dojo-boolean-id",
                 "expected_label": "positive",
                 "expected_verdict": "inconclusive",
                 "mode": "confirmation",
-                "reason_code": "candidate_confirmation_mismatch",
+                "reason_code": "boolean_candidate",
                 "request_count": 18,
                 "target_id": "sqli-dojo",
             },
@@ -543,9 +560,9 @@ def expected_report() -> dict[str, object]:
             "confirmation": {
                 "fn": 0,
                 "fp": 0,
-                "non_decision": 1,
+                "non_decision": 0,
                 "tn": 1,
-                "tp": 0,
+                "tp": 1,
             },
             "six_probe": {
                 "fn": 0,
@@ -632,38 +649,44 @@ def expected_report() -> dict[str, object]:
                 "archive_sha256": "96690f62ac0fba8a4f0aeac22f2370853bc02b96fb3efd1b8fc3a39398bf302b",
                 "commit": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
                 "dbms": "sqlite",
-                "image_ids": {"app": "sha256:" + "a" * 64},
+                "image_ids": {
+                    "app": "sha256:c14c096299306103dacfd9908376549b3a638f914a6fa0915b2c4779af9be5c8"
+                },
                 "license": "Unlicense",
                 "name": "DSVW",
                 "repository": "https://github.com/stamparm/DSVW",
                 "service_images": {},
-                "source_manifest_sha256": "b" * 64,
+                "source_manifest_sha256": "dd8e307cc1c350f5e2010b0f739ef7e3f92ab2205be7743dc5822802cee28bef",
             },
             "sqli-dojo": {
                 "archive_sha256": "6c0218fef749fddec28560af883865eb4178ed998d5cc927a5e3592add50b88f",
                 "commit": "81f20037de323376d8a7651377e3a3971efdbae8",
                 "dbms": "mysql",
-                "image_ids": {"app": "sha256:" + "c" * 64},
+                "image_ids": {
+                    "app": "sha256:551add78854168e48ba09a3b6c4638664aa923a84a4a0e0c5f212b9abaa666c9"
+                },
                 "license": "GPL-3.0",
                 "name": "sqli-dojo-docker",
                 "repository": "https://github.com/h1pmnh/sqli-dojo-docker",
                 "service_images": {
                     "mysql": "mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
                 },
-                "source_manifest_sha256": "d" * 64,
+                "source_manifest_sha256": "bff7a572b1f3c3bd1482c8f75ef0f703900f59f9e7f0bb89214edd32eb348416",
             },
             "owasp-lab": {
                 "archive_sha256": "5d0c805d86cd6a3ec8d95afdb2fdae99cab5dc765842dac4e6d122c171737db4",
                 "commit": "9cb62dd2e30b08a0ddc753247c62b54b90e933ed",
                 "dbms": "postgresql",
-                "image_ids": {"app": "sha256:" + "e" * 64},
+                "image_ids": {
+                    "app": "sha256:cc1157c59138b33e8d3a2a7329004cb2d60925eed0c8cf3c3ba2c03d06c733fc"
+                },
                 "license": "MIT",
                 "name": "OWASP Training Lab",
                 "repository": "https://github.com/jozeta/owasp-lab",
                 "service_images": {
                     "postgres": "postgres:16-alpine@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d"
                 },
-                "source_manifest_sha256": "f" * 64,
+                "source_manifest_sha256": "107dc85a50f94193df257e7ca9890f297c169964376cee35f88b643ee8c51ea9",
             },
         },
     }
@@ -907,6 +930,167 @@ def test_sqli_dojo_openapi_configs_and_images_are_reviewed_and_pinned():
     )
 
 
+def _filter_value(value: str, characters: str) -> str:
+    return value.translate(str.maketrans("", "", characters))
+
+
+def _explicit_confirmation_payloads(config: dict[str, object]) -> tuple[str, ...]:
+    probes = config.get("probes")
+    if type(probes) is not dict or probes.get("selection") != "explicit":
+        return ()
+    confirmation = probes.get("confirmation")
+    if type(confirmation) is not dict:
+        return ()
+    values = (
+        probes.get("true_payload"),
+        probes.get("false_payload"),
+        confirmation.get("true_payload"),
+        confirmation.get("false_payload"),
+        confirmation.get("baseline_preserving_control"),
+    )
+    if any(type(value) is not str for value in values):
+        raise AssertionError(
+            "Explicit confirmation payloads are incomplete. Supply all five reviewed payloads before checking target filter compatibility."
+        )
+    return tuple(values)
+
+
+def _assert_explicit_confirmations_avoid_target_filter(
+    compose_path: Path, config_paths: tuple[Path, ...]
+) -> None:
+    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    services = compose.get("services") if type(compose) is dict else None
+    if type(services) is not dict:
+        raise AssertionError(
+            "Target Compose services are invalid. Restore the reviewed Compose declaration before checking confirmation payloads."
+        )
+    filter_characters = "".join(
+        str(service.get("environment", {}).get("FILTER_CHARACTERS", ""))
+        for service in services.values()
+        if type(service) is dict and type(service.get("environment")) is dict
+    )
+    if not filter_characters:
+        return
+    for config_path in config_paths:
+        with config_path.open("rb") as stream:
+            config = tomllib.load(stream)
+        for payload in _explicit_confirmation_payloads(config):
+            invalid = sorted(set(payload).intersection(filter_characters))
+            assert not invalid, (
+                f"Explicit confirmation payloads in {config_path.name!r} contain target "
+                f"FILTER_CHARACTERS {''.join(invalid)!r}, so the target rewrites the "
+                "reviewed Boolean relation. Supply explicit payloads that avoid the "
+                "configured filter characters instead."
+            )
+
+
+def test_sqli_dojo_confirmation_payloads_survive_configured_filter():
+    old = get_boolean_confirmation_preset("numeric")
+    with (DOJO_CONFIGS / "sqli-dojo-boolean-id-confirmation.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+    payloads = _explicit_confirmation_payloads(config)
+    filter_characters = "<>"
+
+    assert _filter_value(old.true_payload, filter_characters) == " AND 23-- "
+    assert _filter_value(old.false_payload, filter_characters) == " AND 23-- "
+    assert len(set(payloads)) == 5
+    assert all(
+        _filter_value(payload, filter_characters) == payload for payload in payloads
+    )
+
+
+def test_explicit_confirmations_avoid_declared_compose_filters(tmp_path):
+    for compose in sorted(THIRD_PARTY.glob("*/compose.yaml")):
+        reviewed = tuple(
+            sorted((compose.parent / "configs").glob("*-confirmation.toml"))
+        )
+        _assert_explicit_confirmations_avoid_target_filter(compose, reviewed)
+
+    incompatible = tmp_path / "incompatible-confirmation.toml"
+    incompatible.write_text(
+        (DOJO_CONFIGS / "sqli-dojo-boolean-id-confirmation.toml")
+        .read_text(encoding="utf-8")
+        .replace(" AND 2=2-- ", " AND 2<3-- "),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        AssertionError,
+        match=r"contain target FILTER_CHARACTERS.*avoid the configured filter characters",
+    ):
+        _assert_explicit_confirmations_avoid_target_filter(
+            THIRD_PARTY / "sqli-dojo" / "compose.yaml", (incompatible,)
+        )
+
+
+def _fixed_dojo_confirmation(true_2: str, false_2: str):
+    origin = "http://localhost:8000"
+    filter_characters = "<>"
+    row_returning_values = {
+        "2",
+        "2 AND 1=1-- ",
+        "2 AND 2=2-- ",
+        "2 AND 7=7-- ",
+        "2 AND 23-- ",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        original = request.url.params["id"]
+        filtered = _filter_value(original, filter_characters)
+        warning = b""
+        if original != filtered:
+            warning = f"filtered:{original}->{filtered}|".encode()
+        rows = b"person-2" if filtered in row_returning_values else b"no-rows"
+        return httpx.Response(200, content=warning + rows)
+
+    context = ExecutionContext(
+        scope=ScopePolicy(
+            allowed_origins=frozenset({AllowedOrigin("http", "localhost", 8000)})
+        ),
+        budget=RequestBudget(18),
+        rate_limiter=RateLimiter(requests_per_second=10),
+    )
+    return verify_boolean_sqli_with_confirmation(
+        check_id="sqli-dojo-fixed-filter-relation",
+        template=RequestTemplate(
+            method="GET",
+            url=origin + "/lookup_person.php",
+            params=(("id", "2"),),
+        ),
+        point=InjectionPoint(
+            location=InjectionLocation.QUERY,
+            name="id",
+            mode=InjectionMode.APPEND,
+        ),
+        true_1=" AND 1=1-- ",
+        false_1=" AND 1=2-- ",
+        true_2=true_2,
+        false_2=false_2,
+        baseline_preserving_control=" AND 7=7-- ",
+        context=context,
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def test_fixed_dojo_relation_accepts_filter_compatible_confirmation():
+    result = _fixed_dojo_confirmation(" AND 2=2-- ", " AND 2=3-- ")
+
+    assert result.status is ConfirmationStatus.CANDIDATE
+    assert result.reason_code == "confirmation_pattern_matched"
+    assert result.confirmation_requests == 12
+    assert result.total_requests == 18
+
+
+def test_fixed_dojo_relation_rejects_filtered_preset_confirmation():
+    old = get_boolean_confirmation_preset("numeric")
+
+    result = _fixed_dojo_confirmation(old.true_payload, old.false_payload)
+
+    assert result.status is ConfirmationStatus.INCONCLUSIVE
+    assert result.reason_code == "candidate_confirmation_mismatch"
+    assert result.confirmation_requests == 12
+    assert result.total_requests == 18
+
+
 def test_owasp_lab_openapi_configs_and_images_are_reviewed_and_pinned():
     spec = json.loads((THIRD_PARTY / "owasp-lab" / "openapi.json").read_text())
     assert {
@@ -1020,6 +1204,16 @@ def test_postgres_compose_healthchecks_require_tcp_readiness():
         ),
         (
             "sqli-dojo",
+            "sqli-dojo-boolean-id",
+            "confirmation",
+            "input-cd830e9d6b74c85da764108226a46c4e",
+            "id",
+            0,
+            "/lookup_person.php",
+            "inconclusive",
+        ),
+        (
+            "sqli-dojo",
             "sqli-dojo-time-id",
             "time",
             "input-cd830e9d6b74c85da764108226a46c4e",
@@ -1100,7 +1294,7 @@ def test_postgres_compose_healthchecks_require_tcp_readiness():
         ),
     ],
 )
-def test_time_and_error_configs_materialize_and_load_offline(
+def test_reviewed_configs_materialize_and_load_offline(
     tmp_path,
     monkeypatch,
     target_id,
@@ -1223,11 +1417,24 @@ def test_time_and_error_configs_materialize_and_load_offline(
         assert case.case_id.endswith("-time")
         assert case.max_requests == 9
         assert case.expected_delay_seconds == 0.5
-    else:
+    elif config_mode == "error":
         assert isinstance(case, ErrorRegressionCase)
         assert case.case_id.endswith("-error")
         assert case.max_requests == 4
         assert case.error_payload == "'"
+    else:
+        assert isinstance(case, RegressionCase)
+        assert case.max_requests == 18
+        assert case.confirmation is not None
+        payloads = (
+            case.true_payload,
+            case.false_payload,
+            case.confirmation.true_payload,
+            case.confirmation.false_payload,
+            case.confirmation.baseline_preserving_control,
+        )
+        assert len(set(payloads)) == 5
+        assert all(not set(payload).intersection("<>") for payload in payloads)
 
 
 @pytest.mark.parametrize("label", ["positive", "negative"])
@@ -1511,7 +1718,7 @@ def test_non_decisions_keep_the_manual_runner_exit_one(tmp_path, monkeypatch, ca
         ],
     )
 
-    assert runner.unhealthy_count(report) == 8
+    assert runner.unhealthy_count(report) == 7
     assert runner.main() == 1
     captured = capsys.readouterr()
     assert "contains a false negative, false positive, or non-decision" in (
@@ -1708,7 +1915,7 @@ def test_consistent_counts_and_health_match_records():
     ]
 
     assert runner.validate_measurement_report(report) is report
-    assert runner.unhealthy_count(report) == len(unhealthy_records) == 8
+    assert runner.unhealthy_count(report) == len(unhealthy_records) == 7
 
 
 def test_v4_preserves_v3_records_and_aggregate_counts():

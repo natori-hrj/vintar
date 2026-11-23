@@ -131,7 +131,7 @@ that participated in the measurement.
 | owasp-lab | sqli.error | owasp-lab-error-search | error_probe | positive | inconclusive | non_success_status | inconclusive | 4 | non_decision |
 | owasp-lab | sqli.time | owasp-lab-time-check-username | nine_probe | positive | inconclusive | timing_pattern_matched | candidate | 9 | tp |
 | owasp-lab | sqli.time | owasp-lab-time-greet | nine_probe | negative | not_detected | timing_pattern_not_matched | not_confirmed | 9 | tn |
-| sqli-dojo | sqli.boolean | sqli-dojo-boolean-id | confirmation | positive | inconclusive | candidate_confirmation_mismatch | mismatch | 18 | non_decision |
+| sqli-dojo | sqli.boolean | sqli-dojo-boolean-id | confirmation | positive | inconclusive | boolean_candidate | matched | 18 | tp |
 | sqli-dojo | sqli.boolean | sqli-dojo-boolean-id | six_probe | positive | inconclusive | boolean_candidate | not_configured | 6 | tp |
 | sqli-dojo | sqli.boolean | sqli-dojo-boolean-source | confirmation | negative | not_detected | no_boolean_difference | not_eligible | 6 | tn |
 | sqli-dojo | sqli.boolean | sqli-dojo-boolean-source | six_probe | negative | not_detected | no_boolean_difference | not_configured | 6 | tn |
@@ -143,7 +143,7 @@ that participated in the measurement.
 | Check type | Mode | Candidate | TP | TN | FP | FN | Non-decision |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | sqli.boolean | six_probe | - | 2 | 1 | 0 | 0 | 3 |
-| sqli.boolean | confirmation | - | 1 | 1 | 0 | 0 | 4 |
+| sqli.boolean | confirmation | - | 2 | 1 | 0 | 0 | 3 |
 | sqli.time | nine_probe | - | 3 | 3 | 0 | 0 | 0 |
 | sqli.error | error_probe | 2 | - | 3 | 0 | 0 | 1 |
 
@@ -155,7 +155,7 @@ Cells list TP/TN/FP/FN/non-decision. Error cells append candidate. A dash means 
 | --- | --- | --- | --- | --- |
 | dsvw (sqlite) | 1/0/0/0/1 | 1/0/0/0/1 | 1/1/0/0/0 | —/1/0/0/0/1 |
 | owasp-lab (postgresql) | 0/0/0/0/2 | 0/0/0/0/2 | 1/1/0/0/0 | —/1/0/0/1/0 |
-| sqli-dojo (mysql) | 1/1/0/0/0 | 0/1/0/0/1 | 1/1/0/0/0 | —/1/0/0/0/1 |
+| sqli-dojo (mysql) | 1/1/0/0/0 | 1/1/0/0/0 | 1/1/0/0/0 | —/1/0/0/0/1 |
 
 ### Known non-decisions
 
@@ -166,10 +166,9 @@ Cells list TP/TN/FP/FN/non-decision. Error cells append candidate. A dash means 
 - `owasp-lab` / `owasp-lab-boolean-search` / `sqli.boolean` / `confirmation`: `unexpected_difference`.
 - `owasp-lab` / `owasp-lab-boolean-search` / `sqli.boolean` / `six_probe`: `unexpected_difference`.
 - `owasp-lab` / `owasp-lab-error-search` / `sqli.error` / `error_probe`: `non_success_status`.
-- `sqli-dojo` / `sqli-dojo-boolean-id` / `sqli.boolean` / `confirmation`: `candidate_confirmation_mismatch`.
 <!-- third-party-measurement:end -->
 
-This Time run was measured on an AMD Ryzen AI 5 PRO 340 (12 logical CPUs) with
+The previously documented Time run used an AMD Ryzen AI 5 PRO 340 (12 logical CPUs) with
 Docker Engine 29.9.2 and Docker Compose 5.6.1. The positive completed all nine
 requests and was `INCONCLUSIVE / timing_pattern_matched`; the reflected negative
 was `NOT_DETECTED / timing_pattern_not_matched`. An earlier run on the same model,
@@ -194,14 +193,13 @@ measurement command consequently returns non-zero after preserving the report. T
 weak reflected-parameter negative remains a non-decision and must not be relabeled or
 suppressed to make the measurement pass.
 
-On sqli-dojo-docker, the six-probe Boolean positive produced
-`boolean_candidate`, while the second-pair confirmation produced
-`candidate_confirmation_mismatch`; it is preserved as a positive non-decision,
-not tuned into a match. The MySQL Time positive produced
+On sqli-dojo-docker, both Boolean modes reported
+`INCONCLUSIVE / boolean_candidate` for the positive record. The confirmation
+detail was `matched / confirmation_pattern_matched` after eighteen total
+requests. The MySQL Time positive produced
 `timing_pattern_matched`, and the Error positive disclosed the reviewed
 `mysql_syntax_error_1064` signature. All three `source` negatives were true
-negatives. The run used Docker Engine 29.9.2 and Docker Compose 5.6.1; no input,
-threshold, label, or expectation was changed after observing these results.
+negatives.
 
 On OWASP Training Lab, the PostgreSQL Time positive produced
 `timing_pattern_matched` and the `greet` Time negative was a true negative. The
