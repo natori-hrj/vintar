@@ -1,0 +1,14 @@
+[[confirmation]]
+target = "owasp-lab"
+endpoint = "owasp-lab-boolean-greet"
+history = "The reviewed configuration uses explicit confirmation inputs. No earlier preset measurement is recorded."
+
+[[confirmation]]
+target = "owasp-lab"
+endpoint = "owasp-lab-boolean-search"
+history = "The reviewed configuration uses explicit confirmation inputs. No earlier preset measurement is recorded."
+
+[[confirmation]]
+target = "sqli-dojo"
+endpoint = "sqli-dojo-boolean-id"
+history = "The initial numeric-preset measurement returned `candidate_confirmation_mismatch` (non-decision). The target's character filtering removed the distinction between the two confirmation predicates. The fixture was then revised to use explicit confirmation inputs. The tables show the post-revision remeasurement."

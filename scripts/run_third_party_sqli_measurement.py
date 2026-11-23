@@ -1382,6 +1382,74 @@ def render_summary(report: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def render_measurement_input_revisions(
+    revisions_path: Path = THIRD_PARTY / "measurement-input-revisions.toml",
+) -> str:
+    """Render the review history for every explicit confirmation config."""
+    with revisions_path.open("rb") as stream:
+        revisions = tomllib.load(stream)["confirmation"]
+    history = {}
+    for entry in revisions:
+        target = required_text(entry, "target", "confirmation revision")
+        endpoint = required_text(entry, "endpoint", "confirmation revision")
+        key = (target, endpoint, "confirmation")
+        if key in history:
+            raise MeasurementError(
+                f"Duplicate confirmation history for {target}/{endpoint}. "
+                "Keep one entry per endpoint in measurement-input-revisions.toml."
+            )
+        history[key] = required_text(entry, "history", "confirmation revision")
+
+    targets, records = load_declarations()
+    explicit_keys = set()
+    preset_keys = set()
+    for planned in plan_measurements(targets, records):
+        target, endpoint, _, mode = planned.key
+        if mode != "confirmation":
+            continue
+        key = (target, endpoint, mode)
+        with planned.config.open("rb") as stream:
+            probes = tomllib.load(stream)["probes"]
+        selection = probes.get("selection")
+        if selection == "preset":
+            preset_keys.add(key)
+        if selection != "explicit":
+            continue
+        explicit_keys.add(key)
+        if key not in history:
+            raise MeasurementError(
+                f"{target}/{endpoint} uses explicit confirmation inputs without "
+                "documented history. Add a confirmation entry to "
+                "measurement-input-revisions.toml and regenerate the revisions section."
+            )
+    if stale_keys := history.keys() - explicit_keys:
+        key = min(stale_keys)
+        target, endpoint, mode = key
+        reason = (
+            "describe a preset config as explicit"
+            if key in preset_keys
+            else "present a removed config as current"
+        )
+        raise MeasurementError(
+            f"Stale measurement revision for {target}/{endpoint}/{mode}: the docs "
+            f"would {reason}. Remove the entry from "
+            "measurement-input-revisions.toml and regenerate the revisions section."
+        )
+
+    lines = [
+        "## Measurement input revisions",
+        "",
+        "Inputs are fixed for each measurement. The entries below identify explicit",
+        "confirmation configurations and record any earlier measurements.",
+        "",
+    ]
+    lines.extend(
+        f"- `{target}` / `{endpoint}` / {mode}. {text}"
+        for (target, endpoint, mode), text in sorted(history.items())
+    )
+    return "\n".join(lines)
+
+
 def check_documented_summary(
     report: dict[str, object], documentation: Path = DOCS
 ) -> None:
