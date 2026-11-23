@@ -17,18 +17,27 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
-from vintar.checks.sqli.time_analyzer import TimeAnalysisStatus
+from vintar.checks.sqli.time_analyzer import (
+    TimeAnalysisStatus,
+    TimeObservation,
+    TimeProbeOutcome,
+    analyze_time_probes,
+)
 from vintar.checks.sqli.time_application_quality import (
     ApplicationOutcome,
     ApplicationUnit,
     summarize_applications,
 )
-from vintar.checks.sqli.time_plan import TimePayloads
+from vintar.checks.sqli.time_plan import (
+    TIME_PROBE_ORDER,
+    TimePayloads,
+    prepare_time_plan,
+)
 from vintar.checks.sqli.time_quality import (
     GroundTruth,
-    sample_from_report,
+    QualitySample,
 )
-from vintar.checks.sqli.time_runner import verify_time_based_sqli
+from vintar.checks.sqli.time_runner import TimeRunReport, verify_time_based_sqli
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -76,6 +85,120 @@ CASES = (
         TimeAnalysisStatus.NOT_CONFIRMED,
     ),
 )
+
+SAFE_LIVE_OUTCOMES = frozenset(
+    {
+        (TimeAnalysisStatus.NOT_CONFIRMED, "timing_pattern_not_matched"),
+        (TimeAnalysisStatus.INCONCLUSIVE, "unstable_timing"),
+    }
+)
+DELAY_SIGNAL_LIVE_OUTCOMES = frozenset(
+    {
+        (TimeAnalysisStatus.CANDIDATE, "timing_pattern_matched"),
+        (TimeAnalysisStatus.INCONCLUSIVE, "unstable_timing"),
+    }
+)
+
+# Recorded loopback sequences in TIME_PROBE_ORDER. Exact classification uses
+# these fixed observations; live HTTP tests cover mechanics and bounded outcomes.
+RECORDED_ELAPSED_SECONDS = {
+    "unsafe_sqlite": (
+        (
+            0.015715,
+            0.003466,
+            0.403446,
+            0.003033,
+            0.403137,
+            0.002695,
+            0.404679,
+            0.002409,
+            0.001751,
+        ),
+        (
+            0.005938,
+            0.002817,
+            0.403902,
+            0.002461,
+            0.402684,
+            0.002193,
+            0.404221,
+            0.001986,
+            0.002104,
+        ),
+    ),
+    "prepared_sqlite": (
+        (
+            0.004221,
+            0.002726,
+            0.002584,
+            0.001933,
+            0.001789,
+            0.001635,
+            0.001891,
+            0.001503,
+            0.001778,
+        ),
+        (
+            0.003744,
+            0.002281,
+            0.002366,
+            0.001851,
+            0.001962,
+            0.001714,
+            0.001803,
+            0.001681,
+            0.001824,
+        ),
+    ),
+    "non_sql_mimic": (
+        (
+            0.003603,
+            0.002308,
+            0.402937,
+            0.002518,
+            0.402779,
+            0.024741,
+            0.403522,
+            0.002458,
+            0.001915,
+        ),
+        (
+            0.004112,
+            0.002105,
+            0.403418,
+            0.002264,
+            0.403006,
+            0.002731,
+            0.404089,
+            0.002019,
+            0.001862,
+        ),
+    ),
+    "non_sql_plain": (
+        (
+            0.004068,
+            0.002188,
+            0.002177,
+            0.001874,
+            0.001879,
+            0.001813,
+            0.001617,
+            0.002148,
+            0.002070,
+        ),
+        (
+            0.003829,
+            0.002013,
+            0.002241,
+            0.001722,
+            0.001916,
+            0.001764,
+            0.001695,
+            0.001987,
+            0.001841,
+        ),
+    ),
+}
 
 
 @dataclass(repr=False)
@@ -194,6 +317,7 @@ def create_application(
 
         elif application_id == "non_sql_mimic":
             if category == "Pets" + DELAY_PAYLOAD:
+                state.record_delay(DELAY_SECONDS)
                 time.sleep(DELAY_SECONDS)
 
         elif application_id != "non_sql_plain":
@@ -313,21 +437,77 @@ def run_application(origin: str):
     return report
 
 
+def analyze_fixed_elapsed(elapsed_values: tuple[float, ...]):
+    origin = "http://127.0.0.1:18083"
+    context = ExecutionContext(
+        scope=ScopePolicy(
+            allowed_origins=frozenset({AllowedOrigin("http", "127.0.0.1", 18083)})
+        ),
+        budget=RequestBudget(9),
+        timeout=3.0,
+        rate_limiter=RateLimiter(requests_per_second=100.0),
+    )
+    plan = prepare_time_plan(
+        template=RequestTemplate(
+            method="GET",
+            url=origin + "/products",
+            params=(("category", "Pets"),),
+        ),
+        point=InjectionPoint(
+            location=InjectionLocation.QUERY,
+            name="category",
+            mode=InjectionMode.APPEND,
+        ),
+        payloads=TimePayloads(delay=DELAY_PAYLOAD, control=CONTROL_PAYLOAD),
+        expected_delay_seconds=EXPECTED_DELAY,
+        context=context,
+    )
+    observations = tuple(
+        TimeObservation(
+            kind=kind,
+            sequence=sequence,
+            outcome=TimeProbeOutcome.COMPLETED,
+            elapsed_seconds=elapsed,
+            status_code=200,
+        )
+        for sequence, (kind, elapsed) in enumerate(
+            zip(
+                TIME_PROBE_ORDER,
+                elapsed_values,
+                strict=True,
+            ),
+            start=1,
+        )
+    )
+    return analyze_time_probes(plan=plan, observations=observations)
+
+
+def fixed_application_analysis(application_id: str, iteration: int):
+    return analyze_fixed_elapsed(RECORDED_ELAPSED_SECONDS[application_id][iteration])
+
+
+@dataclass(frozen=True, slots=True)
+class LiveApplicationRun:
+    application_id: str
+    report: TimeRunReport
+    received: tuple[str, ...]
+    sql_count: int
+    delay_values: tuple[float, ...]
+
+
 @pytest.fixture(scope="module")
-def application_results():
-    units = []
+def live_application_runs():
+    runs = []
 
     for (
         application_id,
-        truth,
-        dbms,
-        sql_context,
-        expected,
+        _truth,
+        _dbms,
+        _sql_context,
+        _,
     ) in CASES:
         with running_application(application_id) as (state, origin):
-            samples = []
-
-            for iteration in range(2):
+            for _ in range(2):
                 before_received, before_sql, before_delays = state.snapshot()
 
                 report = run_application(origin)
@@ -338,58 +518,169 @@ def application_results():
                 new_sql = sql_count - before_sql
                 new_delays = delay_values[len(before_delays) :]
 
-                assert report.analysis.status is expected
-                assert report.budget_used == 9
-                assert report.transport_attempts == 9
-                assert report.analysis.request_count == 9
-                assert len(new_requests) == 9
-                assert not report.deadline_exceeded
-
-                assert new_requests == (
-                    "Pets",
-                    "Pets" + CONTROL_PAYLOAD,
-                    "Pets" + DELAY_PAYLOAD,
-                    "Pets" + CONTROL_PAYLOAD,
-                    "Pets" + DELAY_PAYLOAD,
-                    "Pets",
-                    "Pets" + DELAY_PAYLOAD,
-                    "Pets",
-                    "Pets" + CONTROL_PAYLOAD,
-                )
-
-                if application_id == "unsafe_sqlite":
-                    assert new_sql == 9
-                    assert new_delays.count(0.4) == 3
-                    assert new_delays.count(0.0) == 3
-                elif application_id == "prepared_sqlite":
-                    assert new_sql == 9
-                    assert not new_delays
-                else:
-                    assert new_sql == 0
-                    assert not new_delays
-
-                samples.append(
-                    sample_from_report(
-                        case_id=application_id,
-                        iteration=iteration,
-                        ground_truth=truth,
+                runs.append(
+                    LiveApplicationRun(
+                        application_id=application_id,
                         report=report,
-                        server_received=len(new_requests),
+                        received=new_requests,
+                        sql_count=new_sql,
+                        delay_values=new_delays,
                     )
                 )
 
-            units.append(
-                ApplicationUnit(
-                    application_id=application_id,
+    return tuple(runs)
+
+
+def test_application_level_http_mechanics(live_application_runs):
+    expected_requests = (
+        "Pets",
+        "Pets" + CONTROL_PAYLOAD,
+        "Pets" + DELAY_PAYLOAD,
+        "Pets" + CONTROL_PAYLOAD,
+        "Pets" + DELAY_PAYLOAD,
+        "Pets",
+        "Pets" + DELAY_PAYLOAD,
+        "Pets",
+        "Pets" + CONTROL_PAYLOAD,
+    )
+    assert len(live_application_runs) == 8
+
+    for run in live_application_runs:
+        report = run.report
+        analysis = report.analysis
+        elapsed_values = tuple(
+            observation.elapsed_seconds for observation in analysis.observations
+        )
+        diagnostic = (
+            f"application_id={run.application_id!r}, status={analysis.status.value!r}, "
+            f"reason_code={analysis.reason_code!r}, elapsed_seconds={elapsed_values!r}"
+        )
+        allowed = (
+            DELAY_SIGNAL_LIVE_OUTCOMES
+            if run.application_id in {"unsafe_sqlite", "non_sql_mimic"}
+            else SAFE_LIVE_OUTCOMES
+        )
+        assert (analysis.status, analysis.reason_code) in allowed, diagnostic
+        if run.application_id == "unsafe_sqlite":
+            assert analysis.status is not TimeAnalysisStatus.NOT_CONFIRMED, diagnostic
+
+        assert report.budget_used == 9, diagnostic
+        assert report.transport_attempts == 9, diagnostic
+        assert analysis.request_count == 9, diagnostic
+        assert len(run.received) == 9, diagnostic
+        assert not report.deadline_exceeded, diagnostic
+        assert run.received == expected_requests, diagnostic
+
+        if run.application_id == "unsafe_sqlite":
+            assert run.sql_count == 9, diagnostic
+            assert run.delay_values.count(0.4) == 3, diagnostic
+            assert run.delay_values.count(0.0) == 3, diagnostic
+        elif run.application_id == "prepared_sqlite":
+            assert run.sql_count == 9, diagnostic
+            assert not run.delay_values, diagnostic
+        elif run.application_id == "non_sql_mimic":
+            assert run.sql_count == 0, diagnostic
+            assert run.delay_values == (0.4, 0.4, 0.4), diagnostic
+        else:
+            assert run.sql_count == 0, diagnostic
+            assert not run.delay_values, diagnostic
+
+
+@pytest.mark.parametrize(
+    ("application_id", "iteration", "expected_status"),
+    [(case[0], iteration, case[4]) for case in CASES for iteration in range(2)],
+)
+def test_recorded_application_observations_classify_exactly(
+    application_id, iteration, expected_status
+):
+    analysis = fixed_application_analysis(application_id, iteration)
+    expected_reason = (
+        "timing_pattern_matched"
+        if expected_status is TimeAnalysisStatus.CANDIDATE
+        else "timing_pattern_not_matched"
+    )
+    elapsed_values = tuple(
+        observation.elapsed_seconds for observation in analysis.observations
+    )
+    diagnostic = (
+        f"application_id={application_id!r}, status={analysis.status.value!r}, "
+        f"reason_code={analysis.reason_code!r}, elapsed_seconds={elapsed_values!r}"
+    )
+
+    assert analysis.status is expected_status, diagnostic
+    assert analysis.reason_code == expected_reason, diagnostic
+    assert analysis.request_count == 9, diagnostic
+
+
+def test_recorded_application_runs_are_independent():
+    for application_id, runs in RECORDED_ELAPSED_SECONDS.items():
+        assert runs[0] != runs[1], (
+            f"application_id={application_id!r} has identical recorded runs; identical "
+            "runs cannot measure variation. Record a second independent run instead."
+        )
+
+
+def summarize_recorded_applications(cases, recorded_elapsed_seconds):
+    units = []
+
+    for application_id, truth, dbms, sql_context, _ in cases:
+        samples = []
+        for iteration, elapsed_values in enumerate(
+            recorded_elapsed_seconds[application_id]
+        ):
+            analysis = analyze_fixed_elapsed(elapsed_values)
+            samples.append(
+                QualitySample(
+                    case_id=application_id,
+                    iteration=iteration,
                     ground_truth=truth,
-                    framework="fastapi",
-                    dbms=dbms,
-                    sql_context=sql_context,
-                    samples=tuple(samples),
+                    status=analysis.status,
+                    reason_code=analysis.reason_code,
+                    budget_used=9,
+                    transport_attempts=9,
+                    server_received=9,
+                    observation_count=9,
+                    elapsed_seconds=sum(elapsed_values),
                 )
             )
 
+        units.append(
+            ApplicationUnit(
+                application_id=application_id,
+                ground_truth=truth,
+                framework="fastapi",
+                dbms=dbms,
+                sql_context=sql_context,
+                samples=tuple(samples),
+            )
+        )
+
     return summarize_applications(tuple(units))
+
+
+@pytest.fixture(scope="module")
+def application_results():
+    return summarize_recorded_applications(CASES, RECORDED_ELAPSED_SECONDS)
+
+
+def test_application_aggregate_detects_mixed_fixed_observations():
+    candidate_elapsed = RECORDED_ELAPSED_SECONDS["unsafe_sqlite"][0]
+    not_confirmed_elapsed = (0.1,) * 9
+    result = summarize_recorded_applications(
+        (
+            (
+                "variation_guard",
+                GroundTruth.VULNERABLE,
+                "sqlite",
+                "where",
+                TimeAnalysisStatus.CANDIDATE,
+            ),
+        ),
+        {"variation_guard": (candidate_elapsed, not_confirmed_elapsed)},
+    )
+
+    assert result.mixed_case_rate > 0
+    assert result.reason_flaky_rate > 0
 
 
 def test_application_level_http_quality(application_results):
