@@ -55,6 +55,10 @@ POSTGRES_DELAY = "' AND (SELECT COUNT(*) FROM pg_sleep(0.4))=1-- "
 POSTGRES_CONTROL = "' AND (SELECT COUNT(*) FROM pg_sleep(0))=1-- "
 MYSQL_DELAY = "' AND SLEEP(0.4)=0-- "
 MYSQL_CONTROL = "' AND SLEEP(0)=0-- "
+DATABASE_DELAY_EXPRESSIONS = {
+    "postgres": "pg_sleep(0.4)",
+    "mysql": "SLEEP(0.4)",
+}
 
 TABLE_NAME = "vintar_time_products"
 DATABASE_NAME = "vintar_corpus"
@@ -263,15 +267,17 @@ def database_query(
     mode: str,
     category: str,
     password: str,
+    on_delay: Callable[[float], None],
 ) -> bytes:
     with (
         closing(database_connection(engine, password)) as connection,
         closing(connection.cursor()) as cursor,
     ):
         if mode == "vulnerable":
-            cursor.execute(
-                f"SELECT name FROM {TABLE_NAME} WHERE category = '{category}'"
-            )
+            statement = f"SELECT name FROM {TABLE_NAME} WHERE category = '{category}'"
+            cursor.execute(statement)
+            if DATABASE_DELAY_EXPRESSIONS[engine] in statement:
+                on_delay(ACTUAL_DELAY)
         else:
             cursor.execute(
                 f"SELECT name FROM {TABLE_NAME} WHERE category = %s",
@@ -281,6 +287,69 @@ def database_query(
         rows = cursor.fetchall()
 
     return "\n".join(str(row[0]) for row in rows).encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("engine", "delay_payload"),
+    (("postgres", POSTGRES_DELAY), ("mysql", MYSQL_DELAY)),
+)
+def test_database_query_records_executed_delay_expression(
+    monkeypatch, engine, delay_payload
+):
+    cursors = []
+
+    class FakeCursor:
+        def __init__(self):
+            self.executions = []
+
+        def execute(self, statement, params=None):
+            self.executions.append((statement, params))
+
+        def fetchall(self):
+            return [("Cat toy",)]
+
+        def close(self):
+            return None
+
+    class FakeConnection:
+        def __init__(self):
+            self.cursor_instance = FakeCursor()
+            cursors.append(self.cursor_instance)
+
+        def cursor(self):
+            return self.cursor_instance
+
+        def close(self):
+            return None
+
+    def fake_connection(_engine, _password):
+        return FakeConnection()
+
+    monkeypatch.setitem(globals(), "database_connection", fake_connection)
+    vulnerable_delays = []
+    safe_delays = []
+
+    vulnerable_body = database_query(
+        engine,
+        "vulnerable",
+        "Pets" + delay_payload,
+        "unused",
+        vulnerable_delays.append,
+    )
+    safe_body = database_query(
+        engine,
+        "safe",
+        "Pets" + delay_payload,
+        "unused",
+        safe_delays.append,
+    )
+
+    assert vulnerable_body == b"Cat toy"
+    assert safe_body == b"Cat toy"
+    assert vulnerable_delays == [ACTUAL_DELAY]
+    assert safe_delays == []
+    assert DATABASE_DELAY_EXPRESSIONS[engine] in cursors[0].executions[0][0]
+    assert cursors[1].executions[0][1] == ("Pets" + delay_payload,)
 
 
 def create_app(
@@ -357,6 +426,10 @@ def create_app(
                     mode,
                     category,
                     password,
+                    on_delay=lambda seconds: state.record_delay_evaluation(
+                        key,
+                        seconds,
+                    ),
                 )
         except (sqlite3.Error, psycopg.Error, pymysql.MySQLError):
             state.record_error(key)
