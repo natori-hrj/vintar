@@ -692,6 +692,58 @@ def expected_report() -> dict[str, object]:
     }
 
 
+def fixed_v5_report(runner):
+    """Build test-only v5 evidence from fixed fake responses, never live fixture data."""
+    report = expected_report()
+    report["schema_version"] = 5
+    raw_bodies = {
+        "baseline": b"fixed-baseline-response-body",
+        "true": b"fixed-true-response-body",
+        "false": b"fixed-false-response-body",
+        "control": b"fixed-control-response-body",
+        "true2": b"fixed-true2-response-body",
+        "false2": b"fixed-false2-response-body",
+        "delay": b"fixed-delay-response-body",
+        "error": b"fixed-error-response-body",
+    }
+    for record in report["records"]:
+        roles = runner.PROBE_ROLE_ORDERS[(record["check_type"], record["mode"])][
+            : record["request_count"]
+        ]
+        bodies = dict(raw_bodies)
+        statuses = {role: 200 for role in set(roles)}
+        reason = record["reason_code"]
+        if record["check_type"] == "sqli.boolean":
+            if reason == "boolean_candidate":
+                bodies["true"] = bodies["baseline"]
+                if record["detail"]["status"] == "matched":
+                    bodies["control"] = bodies["baseline"]
+                    bodies["true2"] = bodies["baseline"]
+                    bodies["false2"] = bodies["false"]
+            elif reason == "candidate_confirmation_mismatch":
+                bodies["true"] = bodies["baseline"]
+                bodies["control"] = bodies["baseline"]
+                bodies["true2"] = b"fixed-mismatching-confirmation-body"
+                bodies["false2"] = b"fixed-mismatching-confirmation-body"
+            elif reason == "no_boolean_difference_literal_input":
+                bodies["false"] = bodies["true"]
+            elif reason == "no_boolean_difference":
+                bodies["true"] = bodies["baseline"]
+                bodies["false"] = bodies["baseline"]
+        elif record["check_type"] == "sqli.error":
+            if reason == "dbms_error_not_observed":
+                bodies["error"] = bodies["baseline"]
+            elif reason == "non_success_status":
+                statuses["error"] = 500
+        responses = tuple(
+            runner.RecordedResponse(statuses[role], bodies[role]) for role in roles
+        )
+        evidence, relations = runner.sanitized_probe_evidence(roles, responses)
+        record["evidence"] = evidence
+        record["relations"] = relations
+    return report
+
+
 def test_reviewed_declarations_are_exact_and_digest_bound():
     document = declarations()
     assert document["version"] == 2
@@ -1835,12 +1887,159 @@ def test_mysql_by_target_counts_are_recomputed_from_records():
     assert runner.validate_measurement_report(report) is report
 
 
-def test_measurement_output_declares_schema_version_four():
+def test_new_output_uses_v5_while_committed_v4_fixture_remains_readable():
     runner = load_runner()
     report = expected_report()
 
-    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 4
+    assert report["schema_version"] == runner.LEGACY_MEASUREMENT_SCHEMA_VERSION == 4
+    assert runner.MEASUREMENT_SCHEMA_VERSION == 5
     assert runner.validate_measurement_report(report) is report
+    current = fixed_v5_report(runner)
+    assert current["schema_version"] == 5
+    assert runner.validate_measurement_report(current) is current
+
+
+def test_new_writer_rejects_legacy_v4_fixture(tmp_path):
+    runner = load_runner()
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"requires schema version 5 with real per-probe evidence.*current measurement.*legacy v4",
+    ):
+        runner.write_report(tmp_path / "report.json", expected_report())
+
+
+def test_v5_renderer_matches_legacy_summary_without_using_evidence():
+    runner = load_runner()
+
+    assert runner.render_summary(fixed_v5_report(runner)) == runner.render_summary(
+        expected_report()
+    )
+
+
+@pytest.mark.doc_drift
+def test_documented_schema_binding_makes_fixture_transition_mechanical(tmp_path):
+    runner = load_runner()
+    documentation = tmp_path / "evaluation.md"
+    source = runner.DOCS.read_text(encoding="utf-8")
+    documentation.write_text(
+        source.replace(
+            "Reviewed report schema version: `4`.",
+            "Reviewed report schema version: `5`.",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"bound to report schema version 5.*fixture is version 4.*update.*binding and fixture together.*do not fabricate",
+    ):
+        runner.check_documented_summary(expected_report(), documentation)
+
+
+def test_v5_serialization_excludes_payloads_and_response_bodies():
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    serialized = json.dumps(report, sort_keys=True)
+
+    for secret in (
+        "fixed-baseline-response-body",
+        "fixed-true-response-body",
+        "fixed-error-response-body",
+        " AND 1=1-- ",
+        " AND 2=2-- ",
+        " AND 7=7-- ",
+    ):
+        assert secret not in serialized, (
+            "v5 serialized a payload or response body; retain only role, status, "
+            "body size, digest, and mechanically derived relations instead."
+        )
+
+
+def test_v5_strict_record_fields_reject_sensitive_values():
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    _report_record(report, "dsvw-time-id")["payload"] = "sensitive-probe"
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"Invalid v5 fields.*dsvw-time-id.*remove payloads, bodies, headers, cookies, and URLs.*current runner",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_v5_request_count_must_equal_evidence_count():
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    record = _report_record(report, "dsvw-time-id")
+    record["evidence"].pop()
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-time-id.*request_count differs from its evidence entry count.*Remeasure",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_v5_relations_are_recomputed_from_evidence():
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    record = _report_record(report, "dsvw-blind-boolean-id")
+    record["relations"]["baseline_stable"] = False
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-blind-boolean-id.*relations disagree with its body digests.*derived mechanically",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_v5_unexpected_difference_requires_distinct_stable_2xx_pairs():
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    record = _report_record(report, "dsvw-version-query")
+    baseline_digest = next(
+        item["body_sha256"] for item in record["evidence"] if item["role"] == "baseline"
+    )
+    for item in record["evidence"]:
+        if item["role"] == "true":
+            item["body_sha256"] = baseline_digest
+    record["relations"] = runner.derive_relations(record["evidence"])
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-version-query.*contradicts unexpected_difference.*all 2xx.*pairwise-distinct.*Remeasure",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_v5_non_success_status_requires_stable_non_2xx_error_probes():
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    record = _report_record(report, "owasp-lab-error-search")
+    for item in record["evidence"]:
+        if item["role"] == "error":
+            item["status_code"] = 200
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"owasp-lab-error-search.*contradicts non_success_status.*stable non-2xx.*Remeasure",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_v5_http_response_recorder_retains_only_status_and_body_bytes():
+    runner = load_runner()
+    content_length = runner._parse_http_response(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
+    )
+    chunked = runner._parse_http_response(
+        b"HTTP/1.1 500 Error\r\nTransfer-Encoding: chunked\r\n\r\n"
+        b"4\r\nbody\r\n0\r\n\r\n"
+    )
+
+    assert content_length == runner.RecordedResponse(200, b"body")
+    assert chunked == runner.RecordedResponse(500, b"body")
 
 
 def test_zeroed_counts_cannot_hide_recorded_non_decisions():
@@ -2122,7 +2321,7 @@ def test_old_measurement_report_is_rejected_with_regeneration_guidance(old_versi
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"found {old_version}; this reader supports version 4.*rerun the measurement",
+        match=rf"found {old_version}; this reader supports legacy version 4 and current version 5.*rerun the measurement",
     ):
         runner.render_summary(report)
 
@@ -2148,7 +2347,7 @@ def test_v3_version_with_v4_shape_is_rejected_before_shape_parsing():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"found 3; this reader supports version 4.*rerun the measurement",
+        match=r"found 3; this reader supports legacy version 4 and current version 5.*rerun the measurement",
     ):
         runner.unhealthy_count(report)
 

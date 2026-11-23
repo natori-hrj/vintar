@@ -38,12 +38,14 @@ DOCS = ROOT / "docs" / "sqli-third-party-evaluation.md"
 STATE_NAME = "prepared-targets.json"
 SUMMARY_START = "<!-- third-party-measurement:start -->"
 SUMMARY_END = "<!-- third-party-measurement:end -->"
+REVIEWED_SCHEMA_PATTERN = re.compile(r"Reviewed report schema version: `([0-9]+)`\.")
 CLASSIFICATIONS = {
     "sqli.boolean": ("tp", "fn", "fp", "tn", "non_decision"),
     "sqli.time": ("tp", "fn", "fp", "tn", "non_decision"),
     "sqli.error": ("candidate", "fn", "fp", "tn", "non_decision"),
 }
-MEASUREMENT_SCHEMA_VERSION = 4
+MEASUREMENT_SCHEMA_VERSION = 5
+LEGACY_MEASUREMENT_SCHEMA_VERSION = 4
 PROBE_MODES = {
     "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
     "sqli.time": {"time": "nine_probe"},
@@ -75,11 +77,325 @@ class TargetAdapter(NamedTuple):
     startup_timeout_seconds: int
 
 
+class RecordedResponse(NamedTuple):
+    """One response retained only until its sanitized evidence is derived."""
+
+    status_code: int
+    body: bytes
+
+
 _TARGET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 
 
 class MeasurementError(RuntimeError):
     """An actionable third-party measurement failure."""
+
+
+PROBE_ROLE_ORDERS = {
+    ("sqli.boolean", "six_probe"): (
+        "baseline",
+        "baseline",
+        "true",
+        "true",
+        "false",
+        "false",
+    ),
+    ("sqli.boolean", "confirmation"): (
+        "baseline",
+        "baseline",
+        "true",
+        "true",
+        "false",
+        "false",
+        "baseline",
+        "true",
+        "false",
+        "control",
+        "true2",
+        "false2",
+        "baseline",
+        "false2",
+        "true2",
+        "control",
+        "false",
+        "true",
+    ),
+    ("sqli.time", "nine_probe"): (
+        "baseline",
+        "control",
+        "delay",
+        "control",
+        "delay",
+        "baseline",
+        "delay",
+        "baseline",
+        "control",
+    ),
+    ("sqli.error", "error_probe"): (
+        "baseline",
+        "error",
+        "baseline",
+        "error",
+    ),
+}
+
+
+def derive_relations(evidence: list[dict[str, object]]) -> dict[str, bool]:
+    """Derive equality and repeat stability solely from sanitized evidence."""
+    digests: dict[str, list[str]] = {}
+    for item in evidence:
+        role = item.get("role")
+        digest = item.get("body_sha256")
+        if type(role) is str and type(digest) is str:
+            digests.setdefault(role, []).append(digest)
+    relations = {
+        f"{role}_stable": len(set(values)) == 1
+        for role, values in sorted(digests.items())
+    }
+    for left, right in (
+        ("baseline", "true"),
+        ("baseline", "false"),
+        ("true", "false"),
+        ("baseline", "control"),
+        ("baseline", "true2"),
+        ("false", "false2"),
+        ("baseline", "error"),
+    ):
+        if left in digests and right in digests:
+            relations[f"{left}_equals_{right}"] = (
+                len(set(digests[left])) == 1
+                and len(set(digests[right])) == 1
+                and digests[left][0] == digests[right][0]
+            )
+    return relations
+
+
+def sanitized_probe_evidence(
+    roles: tuple[str, ...], responses: tuple[RecordedResponse, ...]
+) -> tuple[list[dict[str, object]], dict[str, bool]]:
+    """Discard bodies after deriving bounded, non-sensitive response evidence."""
+    if len(roles) != len(responses):
+        raise MeasurementError(
+            "Probe response evidence count differs from the fixed request plan. Check the loopback recorder and rerun the measurement instead of emitting incomplete evidence."
+        )
+    evidence = [
+        {
+            "body_sha256": hashlib.sha256(response.body).hexdigest(),
+            "body_size": len(response.body),
+            "role": role,
+            "status_code": response.status_code,
+        }
+        for role, response in zip(roles, responses, strict=True)
+    ]
+    return evidence, derive_relations(evidence)
+
+
+def _boolean_relation_is_stable(relations: dict[str, object]) -> bool:
+    return all(
+        relations.get(f"{role}_stable") is True
+        for role in ("baseline", "true", "false")
+    )
+
+
+def _validate_reason_evidence(
+    record: dict[str, object],
+    evidence: list[dict[str, object]],
+    relations: dict[str, object],
+) -> None:
+    endpoint = required_text(record, "endpoint_id", "report record")
+    check_type = required_text(record, "check_type", "report record")
+    reason = required_text(record, "reason_code", "report record")
+    statuses = [item["status_code"] for item in evidence]
+    all_success = all(type(value) is int and 200 <= value < 300 for value in statuses)
+    stable = _boolean_relation_is_stable(relations)
+    if check_type == "sqli.boolean" and reason == "unexpected_difference":
+        expected = (
+            all_success
+            and stable
+            and relations.get("baseline_equals_true") is False
+            and relations.get("baseline_equals_false") is False
+            and relations.get("true_equals_false") is False
+        )
+        if not expected:
+            raise MeasurementError(
+                f"Probe evidence for {endpoint!r} contradicts unexpected_difference: it requires all 2xx responses, stable repeated baseline/true/false pairs, and three pairwise-distinct digests. Remeasure the target and fix the recorder or reason instead of hand-editing evidence."
+            )
+    if check_type == "sqli.boolean" and reason == "boolean_candidate":
+        initial_candidate = (
+            all_success
+            and stable
+            and relations.get("baseline_equals_true") is True
+            and relations.get("baseline_equals_false") is False
+            and relations.get("true_equals_false") is False
+        )
+        if not initial_candidate:
+            raise MeasurementError(
+                f"Probe evidence for {endpoint!r} contradicts boolean_candidate: it requires stable 2xx baseline/true/false pairs with baseline equal to true and different from false. Remeasure the target and fix the recorder or reason instead of hand-editing evidence."
+            )
+        detail = record.get("detail")
+        if type(detail) is dict and detail.get("status") == "matched":
+            confirmation_match = all(
+                relations.get(name) is True
+                for name in (
+                    "control_stable",
+                    "true2_stable",
+                    "false2_stable",
+                    "baseline_equals_control",
+                    "baseline_equals_true2",
+                    "false_equals_false2",
+                )
+            )
+            if not confirmation_match:
+                raise MeasurementError(
+                    f"Probe evidence for {endpoint!r} contradicts confirmation_pattern_matched. Remeasure the target so both confirmation pairs and the baseline-preserving control reproduce the declared relation."
+                )
+    if check_type == "sqli.boolean" and reason == "candidate_confirmation_mismatch":
+        initial_candidate = (
+            relations.get("baseline_equals_true") is True
+            and relations.get("baseline_equals_false") is False
+            and relations.get("true_equals_false") is False
+        )
+        matched = all(
+            relations.get(name) is True
+            for name in (
+                "baseline_equals_control",
+                "baseline_equals_true2",
+                "false_equals_false2",
+            )
+        )
+        if not all_success or not stable or not initial_candidate or matched:
+            raise MeasurementError(
+                f"Probe evidence for {endpoint!r} contradicts candidate_confirmation_mismatch. Remeasure the target so stable 2xx evidence shows an eligible initial candidate and a mismatching confirmation relation."
+            )
+    if (
+        check_type == "sqli.boolean"
+        and reason == "no_boolean_difference"
+        and not (
+            all_success
+            and stable
+            and relations.get("baseline_equals_true") is True
+            and relations.get("baseline_equals_false") is True
+            and relations.get("true_equals_false") is True
+        )
+    ):
+        raise MeasurementError(
+            f"Probe evidence for {endpoint!r} contradicts no_boolean_difference. Remeasure the target so stable 2xx baseline, true, and false digests all match."
+        )
+    if (
+        check_type == "sqli.boolean"
+        and reason == "no_boolean_difference_literal_input"
+        and not (
+            all_success
+            and stable
+            and relations.get("baseline_equals_true") is False
+            and relations.get("baseline_equals_false") is False
+            and relations.get("true_equals_false") is True
+        )
+    ):
+        raise MeasurementError(
+            f"Probe evidence for {endpoint!r} contradicts no_boolean_difference_literal_input. Remeasure the target so stable 2xx true and false digests match each other but differ from baseline."
+        )
+    if (
+        check_type == "sqli.time"
+        and reason
+        in {
+            "timing_pattern_matched",
+            "timing_pattern_not_matched",
+            "unstable_timing",
+            "ambiguous_timing",
+        }
+        and not all_success
+    ):
+        raise MeasurementError(
+            f"Probe evidence for {endpoint!r} contradicts {reason}: timing analysis requires completed 2xx responses. Remeasure the target and preserve a transport reason for non-2xx evidence."
+        )
+    if (
+        check_type == "sqli.error"
+        and reason
+        in {
+            "dbms_error_disclosed",
+            "dbms_error_not_observed",
+            "baseline_dbms_error",
+            "unstable_response",
+            "unstable_error_signal",
+            "ambiguous_dbms_error",
+        }
+        and not all_success
+    ):
+        raise MeasurementError(
+            f"Probe evidence for {endpoint!r} contradicts {reason}: analytical Error results require completed 2xx responses. Remeasure the target and preserve the non-success reason instead."
+        )
+    if check_type == "sqli.error" and reason == "non_success_status":
+        probe_statuses = [
+            item["status_code"] for item in evidence if item["role"] == "error"
+        ]
+        if (
+            len(probe_statuses) != 2
+            or len(set(probe_statuses)) != 1
+            or 200 <= probe_statuses[0] < 300
+        ):
+            raise MeasurementError(
+                f"Probe evidence for {endpoint!r} contradicts non_success_status: repeated Error probes must have one stable non-2xx status. Remeasure the target and fix the recorder or reason instead of hand-editing evidence."
+            )
+
+
+def _validate_probe_evidence(record: dict[str, object]) -> None:
+    """Validate strict v5 evidence, order, derived relations, and reason consistency."""
+    endpoint = required_text(record, "endpoint_id", "report record")
+    evidence = record.get("evidence")
+    relations = record.get("relations")
+    if type(evidence) is not list or type(relations) is not dict:
+        raise MeasurementError(
+            f"Measurement record {endpoint!r} lacks strict v5 evidence or derived relations. Remeasure with the current runner instead of fabricating probe evidence."
+        )
+    planned_roles = PROBE_ROLE_ORDERS.get(
+        (record.get("check_type"), record.get("mode"))
+    )
+    request_count = record.get("request_count")
+    expected_roles = (
+        planned_roles[:request_count]
+        if planned_roles is not None and type(request_count) is int
+        else None
+    )
+    if record.get("request_count") != len(evidence):
+        raise MeasurementError(
+            f"Measurement record {endpoint!r} request_count differs from its evidence entry count. Remeasure the target so every request has exactly one sanitized evidence entry."
+        )
+    if (
+        expected_roles is None
+        or tuple(item.get("role") if type(item) is dict else None for item in evidence)
+        != expected_roles
+    ):
+        raise MeasurementError(
+            f"Measurement record {endpoint!r} evidence roles do not match the fixed request order. Remeasure the target and fix the recorder instead of reordering evidence."
+        )
+    for index, item in enumerate(evidence, start=1):
+        if type(item) is not dict or item.keys() != {
+            "body_sha256",
+            "body_size",
+            "role",
+            "status_code",
+        }:
+            raise MeasurementError(
+                f"Measurement record {endpoint!r} evidence entry {index} has invalid fields. Store only role, HTTP status, body byte size, and SHA-256 digest; remeasure instead of hand-editing it."
+            )
+        if (
+            type(item["status_code"]) is not int
+            or not 100 <= item["status_code"] <= 599
+            or type(item["body_size"]) is not int
+            or item["body_size"] < 0
+            or type(item["body_sha256"]) is not str
+            or not is_sha256(item["body_sha256"])
+        ):
+            raise MeasurementError(
+                f"Measurement record {endpoint!r} evidence entry {index} has an invalid status, size, or body digest. Remeasure the target to regenerate bounded non-sensitive evidence."
+            )
+    derived = derive_relations(evidence)
+    if relations != derived:
+        raise MeasurementError(
+            f"Measurement record {endpoint!r} relations disagree with its body digests. Remeasure the target so relations are derived mechanically instead of hand-edited."
+        )
+    _validate_reason_evidence(record, evidence, relations)
 
 
 def _validate_error_detail(record: dict[str, object]) -> None:
@@ -159,24 +475,27 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     """Accept only the current multi-target measurement report contract."""
     if type(report) is not dict:
         raise MeasurementError(
-            "The third-party measurement report is not a JSON object. This reader supports schema version 4; rerun the measurement to regenerate the report."
+            "The third-party measurement report is not a JSON object. This reader supports schema versions 4 and 5; rerun the measurement to regenerate the report."
         )
     version = report.get("schema_version")
-    if type(version) is not int or version != MEASUREMENT_SCHEMA_VERSION:
+    if type(version) is not int or version not in {
+        LEGACY_MEASUREMENT_SCHEMA_VERSION,
+        MEASUREMENT_SCHEMA_VERSION,
+    }:
         found = repr(version) if version is not None else "missing"
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema version: found {found}; this reader supports version 4. The multi-target shape cannot be inferred from an older report; rerun the measurement to regenerate it."
+            f"Unsupported third-party measurement report schema version: found {found}; this reader supports legacy version 4 and current version 5. The report shape cannot be inferred from another version; rerun the measurement to regenerate it."
         )
     if report.keys() != {"counts", "records", "schema_version", "targets"}:
         raise MeasurementError(
-            "Invalid third-party measurement report v4 top-level keys. Use targets, records, counts.overall, counts.by_target, and schema_version; rerun the current measurement instead of mixing v3 and v4 keys."
+            f"Invalid third-party measurement report v{version} top-level keys. Use targets, records, counts.overall, counts.by_target, and schema_version; rerun the current measurement instead of mixing report versions."
         )
     records = report["records"]
     counts_value = report["counts"]
     metadata = report["targets"]
     if type(records) is not list or type(metadata) is not dict:
         raise MeasurementError(
-            "Invalid third-party measurement report v4 structure. Use target-keyed metadata, record objects, and both count trees; rerun the measurement."
+            f"Invalid third-party measurement report v{version} structure. Use target-keyed metadata, record objects, and both count trees; rerun the measurement."
         )
     targets, declarations = load_declarations()
     if metadata.keys() != targets.keys():
@@ -199,7 +518,7 @@ def validate_measurement_report(report: object) -> dict[str, object]:
         }
         if type(value) is not dict or value.keys() != required:
             raise MeasurementError(
-                f"Measurement target metadata differs for target {target_id!r}. Use complete v4 prepared provenance and rerun the measurement."
+                f"Measurement target metadata differs for target {target_id!r}. Use complete prepared provenance and rerun the measurement."
             )
         for field in (
             "archive_sha256",
@@ -269,9 +588,27 @@ def validate_measurement_report(report: object) -> dict[str, object]:
 
     recomputed_records: list[dict[str, object]] = []
     for record in records:
+        if version == MEASUREMENT_SCHEMA_VERSION and record.keys() != {
+            "actual_verdict",
+            "check_type",
+            "classification",
+            "detail",
+            "endpoint_id",
+            "evidence",
+            "expected_label",
+            "expected_verdict",
+            "mode",
+            "reason_code",
+            "relations",
+            "request_count",
+            "target_id",
+        }:
+            raise MeasurementError(
+                f"Invalid v5 fields for measurement record {record.get('endpoint_id')!r}. Store only the reviewed result, sanitized evidence, and derived relations; remove payloads, bodies, headers, cookies, and URLs by remeasuring with the current runner."
+            )
         if type(record.get("detail")) is not dict or "confirmation" in record:
             raise MeasurementError(
-                "Invalid third-party measurement report v4 record. Use target_id, check_type, and the sibling detail object; rerun instead of mixing an older record shape."
+                f"Invalid third-party measurement report v{version} record. Use target_id, check_type, and the sibling detail object; rerun instead of mixing an older record shape."
             )
         check_type = record.get("check_type")
         if (
@@ -307,6 +644,12 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             )
         if check_type == "sqli.error":
             _validate_error_detail(record)
+        if version == MEASUREMENT_SCHEMA_VERSION:
+            _validate_probe_evidence(record)
+        elif "evidence" in record or "relations" in record:
+            raise MeasurementError(
+                f"Legacy v4 measurement record {key[1]!r} contains v5 probe evidence. Rerun the measurement instead of mixing report versions."
+            )
         recomputed_records.append({**record, "classification": classification})
 
     recomputed = counts(recomputed_records)
@@ -315,7 +658,7 @@ def validate_measurement_report(report: object) -> dict[str, object]:
         "by_target",
     }:
         raise MeasurementError(
-            "Invalid third-party measurement report v4 counts. Supply exactly counts.overall and counts.by_target, then rerun the measurement."
+            f"Invalid third-party measurement report v{version} counts. Supply exactly counts.overall and counts.by_target, then rerun the measurement."
         )
     difference = _first_difference(counts_value, recomputed)
     if difference is not None:
@@ -335,10 +678,31 @@ class _BridgeServer(socketserver.ThreadingTCPServer):
     def __init__(self, upstream: tuple[str, int]) -> None:
         self.upstream = upstream
         self.handler_failed = False
+        self.responses: list[RecordedResponse] = []
+        self.response_condition = threading.Condition()
         super().__init__(("127.0.0.1", 0), _BridgeHandler)
 
+    def record_response(self, response: RecordedResponse) -> None:
+        with self.response_condition:
+            self.responses.append(response)
+            self.response_condition.notify_all()
+
+    def recorded_responses(self, expected: int) -> tuple[RecordedResponse, ...]:
+        with self.response_condition:
+            complete = self.response_condition.wait_for(
+                lambda: len(self.responses) >= expected or self.handler_failed,
+                timeout=5,
+            )
+            if not complete or len(self.responses) != expected:
+                raise MeasurementError(
+                    "The loopback recorder response count differs from the completed request count. Check response framing and rerun the measurement."
+                )
+            return tuple(self.responses)
+
     def handle_error(self, request: object, client_address: tuple[str, int]) -> None:
-        self.handler_failed = True
+        with self.response_condition:
+            self.handler_failed = True
+            self.response_condition.notify_all()
 
 
 class _BridgeHandler(socketserver.BaseRequestHandler):
@@ -348,22 +712,93 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
         server = self.server
         if not isinstance(server, _BridgeServer):
             raise TypeError("Unexpected loopback bridge server.")
+        response = bytearray()
         with socket.create_connection(server.upstream, timeout=5) as upstream:
             peers = (self.request, upstream)
             while True:
                 readable, _, _ = select.select(peers, (), (), 10)
                 if not readable:
                     raise TimeoutError("Loopback bridge exchange timed out.")
+                finished = False
                 for source in readable:
                     content = source.recv(65536)
                     if not content:
-                        return
+                        finished = True
+                        break
                     destination = upstream if source is self.request else self.request
+                    if source is upstream:
+                        response.extend(content)
                     destination.sendall(content)
+                if finished:
+                    break
+        recorded = _parse_http_response(bytes(response))
+        server.record_response(recorded)
+
+
+def _decode_chunked_body(body: bytes) -> bytes:
+    decoded = bytearray()
+    remaining = body
+    while True:
+        line, separator, remaining = remaining.partition(b"\r\n")
+        if not separator:
+            raise MeasurementError(
+                "The loopback recorder received an incomplete chunked response. Check the target HTTP framing and rerun the measurement."
+            )
+        try:
+            size = int(line.split(b";", 1)[0], 16)
+        except ValueError as exc:
+            raise MeasurementError(
+                "The loopback recorder received invalid chunk framing. Check the target HTTP response and rerun the measurement."
+            ) from exc
+        if size == 0:
+            return bytes(decoded)
+        if len(remaining) < size + 2 or remaining[size : size + 2] != b"\r\n":
+            raise MeasurementError(
+                "The loopback recorder received a truncated chunk. Check the target HTTP response and rerun the measurement."
+            )
+        decoded.extend(remaining[:size])
+        remaining = remaining[size + 2 :]
+
+
+def _parse_http_response(response: bytes) -> RecordedResponse:
+    headers, separator, body = response.partition(b"\r\n\r\n")
+    lines = headers.split(b"\r\n")
+    if not separator or not lines:
+        raise MeasurementError(
+            "The loopback recorder could not parse an HTTP response. Check the target transport and rerun the measurement."
+        )
+    status = lines[0].split(b" ", 2)
+    try:
+        status_code = int(status[1])
+    except (IndexError, ValueError) as exc:
+        raise MeasurementError(
+            "The loopback recorder received an invalid HTTP status line. Check the target transport and rerun the measurement."
+        ) from exc
+    header_values: dict[bytes, bytes] = {}
+    for line in lines[1:]:
+        name, marker, value = line.partition(b":")
+        if marker:
+            header_values[name.strip().lower()] = value.strip().lower()
+    if b"chunked" in header_values.get(b"transfer-encoding", b""):
+        body = _decode_chunked_body(body)
+    elif b"content-length" in header_values:
+        try:
+            length = int(header_values[b"content-length"])
+        except ValueError as exc:
+            raise MeasurementError(
+                "The loopback recorder received an invalid Content-Length. Check the target response and rerun the measurement."
+            ) from exc
+        if len(body) != length:
+            raise MeasurementError(
+                "The loopback recorder body length disagrees with Content-Length. Check the target response and rerun the measurement."
+            )
+    return RecordedResponse(status_code, body)
 
 
 @contextmanager
-def loopback_bridge(upstream_host: str, target: TargetAdapter) -> Iterator[str]:
+def loopback_bridge(
+    upstream_host: str, target: TargetAdapter
+) -> Iterator[tuple[str, _BridgeServer]]:
     """Expose one private container only through an ephemeral loopback socket."""
     try:
         server = _BridgeServer((upstream_host, target.service_port))
@@ -386,7 +821,7 @@ def loopback_bridge(upstream_host: str, target: TargetAdapter) -> Iterator[str]:
         )
     try:
         port = server.server_address[1]
-        yield f"http://127.0.0.1:{port}"
+        yield f"http://127.0.0.1:{port}", server
     finally:
         server.shutdown()
         server.server_close()
@@ -1020,6 +1455,7 @@ def run_pipeline_case(
     folder: Path,
     origin: str,
     planned: PlannedMeasurement,
+    recorder: _BridgeServer,
 ) -> dict[str, object]:
     """Run all four CLI stages for one reviewed record and probe mode."""
     record = planned.declaration
@@ -1221,16 +1657,22 @@ def run_pipeline_case(
         raise MeasurementError(
             "Verification omitted request or check evidence. Check the installed Vintar report contract."
         )
+    roles = PROBE_ROLE_ORDERS[(check_type, report_mode)][:request_count]
+    evidence, relations = sanitized_probe_evidence(
+        roles, recorder.recorded_responses(request_count)
+    )
     return {
         "actual_verdict": verdict,
         "check_type": check_type,
         "classification": classify(check_type, label, verdict, reason),
         "detail": detail,
         "endpoint_id": record_id,
+        "evidence": evidence,
         "expected_label": label,
         "expected_verdict": expected_verdict,
         "mode": report_mode,
         "reason_code": reason,
+        "relations": relations,
         "request_count": request_count,
         "target_id": target_id,
     }
@@ -1461,6 +1903,13 @@ def check_documented_summary(
         raise MeasurementError(
             "The third-party evaluation document is unreadable. Restore the reviewed summary and rerun."
         ) from exc
+    reviewed_version = REVIEWED_SCHEMA_PATTERN.search(text)
+    report_version = report.get("schema_version")
+    if reviewed_version is None or int(reviewed_version.group(1)) != report_version:
+        found = reviewed_version.group(1) if reviewed_version is not None else "missing"
+        raise MeasurementError(
+            f"The reviewed documentation is bound to report schema version {found}, but the supplied fixture is version {report_version!r}. After a real measurement, update the documented schema binding and fixture together; do not fabricate or silently upgrade evidence."
+        )
     if expected not in text:
         raise MeasurementError(
             "Actual third-party results differ from docs/sqli-third-party-evaluation.md. Review the saved report and update the documented summary instead of accepting drift silently."
@@ -1470,6 +1919,10 @@ def check_documented_summary(
 def write_report(path: Path, report: dict[str, object]) -> None:
     """Atomically save an actual report outside the repository."""
     validate_measurement_report(report)
+    if report.get("schema_version") != MEASUREMENT_SCHEMA_VERSION:
+        raise MeasurementError(
+            "New measurement output requires schema version 5 with real per-probe evidence. Rerun the current measurement instead of writing a legacy v4 fixture."
+        )
     resolved = path.resolve()
     if resolved == ROOT or ROOT in resolved.parents:
         raise MeasurementError(
@@ -1529,8 +1982,10 @@ def measure(workspace: Path, output: Path) -> dict[str, object]:
                 raise MeasurementError(
                     f"Resolved service images changed between cases for target {target_id!r}. Stop and make the Compose configuration deterministic before measuring."
                 )
-            with loopback_bridge(upstream, planned.target) as origin:
-                records.append(run_pipeline_case(case_folder, origin, planned))
+            with loopback_bridge(upstream, planned.target) as (origin, recorder):
+                records.append(
+                    run_pipeline_case(case_folder, origin, planned, recorder)
+                )
         finally:
             stop_target(planned.target, image_tag, project)
     records.sort(
