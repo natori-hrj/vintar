@@ -22,7 +22,15 @@ from vintar.checks.sqli.confirmation_runner import (
     ConfirmationStatus,
     verify_boolean_sqli_with_confirmation,
 )
-from vintar.checks.sqli.error_analyzer import ERROR_PROBE_ORDER
+from vintar.checks.sqli.error_analyzer import (
+    ERROR_PROBE_ORDER,
+    ErrorEvidence,
+    ErrorMatch,
+    ErrorObservation,
+    ErrorProbeKind,
+    classify_error_observations,
+)
+from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES, ErrorAnalysisStatus
 from vintar.checks.sqli.models import Verdict
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
 from vintar.checks.sqli.presets import get_boolean_confirmation_preset
@@ -736,7 +744,17 @@ def fixed_v5_report(runner):
                 bodies["true"] = bodies["baseline"]
                 bodies["false"] = bodies["baseline"]
         elif record["check_type"] == "sqli.error":
-            if reason == "dbms_error_not_observed":
+            if reason == "dbms_error_disclosed":
+                bodies["error"] = {
+                    "sqlite_operational_syntax": (
+                        b"sqlite3.OperationalError: near token syntax error"
+                    ),
+                    "mysql_syntax_error_1064": (
+                        b"You have an error in your SQL syntax; check the manual "
+                        b"that corresponds to your MySQL server version"
+                    ),
+                }[record["detail"]["signature_id"]]
+            elif reason == "dbms_error_not_observed":
                 bodies["error"] = bodies["baseline"]
             elif reason == "non_success_status":
                 statuses["error"] = 500
@@ -744,7 +762,9 @@ def fixed_v5_report(runner):
             runner._recorded_response(statuses[role], iter((bodies[role],)))
             for role in roles
         )
-        evidence, relations = runner.sanitized_probe_evidence(roles, responses)
+        evidence, relations = runner.sanitized_probe_evidence(
+            roles, responses, check_type=record["check_type"]
+        )
         record["evidence"] = evidence
         record["relations"] = relations
     return report
@@ -1952,6 +1972,8 @@ def test_v5_serialization_excludes_payloads_and_response_bodies():
         "fixed-baseline-response-body",
         "fixed-true-response-body",
         "fixed-error-response-body",
+        "sqlite3.OperationalError: near token syntax error",
+        "You have an error in your SQL syntax; check the manual",
         " AND 1=1-- ",
         " AND 2=2-- ",
         " AND 7=7-- ",
@@ -2040,7 +2062,7 @@ def test_fixed_dsvw_request_order_derives_and_validates_boolean_candidate():
         runner.RecordedResponse(200, 1394, matching_digest),
     )
     evidence, relations = runner.sanitized_probe_evidence(
-        runner.BOOLEAN_REPORT_ROLES, responses
+        runner.BOOLEAN_REPORT_ROLES, responses, check_type="sqli.boolean"
     )
 
     assert relations == {
@@ -2100,7 +2122,7 @@ def test_v5_unexpected_difference_requires_distinct_stable_2xx_pairs():
         runner.validate_measurement_report(report)
 
 
-def test_v5_non_success_status_requires_stable_non_2xx_error_probes():
+def test_v5_non_success_status_is_reclassified_by_shared_error_analyzer():
     runner = load_runner()
     report = fixed_v5_report(runner)
     record = _report_record(report, "owasp-lab-error-search")
@@ -2110,9 +2132,247 @@ def test_v5_non_success_status_requires_stable_non_2xx_error_probes():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"owasp-lab-error-search.*contradicts non_success_status.*stable non-2xx.*Remeasure",
+        match=r"owasp-lab-error-search.*classifies as not_matched/dbms_error_not_observed.*contradicts the stored Error result.*Remeasure.*classify_error_observations",
     ):
         runner.validate_measurement_report(report)
+
+
+def _error_observations(
+    *,
+    baseline_statuses=(200, 200),
+    probe_statuses=(200, 200),
+    baseline_matches=((), ()),
+    probe_matches=((), ()),
+):
+    values = (
+        (ErrorProbeKind.BASELINE, baseline_statuses[0], baseline_matches[0]),
+        (ErrorProbeKind.PROBE, probe_statuses[0], probe_matches[0]),
+        (ErrorProbeKind.BASELINE, baseline_statuses[1], baseline_matches[1]),
+        (ErrorProbeKind.PROBE, probe_statuses[1], probe_matches[1]),
+    )
+    return tuple(
+        ErrorObservation(
+            kind=kind,
+            sequence=sequence,
+            status_code=status,
+            body_size=100 + sequence,
+            body_digest=f"{sequence:064x}",
+            truncated=False,
+            matches=matches,
+        )
+        for sequence, (kind, status, matches) in enumerate(values, start=1)
+    )
+
+
+def _set_error_record_from_observations(runner, report, record, observations):
+    status, reason, result_evidence = classify_error_observations(observations)
+    responses = tuple(
+        runner.RecordedResponse(
+            item.status_code,
+            item.body_size,
+            item.body_digest,
+            item.truncated,
+            item.matches,
+        )
+        for item in observations
+    )
+    record["evidence"], record["relations"] = runner.sanitized_probe_evidence(
+        runner.ERROR_REPORT_ROLES,
+        responses,
+        check_type="sqli.error",
+    )
+    rule = ERROR_RESULT_RULES[reason]
+    record["actual_verdict"] = rule.product_verdict.value
+    record["reason_code"] = reason
+    record["request_count"] = len(observations)
+    record["classification"] = runner.classify(
+        "sqli.error",
+        record["expected_label"],
+        record["actual_verdict"],
+        reason,
+    )
+    detail = {
+        "status": status.value,
+        "reason_code": reason,
+        "request_count": len(observations),
+    }
+    if result_evidence is not None:
+        detail.update(
+            dbms=result_evidence.dbms,
+            signature_id=result_evidence.signature_id,
+        )
+    record["detail"] = detail
+    report["counts"] = runner.counts(report["records"])
+    return status, reason, result_evidence
+
+
+SQLITE_MATCH = ErrorMatch("sqlite", "sqlite_operational_syntax")
+MYSQL_MATCH = ErrorMatch("mysql", "mysql_syntax_error_1064")
+
+
+def test_fixed_dsvw_500_disclosure_uses_shared_error_classifier():
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    record = _report_record(report, "dsvw-error-id")
+    observations = _error_observations(
+        probe_statuses=(500, 500),
+        probe_matches=((SQLITE_MATCH,), (SQLITE_MATCH,)),
+    )
+    assert _set_error_record_from_observations(
+        runner, report, record, observations
+    ) == (
+        ErrorAnalysisStatus.MATCHED,
+        "dbms_error_disclosed",
+        ErrorEvidence("sqlite", "sqlite_operational_syntax"),
+    )
+    assert runner.validate_measurement_report(report) is report
+
+
+@pytest.mark.parametrize(
+    ("observations", "expected_reason"),
+    [
+        (
+            _error_observations(
+                probe_statuses=(500, 500),
+                probe_matches=((), ()),
+            ),
+            "non_success_status",
+        ),
+        (
+            _error_observations(
+                probe_matches=((SQLITE_MATCH,), ()),
+            ),
+            "unstable_error_signal",
+        ),
+        (
+            _error_observations(
+                probe_matches=(
+                    (MYSQL_MATCH, SQLITE_MATCH),
+                    (MYSQL_MATCH, SQLITE_MATCH),
+                ),
+            ),
+            "ambiguous_dbms_error",
+        ),
+        (
+            _error_observations(
+                baseline_matches=((SQLITE_MATCH,), (SQLITE_MATCH,)),
+                probe_matches=((SQLITE_MATCH,), (SQLITE_MATCH,)),
+            ),
+            "baseline_dbms_error",
+        ),
+        (
+            _error_observations(
+                baseline_statuses=(500, 500),
+                probe_statuses=(200, 200),
+            ),
+            "non_success_status",
+        ),
+    ],
+)
+def test_tampered_error_reason_is_rejected_by_shared_classifier(
+    observations, expected_reason
+):
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    record = _report_record(report, "dsvw-error-id")
+    responses = tuple(
+        runner.RecordedResponse(
+            item.status_code,
+            item.body_size,
+            item.body_digest,
+            item.truncated,
+            item.matches,
+        )
+        for item in observations
+    )
+    record["evidence"], record["relations"] = runner.sanitized_probe_evidence(
+        runner.ERROR_REPORT_ROLES,
+        responses,
+        check_type="sqli.error",
+    )
+
+    assert classify_error_observations(observations)[1] == expected_reason
+    with pytest.raises(
+        runner.MeasurementError,
+        match=rf"dsvw-error-id.*classifies as .*{expected_reason}.*contradicts the stored Error result.*Remeasure.*classify_error_observations",
+    ):
+        runner.validate_measurement_report(report)
+
+
+ANALYTICAL_ERROR_OBSERVATIONS = {
+    "dbms_error_disclosed": _error_observations(
+        probe_statuses=(500, 500),
+        probe_matches=((SQLITE_MATCH,), (SQLITE_MATCH,)),
+    ),
+    "dbms_error_not_observed": _error_observations(),
+    "baseline_dbms_error": _error_observations(
+        baseline_matches=((SQLITE_MATCH,), (SQLITE_MATCH,)),
+    ),
+    "unstable_response": _error_observations(baseline_statuses=(200, 201)),
+    "unstable_error_signal": _error_observations(probe_matches=((SQLITE_MATCH,), ())),
+    "ambiguous_dbms_error": _error_observations(
+        probe_matches=(
+            (MYSQL_MATCH, SQLITE_MATCH),
+            (MYSQL_MATCH, SQLITE_MATCH),
+        ),
+    ),
+    "non_success_status": _error_observations(probe_statuses=(500, 500)),
+}
+
+
+def test_fixed_observations_cover_every_analytical_error_rule():
+    assert set(ANALYTICAL_ERROR_OBSERVATIONS) == {
+        reason
+        for reason, rule in ERROR_RESULT_RULES.items()
+        if rule.requires_complete_four
+    }, (
+        "Fixed report observations must cover every analytical Error rule. "
+        "Add a reviewed observation relation when ERROR_RESULT_RULES changes."
+    )
+
+
+@pytest.mark.parametrize(
+    "observations",
+    ANALYTICAL_ERROR_OBSERVATIONS.values(),
+)
+def test_every_analytical_error_rule_round_trips_through_report_validator(
+    observations,
+):
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    record = _report_record(report, "dsvw-error-id")
+    _, reason, _ = _set_error_record_from_observations(
+        runner, report, record, observations
+    )
+
+    assert ERROR_RESULT_RULES[reason].requires_complete_four
+    assert runner.validate_measurement_report(report) is report
+
+
+@pytest.mark.parametrize("reason", ERROR_RESULT_RULES)
+def test_every_error_result_rule_round_trips_through_report_detail(reason):
+    runner = load_runner()
+    rule = ERROR_RESULT_RULES[reason]
+    request_count = 4 if rule.requires_complete_four else rule.minimum_requests
+    detail = {
+        "status": rule.analysis_status.value,
+        "reason_code": reason,
+        "request_count": request_count,
+    }
+    if rule.requires_evidence:
+        detail.update(
+            dbms="sqlite",
+            signature_id="sqlite_operational_syntax",
+        )
+    record = {
+        "actual_verdict": rule.product_verdict.value,
+        "detail": detail,
+        "endpoint_id": "contract-error-record",
+        "reason_code": reason,
+        "request_count": request_count,
+    }
+
+    runner._validate_error_detail(record)
 
 
 def test_v5_http_response_recorder_retains_only_status_size_and_digest():
