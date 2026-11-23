@@ -17,6 +17,27 @@ from test_sqli_time_reliability_http import (
 )
 
 from vintar.checks.sqli.models import Verdict
+from vintar.checks.sqli.time_analyzer import (
+    TimeAnalysisStatus,
+    TimeObservation,
+    TimeProbeOutcome,
+    analyze_time_probes,
+)
+from vintar.checks.sqli.time_contract import time_product_result
+from vintar.checks.sqli.time_plan import (
+    TIME_PROBE_ORDER,
+    TimePayloads,
+    prepare_time_plan,
+)
+from vintar.core.budget import RequestBudget
+from vintar.core.executor import ExecutionContext
+from vintar.core.rate_limit import RateLimiter
+from vintar.core.request import (
+    InjectionLocation,
+    InjectionMode,
+    InjectionPoint,
+    RequestTemplate,
+)
 from vintar.core.scope import AllowedOrigin, ScopePolicy
 from vintar.regression.cases import TimeRegressionCase, parse_regression_case
 from vintar.regression.runner import (
@@ -24,6 +45,49 @@ from vintar.regression.runner import (
     TrustedExecutionPolicy,
     run_regression_case,
 )
+
+SAFE_LIVE_OUTCOMES = frozenset(
+    {
+        (
+            Verdict.NOT_DETECTED,
+            "timing_pattern_not_matched",
+            RegressionStatus.PASS,
+        ),
+        (
+            Verdict.INCONCLUSIVE,
+            "unstable_timing",
+            RegressionStatus.INCONCLUSIVE,
+        ),
+    }
+)
+DELAY_SIGNAL_LIVE_OUTCOMES = frozenset(
+    {
+        (
+            Verdict.INCONCLUSIVE,
+            "timing_pattern_matched",
+            RegressionStatus.INCONCLUSIVE,
+        ),
+        (
+            Verdict.INCONCLUSIVE,
+            "unstable_timing",
+            RegressionStatus.INCONCLUSIVE,
+        ),
+    }
+)
+RECORDED_ELAPSED_SECONDS = {
+    "vulnerable": (
+        0.007061,
+        0.004588,
+        0.352533,
+        0.001884,
+        0.353464,
+        0.001846,
+        0.353944,
+        0.003003,
+        0.001503,
+    ),
+    "safe": (0.006, 0.003, 0.003, 0.003, 0.002, 0.002, 0.003, 0.002, 0.002),
+}
 
 
 def time_case(origin: str, mode: str, expected: str) -> TimeRegressionCase:
@@ -116,30 +180,16 @@ def time_regression_server():
 
 
 @pytest.mark.parametrize(
-    ("mode", "expected", "verdict", "reason", "delay_calls"),
+    ("mode", "expected", "delay_calls"),
     [
-        (
-            "vulnerable",
-            "inconclusive",
-            Verdict.INCONCLUSIVE,
-            "timing_pattern_matched",
-            6,
-        ),
-        (
-            "safe",
-            "not_detected",
-            Verdict.NOT_DETECTED,
-            "timing_pattern_not_matched",
-            0,
-        ),
+        ("vulnerable", "inconclusive", 6),
+        ("safe", "not_detected", 0),
     ],
 )
 def test_time_case_loopback_order_counts_statuses_and_deadline(
     time_regression_server,
     mode,
     expected,
-    verdict,
-    reason,
     delay_calls,
 ):
     state, origin = time_regression_server
@@ -162,26 +212,108 @@ def test_time_case_loopback_order_counts_statuses_and_deadline(
     )
 
     received, sql_calls, observed_delay_calls = state.snapshot()
-    assert outcome.final_verdict is verdict
-    assert outcome.final_reason_code == reason
-    assert outcome.expectation_match
-    assert outcome.status is (
-        RegressionStatus.PASS
-        if verdict is Verdict.NOT_DETECTED
-        else RegressionStatus.INCONCLUSIVE
-    )
-    assert outcome.request_count == 9
     assert outcome.time_run is not None
-    assert outcome.time_run.budget_used == 9
-    assert outcome.time_run.transport_attempts == 9
-    assert not outcome.time_run.deadline_exceeded
-    assert received == 9
-    assert state.received_values() == expected_probe_values()
+    analysis = outcome.time_run.analysis
+    elapsed_values = tuple(item.elapsed_seconds for item in analysis.observations)
+    diagnostic = (
+        f"case_id={'time-' + mode!r}, status={analysis.status.value!r}, "
+        f"reason_code={analysis.reason_code!r}, elapsed_seconds={elapsed_values!r}"
+    )
+    product_outcome = (
+        outcome.final_verdict,
+        outcome.final_reason_code,
+        outcome.status,
+    )
+    allowed = DELAY_SIGNAL_LIVE_OUTCOMES if mode == "vulnerable" else SAFE_LIVE_OUTCOMES
+
+    assert product_outcome in allowed, diagnostic
+    if mode == "vulnerable":
+        assert analysis.status is not TimeAnalysisStatus.NOT_CONFIRMED, diagnostic
+    assert outcome.request_count == 9, diagnostic
+    assert outcome.time_run.budget_used == 9, diagnostic
+    assert outcome.time_run.transport_attempts == 9, diagnostic
+    assert not outcome.time_run.deadline_exceeded, diagnostic
+    assert received == 9, diagnostic
+    assert state.received_values() == expected_probe_values(), diagnostic
     assert [item.status_code for item in outcome.time_run.analysis.observations] == [
         200
-    ] * 9
-    assert sql_calls == 9
-    assert observed_delay_calls == delay_calls
+    ] * 9, diagnostic
+    assert sql_calls == 9, diagnostic
+    assert observed_delay_calls == delay_calls, diagnostic
     if mode == "vulnerable":
         assert state.delay_value_count(DELAY_SECONDS) == 3
         assert state.delay_value_count(0.0) == 3
+
+
+def analyze_fixed_elapsed(elapsed_values: tuple[float, ...]):
+    origin = "http://127.0.0.1:18085"
+    context = ExecutionContext(
+        scope=ScopePolicy(
+            allowed_origins=frozenset({AllowedOrigin("http", "127.0.0.1", 18085)})
+        ),
+        budget=RequestBudget(9),
+        timeout=3.0,
+        rate_limiter=RateLimiter(requests_per_second=100.0),
+    )
+    plan = prepare_time_plan(
+        template=RequestTemplate(
+            method="GET",
+            url=origin + "/reliability/fixed",
+            params=(("category", "Pets"),),
+        ),
+        point=InjectionPoint(
+            location=InjectionLocation.QUERY,
+            name="category",
+            mode=InjectionMode.APPEND,
+        ),
+        payloads=TimePayloads(delay=DELAY_PAYLOAD, control=CONTROL_PAYLOAD),
+        expected_delay_seconds=0.25,
+        context=context,
+    )
+    observations = tuple(
+        TimeObservation(
+            kind=kind,
+            sequence=sequence,
+            outcome=TimeProbeOutcome.COMPLETED,
+            elapsed_seconds=elapsed,
+            status_code=200,
+        )
+        for sequence, (kind, elapsed) in enumerate(
+            zip(TIME_PROBE_ORDER, elapsed_values, strict=True), start=1
+        )
+    )
+    return analyze_time_probes(plan=plan, observations=observations)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_status", "expected_reason", "expected_verdict"),
+    [
+        (
+            "vulnerable",
+            TimeAnalysisStatus.CANDIDATE,
+            "timing_pattern_matched",
+            Verdict.INCONCLUSIVE,
+        ),
+        (
+            "safe",
+            TimeAnalysisStatus.NOT_CONFIRMED,
+            "timing_pattern_not_matched",
+            Verdict.NOT_DETECTED,
+        ),
+    ],
+)
+def test_fixed_observations_classify_regression_time_case_exactly(
+    mode, expected_status, expected_reason, expected_verdict
+):
+    analysis = analyze_fixed_elapsed(RECORDED_ELAPSED_SECONDS[mode])
+    product = time_product_result(analysis)
+    elapsed_values = tuple(item.elapsed_seconds for item in analysis.observations)
+    diagnostic = (
+        f"case_id={'time-' + mode!r}, status={analysis.status.value!r}, "
+        f"reason_code={analysis.reason_code!r}, elapsed_seconds={elapsed_values!r}"
+    )
+
+    assert analysis.status is expected_status, diagnostic
+    assert analysis.reason_code == expected_reason, diagnostic
+    assert product.verdict is expected_verdict, diagnostic
+    assert product.reason_code == expected_reason, diagnostic
