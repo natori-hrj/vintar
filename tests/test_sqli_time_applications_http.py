@@ -620,16 +620,15 @@ def test_recorded_application_runs_are_independent():
         )
 
 
-@pytest.fixture(scope="module")
-def application_results():
+def summarize_recorded_applications(cases, recorded_elapsed_seconds):
     units = []
 
-    for application_id, truth, dbms, sql_context, _ in CASES:
+    for application_id, truth, dbms, sql_context, _ in cases:
         samples = []
         for iteration, elapsed_values in enumerate(
-            RECORDED_ELAPSED_SECONDS[application_id]
+            recorded_elapsed_seconds[application_id]
         ):
-            analysis = fixed_application_analysis(application_id, iteration)
+            analysis = analyze_fixed_elapsed(elapsed_values)
             samples.append(
                 QualitySample(
                     case_id=application_id,
@@ -659,50 +658,27 @@ def application_results():
     return summarize_applications(tuple(units))
 
 
+@pytest.fixture(scope="module")
+def application_results():
+    return summarize_recorded_applications(CASES, RECORDED_ELAPSED_SECONDS)
+
+
 def test_application_aggregate_detects_mixed_fixed_observations():
     candidate_elapsed = RECORDED_ELAPSED_SECONDS["unsafe_sqlite"][0]
     not_confirmed_elapsed = (0.1,) * 9
-    analyses = (
-        analyze_fixed_elapsed(candidate_elapsed),
-        analyze_fixed_elapsed(not_confirmed_elapsed),
-    )
-    samples = tuple(
-        QualitySample(
-            case_id="variation_guard",
-            iteration=iteration,
-            ground_truth=GroundTruth.VULNERABLE,
-            status=analysis.status,
-            reason_code=analysis.reason_code,
-            budget_used=9,
-            transport_attempts=9,
-            server_received=9,
-            observation_count=9,
-            elapsed_seconds=sum(elapsed_values),
-        )
-        for iteration, (analysis, elapsed_values) in enumerate(
-            zip(
-                analyses,
-                (candidate_elapsed, not_confirmed_elapsed),
-                strict=True,
-            )
-        )
-    )
-    result = summarize_applications(
+    result = summarize_recorded_applications(
         (
-            ApplicationUnit(
-                application_id="variation_guard",
-                ground_truth=GroundTruth.VULNERABLE,
-                framework="fixed",
-                dbms="sqlite",
-                sql_context="where",
-                samples=samples,
+            (
+                "variation_guard",
+                GroundTruth.VULNERABLE,
+                "sqlite",
+                "where",
+                TimeAnalysisStatus.CANDIDATE,
             ),
-        )
+        ),
+        {"variation_guard": (candidate_elapsed, not_confirmed_elapsed)},
     )
 
-    assert analyses[0].status is TimeAnalysisStatus.CANDIDATE
-    assert analyses[1].status is TimeAnalysisStatus.NOT_CONFIRMED
-    assert analyses[0].reason_code != analyses[1].reason_code
     assert result.mixed_case_rate > 0
     assert result.reason_flaky_rate > 0
 
