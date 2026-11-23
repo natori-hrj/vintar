@@ -115,6 +115,7 @@ class FixtureState:
     sql_executions: Counter = field(default_factory=Counter)
     errors: Counter = field(default_factory=Counter)
     delay_evaluations: Counter = field(default_factory=Counter)
+    delay_statement_executions: Counter = field(default_factory=Counter)
     received: dict[str, list[str]] = field(default_factory=dict)
     lock: threading.Lock = field(
         default_factory=threading.Lock,
@@ -142,6 +143,14 @@ class FixtureState:
     def delay_evaluation_count(self, key: str, seconds: float) -> int:
         with self.lock:
             return self.delay_evaluations[(key, seconds)]
+
+    def record_delay_statement_execution(self, key: str, seconds: float) -> None:
+        with self.lock:
+            self.delay_statement_executions[(key, seconds)] += 1
+
+    def delay_statement_execution_count(self, key: str, seconds: float) -> int:
+        with self.lock:
+            return self.delay_statement_executions[(key, seconds)]
 
     def snapshot(self, key: str) -> tuple[int, int, int]:
         with self.lock:
@@ -267,7 +276,7 @@ def database_query(
     mode: str,
     category: str,
     password: str,
-    on_delay: Callable[[float], None],
+    on_delay_statement_execution: Callable[[float], None],
 ) -> bytes:
     with (
         closing(database_connection(engine, password)) as connection,
@@ -277,7 +286,7 @@ def database_query(
             statement = f"SELECT name FROM {TABLE_NAME} WHERE category = '{category}'"
             cursor.execute(statement)
             if DATABASE_DELAY_EXPRESSIONS[engine] in statement:
-                on_delay(ACTUAL_DELAY)
+                on_delay_statement_execution(ACTUAL_DELAY)
         else:
             cursor.execute(
                 f"SELECT name FROM {TABLE_NAME} WHERE category = %s",
@@ -293,7 +302,7 @@ def database_query(
     ("engine", "delay_payload"),
     (("postgres", POSTGRES_DELAY), ("mysql", MYSQL_DELAY)),
 )
-def test_database_query_records_executed_delay_expression(
+def test_database_query_records_delay_statement_execution(
     monkeypatch, engine, delay_payload
 ):
     cursors = []
@@ -306,7 +315,7 @@ def test_database_query_records_executed_delay_expression(
             self.executions.append((statement, params))
 
         def fetchall(self):
-            return [("Cat toy",)]
+            return []
 
         def close(self):
             return None
@@ -326,30 +335,44 @@ def test_database_query_records_executed_delay_expression(
         return FakeConnection()
 
     monkeypatch.setitem(globals(), "database_connection", fake_connection)
-    vulnerable_delays = []
-    safe_delays = []
+    vulnerable_delay_statements = []
+    safe_delay_statements = []
 
     vulnerable_body = database_query(
         engine,
         "vulnerable",
         "Pets" + delay_payload,
         "unused",
-        vulnerable_delays.append,
+        vulnerable_delay_statements.append,
     )
     safe_body = database_query(
         engine,
         "safe",
         "Pets" + delay_payload,
         "unused",
-        safe_delays.append,
+        safe_delay_statements.append,
     )
 
-    assert vulnerable_body == b"Cat toy"
-    assert safe_body == b"Cat toy"
-    assert vulnerable_delays == [ACTUAL_DELAY]
-    assert safe_delays == []
+    assert vulnerable_body == b""
+    assert safe_body == b""
+    assert vulnerable_delay_statements == [ACTUAL_DELAY]
+    assert safe_delay_statements == []
     assert DATABASE_DELAY_EXPRESSIONS[engine] in cursors[0].executions[0][0]
     assert cursors[1].executions[0][1] == ("Pets" + delay_payload,)
+
+
+def test_fixture_state_separates_delay_counter_semantics():
+    state = FixtureState()
+
+    state.record_delay_evaluation("sqlite:vulnerable", ACTUAL_DELAY)
+    state.record_delay_statement_execution("postgres:vulnerable", ACTUAL_DELAY)
+
+    assert state.delay_evaluation_count("sqlite:vulnerable", ACTUAL_DELAY) == 1
+    assert state.delay_statement_execution_count("sqlite:vulnerable", ACTUAL_DELAY) == 0
+    assert state.delay_evaluation_count("postgres:vulnerable", ACTUAL_DELAY) == 0
+    assert (
+        state.delay_statement_execution_count("postgres:vulnerable", ACTUAL_DELAY) == 1
+    )
 
 
 def create_app(
@@ -426,9 +449,11 @@ def create_app(
                     mode,
                     category,
                     password,
-                    on_delay=lambda seconds: state.record_delay_evaluation(
-                        key,
-                        seconds,
+                    on_delay_statement_execution=lambda seconds: (
+                        state.record_delay_statement_execution(
+                            key,
+                            seconds,
+                        )
                     ),
                 )
         except (sqlite3.Error, psycopg.Error, pymysql.MySQLError):
@@ -881,6 +906,6 @@ def test_database_time_http_corpus(
         diagnostic
     )
 
-    assert state.delay_evaluation_count(key, ACTUAL_DELAY) == (
+    assert state.delay_statement_execution_count(key, ACTUAL_DELAY) == (
         3 if delay_signal else 0
     ), diagnostic
