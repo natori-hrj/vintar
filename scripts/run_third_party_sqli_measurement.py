@@ -1392,7 +1392,7 @@ def render_measurement_input_revisions(
     for entry in revisions:
         target = required_text(entry, "target", "confirmation revision")
         endpoint = required_text(entry, "endpoint", "confirmation revision")
-        key = (target, endpoint)
+        key = (target, endpoint, "confirmation")
         if key in history:
             raise MeasurementError(
                 f"Duplicate confirmation history for {target}/{endpoint}. "
@@ -1401,18 +1401,28 @@ def render_measurement_input_revisions(
         history[key] = required_text(entry, "history", "confirmation revision")
 
     targets, records = load_declarations()
+    declared_keys = set()
     for planned in plan_measurements(targets, records):
         target, endpoint, _, mode = planned.key
         if mode != "confirmation":
             continue
+        key = (target, endpoint, mode)
+        declared_keys.add(key)
         with planned.config.open("rb") as stream:
             probes = tomllib.load(stream)["probes"]
-        if probes.get("selection") == "explicit" and (target, endpoint) not in history:
+        if probes.get("selection") == "explicit" and key not in history:
             raise MeasurementError(
                 f"{target}/{endpoint} uses explicit confirmation inputs without "
                 "documented history. Add a confirmation entry to "
                 "measurement-input-revisions.toml and regenerate the revisions section."
             )
+    if stale_keys := history.keys() - declared_keys:
+        target, endpoint, mode = min(stale_keys)
+        raise MeasurementError(
+            f"Stale measurement revision for {target}/{endpoint}/{mode}: the docs "
+            "would present a removed config as current. Remove the entry from "
+            "measurement-input-revisions.toml and regenerate the revisions section."
+        )
 
     lines = [
         "## Measurement input revisions",
@@ -1422,8 +1432,8 @@ def render_measurement_input_revisions(
         "",
     ]
     lines.extend(
-        f"- `{target}` / `{endpoint}` / confirmation. {text}"
-        for (target, endpoint), text in sorted(history.items())
+        f"- `{target}` / `{endpoint}` / {mode}. {text}"
+        for (target, endpoint, mode), text in sorted(history.items())
     )
     return "\n".join(lines)
 

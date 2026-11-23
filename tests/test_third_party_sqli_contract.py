@@ -1774,6 +1774,24 @@ def test_missing_measurement_input_revision_is_rejected(tmp_path):
         runner.render_measurement_input_revisions(revisions)
 
 
+def test_stale_measurement_input_revision_is_rejected(tmp_path):
+    runner = load_runner()
+    original = THIRD_PARTY / "measurement-input-revisions.toml"
+    revisions = tmp_path / original.name
+    revisions.write_text(
+        original.read_text(encoding="utf-8")
+        + '\n[[confirmation]]\ntarget = "sqli-dojo"\nendpoint = "removed-endpoint"\n'
+        'history = "This configuration was removed."\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"Stale.*sqli-dojo/removed-endpoint/confirmation.*removed config as current.*Remove the entry",
+    ):
+        runner.render_measurement_input_revisions(revisions)
+
+
 def test_mysql_by_target_counts_are_recomputed_from_records():
     runner = load_runner()
     report = expected_report()
