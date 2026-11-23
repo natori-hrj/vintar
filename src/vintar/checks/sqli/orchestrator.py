@@ -20,6 +20,15 @@ from vintar.core.request import InjectionPoint, RequestTemplate
 from vintar.core.scope import validate_scope
 from vintar.core.template import validate_template
 
+BOOLEAN_PROBE_ORDER = (
+    ProbeKind.BASELINE,
+    ProbeKind.TRUE,
+    ProbeKind.FALSE,
+    ProbeKind.BASELINE,
+    ProbeKind.FALSE,
+    ProbeKind.TRUE,
+)
+
 
 def _observation(
     kind: ProbeKind,
@@ -104,14 +113,12 @@ def verify_boolean_sqli(
         validate_template(item)
         validate_scope(item.url, context.scope)
 
-    plan = (
-        (ProbeKind.BASELINE, template),
-        (ProbeKind.TRUE, true_template),
-        (ProbeKind.FALSE, false_template),
-        (ProbeKind.BASELINE, template),
-        (ProbeKind.FALSE, false_template),
-        (ProbeKind.TRUE, true_template),
-    )
+    requests = {
+        ProbeKind.BASELINE: template,
+        ProbeKind.TRUE: true_template,
+        ProbeKind.FALSE: false_template,
+    }
+    plan = tuple((kind, requests[kind]) for kind in BOOLEAN_PROBE_ORDER)
 
     if context.budget.remaining < len(plan):
         return VerificationResult(

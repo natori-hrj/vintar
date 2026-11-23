@@ -17,12 +17,16 @@ import yaml
 from test_sqli_candidate_reliability import classify as reliability_classify
 from typer.testing import CliRunner
 
+from vintar.checks.sqli.confirmation import CONFIRMATION_ORDER
 from vintar.checks.sqli.confirmation_runner import (
     ConfirmationStatus,
     verify_boolean_sqli_with_confirmation,
 )
+from vintar.checks.sqli.error_analyzer import ERROR_PROBE_ORDER
 from vintar.checks.sqli.models import Verdict
+from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
 from vintar.checks.sqli.presets import get_boolean_confirmation_preset
+from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER
 from vintar.cli import app
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
@@ -1992,6 +1996,87 @@ def test_v5_relations_are_recomputed_from_evidence():
     with pytest.raises(
         runner.MeasurementError,
         match=r"dsvw-blind-boolean-id.*relations disagree with its body digests.*derived mechanically",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_report_probe_roles_are_derived_from_production_orders():
+    runner = load_runner()
+
+    assert runner.BOOLEAN_REPORT_ROLES == tuple(
+        kind.value for kind in BOOLEAN_PROBE_ORDER
+    )
+    assert runner.CONFIRMATION_REPORT_ROLES == runner.BOOLEAN_REPORT_ROLES + tuple(
+        runner._confirmation_role(kind) for kind in CONFIRMATION_ORDER
+    )
+    assert runner.TIME_REPORT_ROLES == tuple(kind.value for kind in TIME_PROBE_ORDER)
+    assert runner.ERROR_REPORT_ROLES == tuple(
+        runner._error_role(kind) for kind in ERROR_PROBE_ORDER
+    )
+
+
+def test_confirmation_roles_start_with_boolean_order_then_confirmation_order():
+    runner = load_runner()
+    initial_count = len(BOOLEAN_PROBE_ORDER)
+
+    assert runner.CONFIRMATION_REPORT_ROLES[:initial_count] == tuple(
+        kind.value for kind in BOOLEAN_PROBE_ORDER
+    )
+    assert runner.CONFIRMATION_REPORT_ROLES[initial_count:] == tuple(
+        runner._confirmation_role(kind) for kind in CONFIRMATION_ORDER
+    )
+
+
+def test_fixed_dsvw_request_order_derives_and_validates_boolean_candidate():
+    runner = load_runner()
+    matching_digest = "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced"
+    false_digest = "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1"
+    responses = (
+        runner.RecordedResponse(200, 1394, matching_digest),
+        runner.RecordedResponse(200, 1394, matching_digest),
+        runner.RecordedResponse(200, 1333, false_digest),
+        runner.RecordedResponse(200, 1394, matching_digest),
+        runner.RecordedResponse(200, 1333, false_digest),
+        runner.RecordedResponse(200, 1394, matching_digest),
+    )
+    evidence, relations = runner.sanitized_probe_evidence(
+        runner.BOOLEAN_REPORT_ROLES, responses
+    )
+
+    assert relations == {
+        "baseline_stable": True,
+        "false_stable": True,
+        "true_stable": True,
+        "baseline_equals_true": True,
+        "baseline_equals_false": False,
+        "true_equals_false": False,
+    }
+    report = fixed_v5_report(runner)
+    record = next(
+        row
+        for row in report["records"]
+        if row["endpoint_id"] == "dsvw-blind-boolean-id" and row["mode"] == "six_probe"
+    )
+    record["evidence"] = evidence
+    record["relations"] = relations
+    assert runner.validate_measurement_report(report) is report
+
+
+def test_changed_repeated_true_digest_still_rejects_boolean_candidate():
+    runner = load_runner()
+    report = fixed_v5_report(runner)
+    record = next(
+        row
+        for row in report["records"]
+        if row["endpoint_id"] == "dsvw-blind-boolean-id" and row["mode"] == "six_probe"
+    )
+    true_evidence = [item for item in record["evidence"] if item["role"] == "true"]
+    true_evidence[1]["body_sha256"] = "0" * 64
+    record["relations"] = runner.derive_relations(record["evidence"])
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-blind-boolean-id.*contradicts boolean_candidate.*stable 2xx.*Remeasure",
     ):
         runner.validate_measurement_report(report)
 

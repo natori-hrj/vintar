@@ -28,8 +28,12 @@ from third_party_sqli_contract import (
     validate_service_image_mapping,
 )
 
+from vintar.checks.sqli.confirmation import CONFIRMATION_ORDER, ConfirmationKind
+from vintar.checks.sqli.error_analyzer import ERROR_PROBE_ORDER, ErrorProbeKind
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
+from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
+from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER
 
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
@@ -92,52 +96,32 @@ class MeasurementError(RuntimeError):
     """An actionable third-party measurement failure."""
 
 
+def _confirmation_role(kind: ConfirmationKind) -> str:
+    if kind is ConfirmationKind.TRUE_1:
+        return "true"
+    if kind is ConfirmationKind.FALSE_1:
+        return "false"
+    if kind is ConfirmationKind.BASELINE_PRESERVING_CONTROL:
+        return "control"
+    return kind.value.replace("_", "")
+
+
+def _error_role(kind: ErrorProbeKind) -> str:
+    return "error" if kind is ErrorProbeKind.PROBE else kind.value
+
+
+BOOLEAN_REPORT_ROLES = tuple(kind.value for kind in BOOLEAN_PROBE_ORDER)
+CONFIRMATION_REPORT_ROLES = BOOLEAN_REPORT_ROLES + tuple(
+    _confirmation_role(kind) for kind in CONFIRMATION_ORDER
+)
+TIME_REPORT_ROLES = tuple(kind.value for kind in TIME_PROBE_ORDER)
+ERROR_REPORT_ROLES = tuple(_error_role(kind) for kind in ERROR_PROBE_ORDER)
+
 PROBE_ROLE_ORDERS = {
-    ("sqli.boolean", "six_probe"): (
-        "baseline",
-        "baseline",
-        "true",
-        "true",
-        "false",
-        "false",
-    ),
-    ("sqli.boolean", "confirmation"): (
-        "baseline",
-        "baseline",
-        "true",
-        "true",
-        "false",
-        "false",
-        "baseline",
-        "true",
-        "false",
-        "control",
-        "true2",
-        "false2",
-        "baseline",
-        "false2",
-        "true2",
-        "control",
-        "false",
-        "true",
-    ),
-    ("sqli.time", "nine_probe"): (
-        "baseline",
-        "control",
-        "delay",
-        "control",
-        "delay",
-        "baseline",
-        "delay",
-        "baseline",
-        "control",
-    ),
-    ("sqli.error", "error_probe"): (
-        "baseline",
-        "error",
-        "baseline",
-        "error",
-    ),
+    ("sqli.boolean", "six_probe"): BOOLEAN_REPORT_ROLES,
+    ("sqli.boolean", "confirmation"): CONFIRMATION_REPORT_ROLES,
+    ("sqli.time", "nine_probe"): TIME_REPORT_ROLES,
+    ("sqli.error", "error_probe"): ERROR_REPORT_ROLES,
 }
 
 
