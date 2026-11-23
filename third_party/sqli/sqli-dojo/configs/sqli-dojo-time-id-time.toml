@@ -1,0 +1,25 @@
+# The MySQL SLEEP relation and fixed 0.5-second expectation were reviewed before measurement.
+config_version = 1
+type = "sqli.time"
+input_id = "input-cd830e9d6b74c85da764108226a46c4e"
+
+[target]
+url = "__ORIGIN__/lookup_person.php"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "id"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "explicit"
+delay_payload = " AND IF(1=1,SLEEP(0.5),0)"
+control_payload = " AND IF(1=2,SLEEP(0.5),0)"
+expected_delay_seconds = 0.5
+
+[limits]
+max_requests = 9
+requests_per_second = 10.0
+timeout_seconds = 5.0

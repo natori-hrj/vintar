@@ -1,0 +1,21 @@
+config_version = 1
+input_id = "input-ad87295e6521cda804be52b80e0ee734"
+
+[target]
+url = "__ORIGIN__/lookup_person.php"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "source"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "preset"
+preset = "numeric"
+
+[limits]
+max_requests = 18
+requests_per_second = 10.0
+timeout_seconds = 5.0

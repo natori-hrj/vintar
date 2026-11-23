@@ -2,7 +2,19 @@
 
 ## [Unreleased]
 
+**Added**
+
+- Extend the pinned-source third-party SQLi evaluation with the independent
+  MySQL 8-backed sqli-dojo-docker target, including reviewed positive and
+  non-SQL negative records for Boolean, Time, and Error checks.
+- Add the PostgreSQL 16-backed OWASP Training Lab to the pinned-source
+  third-party SQLi corpus, with reviewed GET-only positive and non-SQL negative
+  records for Boolean, Time, and Error checks.
+
 **Changed**
+
+- Render a cross-target DBMS and technique matrix with observed non-decisions
+  from the validated v4 report. Select documentation drift tests with `-m doc_drift`.
 
 - Generalize the manual third-party SQLi evaluation harness to declaration
   version 2 and report version 4, with target-bound provenance and both overall

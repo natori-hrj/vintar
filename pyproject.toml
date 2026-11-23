@@ -44,6 +44,8 @@ source-include = ["CHANGELOG.md"]
 extend-select = ["I", "UP", "B", "RUF", "TID", "RUF100", "BLE001"]
 
 [tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = ["doc_drift: checks repository documentation against its source of truth"]
 filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]
 
 [tool.coverage.run]

@@ -2,6 +2,7 @@
 
 import re
 
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 _IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
@@ -12,6 +13,11 @@ class ServiceImageMismatch(ValueError):
 def is_image_digest(value: object) -> bool:
     """Return whether a value is an exact Docker SHA-256 image digest."""
     return type(value) is str and _IMAGE_DIGEST.fullmatch(value) is not None
+
+
+def is_sha256(value: object) -> bool:
+    """Return whether a value is exactly 64 lowercase hexadecimal characters."""
+    return type(value) is str and _SHA256.fullmatch(value) is not None
 
 
 def pinned_image_digest(reference: object) -> str | None:

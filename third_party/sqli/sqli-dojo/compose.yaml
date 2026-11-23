@@ -1,0 +1,62 @@
+services:
+  dojo:
+    image: "${SQLI_DOJO_IMAGE:?Run scripts/prepare_third_party_sqli.py first}"
+    pull_policy: never
+    environment:
+      DB_HOST: mysql
+      DB_DATABASE: sqlidojo
+      DB_USER: dojouser
+      DB_PASSWORD: dojouser
+      FILTER_CHARACTERS: "<>"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - >-
+        php -r '$$pdo = new PDO("mysql:host=mysql;dbname=sqlidojo", "dojouser", "dojouser");
+        foreach (array_filter(array_map("trim", explode(";", file_get_contents("/var/upstream/init.sql")))) as $$statement) { $$pdo->exec($$statement); }
+        require "/var/upstream/init.php";' && exec apache2-foreground
+    expose:
+      - "80"
+    networks:
+      - measurement
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - "exit(file_get_contents('http://127.0.0.1/index.php') === false ? 1 : 0);"
+      interval: 1s
+      timeout: 3s
+      retries: 90
+      start_period: 2s
+
+  mysql:
+    image: "mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+    pull_policy: never
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: sqlidojo
+      MYSQL_USER: dojouser
+      MYSQL_PASSWORD: dojouser
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - measurement
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "mysqladmin ping -h 127.0.0.1 -u root --password=$$MYSQL_ROOT_PASSWORD --silent"
+      interval: 1s
+      timeout: 3s
+      retries: 90
+      start_period: 2s
+
+networks:
+  measurement:
+    internal: true
+
+volumes:
+  mysql-data:

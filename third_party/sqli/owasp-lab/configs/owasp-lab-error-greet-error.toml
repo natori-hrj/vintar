@@ -1,0 +1,23 @@
+# The reflected-only negative uses the same pre-measurement unmatched quote.
+config_version = 1
+type = "sqli.error"
+input_id = "input-b714f64e50b1e26b75d7ac44596d3b74"
+
+[target]
+url = "__ORIGIN__/a03/greet"
+allowed_origin = "__ORIGIN__"
+
+[injection]
+location = "query"
+name = "name"
+occurrence = 0
+mode = "append"
+
+[probes]
+selection = "explicit"
+error_payload = "'"
+
+[limits]
+max_requests = 4
+requests_per_second = 10.0
+timeout_seconds = 5.0
