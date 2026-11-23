@@ -56,8 +56,9 @@ CLASSIFICATIONS = {
     "sqli.time": ("tp", "fn", "fp", "tn", "non_decision"),
     "sqli.error": ("candidate", "fn", "fp", "tn", "non_decision"),
 }
-MEASUREMENT_SCHEMA_VERSION = 5
+MEASUREMENT_SCHEMA_VERSION = 6
 LEGACY_MEASUREMENT_SCHEMA_VERSION = 4
+UNSUPPORTED_ERROR_EVIDENCE_SCHEMA_VERSION = 5
 PROBE_MODES = {
     "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
     "sqli.time": {"time": "nine_probe"},
@@ -384,13 +385,13 @@ def _validate_error_probe_evidence(
 
 
 def _validate_probe_evidence(record: dict[str, object]) -> None:
-    """Validate strict v5 evidence, order, derived relations, and reason consistency."""
+    """Validate strict v6 evidence, order, derived relations, and reason consistency."""
     endpoint = required_text(record, "endpoint_id", "report record")
     evidence = record.get("evidence")
     relations = record.get("relations")
     if type(evidence) is not list or type(relations) is not dict:
         raise MeasurementError(
-            f"Measurement record {endpoint!r} lacks strict v5 evidence or derived relations. Remeasure with the current runner instead of fabricating probe evidence."
+            f"Measurement record {endpoint!r} lacks strict v6 evidence or derived relations. Remeasure with the current runner instead of fabricating probe evidence."
         )
     planned_roles = PROBE_ROLE_ORDERS.get(
         (record.get("check_type"), record.get("mode"))
@@ -531,16 +532,20 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     """Accept only the current multi-target measurement report contract."""
     if type(report) is not dict:
         raise MeasurementError(
-            "The third-party measurement report is not a JSON object. This reader supports schema versions 4 and 5; rerun the measurement to regenerate the report."
+            "The third-party measurement report is not a JSON object. This reader supports schema versions 4 and 6; rerun the measurement to regenerate the report."
         )
     version = report.get("schema_version")
+    if version == UNSUPPORTED_ERROR_EVIDENCE_SCHEMA_VERSION:
+        raise MeasurementError(
+            "Unsupported third-party measurement report schema version 5: v5 Error evidence lacks the sanitized truncation and signature-match facts required for validation. Remeasure with the current tooling to produce a schema version 6 report; the missing facts cannot be reconstructed without response bodies."
+        )
     if type(version) is not int or version not in {
         LEGACY_MEASUREMENT_SCHEMA_VERSION,
         MEASUREMENT_SCHEMA_VERSION,
     }:
         found = repr(version) if version is not None else "missing"
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema version: found {found}; this reader supports legacy version 4 and current version 5. The report shape cannot be inferred from another version; rerun the measurement to regenerate it."
+            f"Unsupported third-party measurement report schema version: found {found}; this reader supports legacy version 4 and current version 6. The report shape cannot be inferred from another version; rerun the measurement to regenerate it."
         )
     if report.keys() != {"counts", "records", "schema_version", "targets"}:
         raise MeasurementError(
@@ -660,7 +665,7 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             "target_id",
         }:
             raise MeasurementError(
-                f"Invalid v5 fields for measurement record {record.get('endpoint_id')!r}. Store only the reviewed result, sanitized evidence, and derived relations; remove payloads, bodies, headers, cookies, and URLs by remeasuring with the current runner."
+                f"Invalid v6 fields for measurement record {record.get('endpoint_id')!r}. Store only the reviewed result, sanitized evidence, and derived relations; remove payloads, bodies, headers, cookies, and URLs by remeasuring with the current runner."
             )
         if type(record.get("detail")) is not dict or "confirmation" in record:
             raise MeasurementError(
@@ -704,7 +709,7 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             _validate_probe_evidence(record)
         elif "evidence" in record or "relations" in record:
             raise MeasurementError(
-                f"Legacy v4 measurement record {key[1]!r} contains v5 probe evidence. Rerun the measurement instead of mixing report versions."
+                f"Legacy v4 measurement record {key[1]!r} contains v6 probe evidence. Rerun the measurement instead of mixing report versions."
             )
         recomputed_records.append({**record, "classification": classification})
 
@@ -2067,7 +2072,7 @@ def write_report(path: Path, report: dict[str, object]) -> None:
     validate_measurement_report(report)
     if report.get("schema_version") != MEASUREMENT_SCHEMA_VERSION:
         raise MeasurementError(
-            "New measurement output requires schema version 5 with real per-probe evidence. Rerun the current measurement instead of writing a legacy v4 fixture."
+            "New measurement output requires schema version 6 with real per-probe evidence and sanitized Error analyzer facts. Rerun the current measurement instead of writing a legacy v4 or v5 fixture."
         )
     resolved = path.resolve()
     if resolved == ROOT or ROOT in resolved.parents:

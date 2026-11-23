@@ -705,10 +705,10 @@ def expected_report() -> dict[str, object]:
     }
 
 
-def fixed_v5_report(runner):
-    """Build test-only v5 evidence from fixed fake responses, never live fixture data."""
+def fixed_v6_report(runner):
+    """Build test-only v6 evidence from fixed fake responses, never live fixture data."""
     report = expected_report()
-    report["schema_version"] = 5
+    report["schema_version"] = 6
     raw_bodies = {
         "baseline": b"fixed-baseline-response-body",
         "true": b"fixed-true-response-body",
@@ -767,6 +767,18 @@ def fixed_v5_report(runner):
         )
         record["evidence"] = evidence
         record["relations"] = relations
+    return report
+
+
+def legacy_v5_report(runner):
+    """Build the superseded v5 shape that omitted Error analyzer facts."""
+    report = fixed_v6_report(runner)
+    report["schema_version"] = 5
+    for record in report["records"]:
+        if record["check_type"] == "sqli.error":
+            for item in record["evidence"]:
+                item.pop("truncated")
+                item.pop("matches")
     return report
 
 
@@ -1816,6 +1828,14 @@ def test_reviewed_documentation_matches_the_report_contract():
     assert rendered.count("| sqli-dojo-boolean-id |") == 2
     assert rendered.count("| sqli-dojo-boolean-source |") == 2
     assert "| sqli-dojo (mysql) |" in rendered
+    documentation = runner.DOCS.read_text(encoding="utf-8")
+    readme = (THIRD_PARTY / "README.md").read_text(encoding="utf-8")
+    error_record = _report_record(fixed_v6_report(runner), "dsvw-error-id")
+    evidence_fields = error_record["evidence"][0].keys()
+    for field in evidence_fields:
+        assert f"`{field}`" in documentation
+        assert f"`{field}`" in readme
+    assert "Reviewed report schema version: `4`." in documentation
 
 
 @pytest.mark.doc_drift
@@ -1913,15 +1933,15 @@ def test_mysql_by_target_counts_are_recomputed_from_records():
     assert runner.validate_measurement_report(report) is report
 
 
-def test_new_output_uses_v5_while_committed_v4_fixture_remains_readable():
+def test_new_output_uses_v6_while_committed_v4_fixture_remains_readable():
     runner = load_runner()
     report = expected_report()
 
     assert report["schema_version"] == runner.LEGACY_MEASUREMENT_SCHEMA_VERSION == 4
-    assert runner.MEASUREMENT_SCHEMA_VERSION == 5
+    assert runner.MEASUREMENT_SCHEMA_VERSION == 6
     assert runner.validate_measurement_report(report) is report
-    current = fixed_v5_report(runner)
-    assert current["schema_version"] == 5
+    current = fixed_v6_report(runner)
+    assert current["schema_version"] == 6
     assert runner.validate_measurement_report(current) is current
 
 
@@ -1930,15 +1950,35 @@ def test_new_writer_rejects_legacy_v4_fixture(tmp_path):
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"requires schema version 5 with real per-probe evidence.*current measurement.*legacy v4",
+        match=r"requires schema version 6 with real per-probe evidence and sanitized Error analyzer facts.*current measurement.*legacy v4 or v5",
     ):
         runner.write_report(tmp_path / "report.json", expected_report())
 
 
-def test_v5_renderer_matches_legacy_summary_without_using_evidence():
+def test_v5_error_evidence_requires_remeasurement_for_v6():
     runner = load_runner()
 
-    assert runner.render_summary(fixed_v5_report(runner)) == runner.render_summary(
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"schema version 5.*v5 Error evidence lacks the sanitized truncation and signature-match facts.*Remeasure.*schema version 6.*cannot be reconstructed",
+    ):
+        runner.validate_measurement_report(legacy_v5_report(runner))
+
+
+def test_new_writer_rejects_v5_fixture(tmp_path):
+    runner = load_runner()
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"schema version 5.*v5 Error evidence lacks.*Remeasure.*version 6",
+    ):
+        runner.write_report(tmp_path / "report.json", legacy_v5_report(runner))
+
+
+def test_v6_renderer_matches_legacy_summary_without_using_evidence():
+    runner = load_runner()
+
+    assert runner.render_summary(fixed_v6_report(runner)) == runner.render_summary(
         expected_report()
     )
 
@@ -1951,21 +1991,21 @@ def test_documented_schema_binding_makes_fixture_transition_mechanical(tmp_path)
     documentation.write_text(
         source.replace(
             "Reviewed report schema version: `4`.",
-            "Reviewed report schema version: `5`.",
+            "Reviewed report schema version: `6`.",
         ),
         encoding="utf-8",
     )
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"bound to report schema version 5.*fixture is version 4.*update.*binding and fixture together.*do not fabricate",
+        match=r"bound to report schema version 6.*fixture is version 4.*update.*binding and fixture together.*do not fabricate",
     ):
         runner.check_documented_summary(expected_report(), documentation)
 
 
-def test_v5_serialization_excludes_payloads_and_response_bodies():
+def test_v6_serialization_excludes_payloads_and_response_bodies():
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     serialized = json.dumps(report, sort_keys=True)
 
     for secret in (
@@ -1979,26 +2019,26 @@ def test_v5_serialization_excludes_payloads_and_response_bodies():
         " AND 7=7-- ",
     ):
         assert secret not in serialized, (
-            "v5 serialized a payload or response body; retain only role, status, "
+            "v6 serialized a payload or response body; retain only role, status, "
             "body size, digest, and mechanically derived relations instead."
         )
 
 
-def test_v5_strict_record_fields_reject_sensitive_values():
+def test_v6_strict_record_fields_reject_sensitive_values():
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     _report_record(report, "dsvw-time-id")["payload"] = "sensitive-probe"
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"Invalid v5 fields.*dsvw-time-id.*remove payloads, bodies, headers, cookies, and URLs.*current runner",
+        match=r"Invalid v6 fields.*dsvw-time-id.*remove payloads, bodies, headers, cookies, and URLs.*current runner",
     ):
         runner.validate_measurement_report(report)
 
 
-def test_v5_request_count_must_equal_evidence_count():
+def test_v6_request_count_must_equal_evidence_count():
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     record = _report_record(report, "dsvw-time-id")
     record["evidence"].pop()
 
@@ -2009,9 +2049,9 @@ def test_v5_request_count_must_equal_evidence_count():
         runner.validate_measurement_report(report)
 
 
-def test_v5_relations_are_recomputed_from_evidence():
+def test_v6_relations_are_recomputed_from_evidence():
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     record = _report_record(report, "dsvw-blind-boolean-id")
     record["relations"]["baseline_stable"] = False
 
@@ -2073,7 +2113,7 @@ def test_fixed_dsvw_request_order_derives_and_validates_boolean_candidate():
         "baseline_equals_false": False,
         "true_equals_false": False,
     }
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     record = next(
         row
         for row in report["records"]
@@ -2086,7 +2126,7 @@ def test_fixed_dsvw_request_order_derives_and_validates_boolean_candidate():
 
 def test_changed_repeated_true_digest_still_rejects_boolean_candidate():
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     record = next(
         row
         for row in report["records"]
@@ -2103,9 +2143,9 @@ def test_changed_repeated_true_digest_still_rejects_boolean_candidate():
         runner.validate_measurement_report(report)
 
 
-def test_v5_unexpected_difference_requires_distinct_stable_2xx_pairs():
+def test_v6_unexpected_difference_requires_distinct_stable_2xx_pairs():
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     record = _report_record(report, "dsvw-version-query")
     baseline_digest = next(
         item["body_sha256"] for item in record["evidence"] if item["role"] == "baseline"
@@ -2122,9 +2162,9 @@ def test_v5_unexpected_difference_requires_distinct_stable_2xx_pairs():
         runner.validate_measurement_report(report)
 
 
-def test_v5_non_success_status_is_reclassified_by_shared_error_analyzer():
+def test_v6_non_success_status_is_reclassified_by_shared_error_analyzer():
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     record = _report_record(report, "owasp-lab-error-search")
     for item in record["evidence"]:
         if item["role"] == "error":
@@ -2212,7 +2252,7 @@ MYSQL_MATCH = ErrorMatch("mysql", "mysql_syntax_error_1064")
 
 def test_fixed_dsvw_500_disclosure_uses_shared_error_classifier():
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     record = _report_record(report, "dsvw-error-id")
     observations = _error_observations(
         probe_statuses=(500, 500),
@@ -2273,7 +2313,7 @@ def test_tampered_error_reason_is_rejected_by_shared_classifier(
     observations, expected_reason
 ):
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     record = _report_record(report, "dsvw-error-id")
     responses = tuple(
         runner.RecordedResponse(
@@ -2339,7 +2379,7 @@ def test_every_analytical_error_rule_round_trips_through_report_validator(
     observations,
 ):
     runner = load_runner()
-    report = fixed_v5_report(runner)
+    report = fixed_v6_report(runner)
     record = _report_record(report, "dsvw-error-id")
     _, reason, _ = _set_error_record_from_observations(
         runner, report, record, observations
@@ -2375,7 +2415,7 @@ def test_every_error_result_rule_round_trips_through_report_detail(reason):
     runner._validate_error_detail(record)
 
 
-def test_v5_http_response_recorder_retains_only_status_size_and_digest():
+def test_v6_http_response_recorder_retains_only_sanitized_facts():
     runner = load_runner()
     content_length = runner._parse_http_response(
         b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
@@ -2725,7 +2765,7 @@ def test_old_measurement_report_is_rejected_with_regeneration_guidance(old_versi
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"found {old_version}; this reader supports legacy version 4 and current version 5.*rerun the measurement",
+        match=rf"found {old_version}; this reader supports legacy version 4 and current version 6.*rerun the measurement",
     ):
         runner.render_summary(report)
 
@@ -2751,7 +2791,7 @@ def test_v3_version_with_v4_shape_is_rejected_before_shape_parsing():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"found 3; this reader supports legacy version 4 and current version 5.*rerun the measurement",
+        match=r"found 3; this reader supports legacy version 4 and current version 6.*rerun the measurement",
     ):
         runner.unhealthy_count(report)
 
