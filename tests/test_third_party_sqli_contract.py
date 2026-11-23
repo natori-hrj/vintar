@@ -2036,6 +2036,41 @@ def test_v6_strict_record_fields_reject_sensitive_values():
         runner.validate_measurement_report(report)
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "missing", "expected_fields"),
+    [
+        (
+            "dsvw-error-id",
+            "matches",
+            "body_sha256, body_size, matches, role, status_code, truncated",
+        ),
+        (
+            "dsvw-error-id",
+            "truncated",
+            "body_sha256, body_size, matches, role, status_code, truncated",
+        ),
+        (
+            "dsvw-blind-boolean-id",
+            "body_size",
+            "body_sha256, body_size, role, status_code",
+        ),
+    ],
+)
+def test_v6_missing_evidence_field_lists_exact_family_fields(
+    endpoint, missing, expected_fields
+):
+    runner = load_runner()
+    report = fixed_v6_report(runner)
+    del _report_record(report, endpoint)["evidence"][0][missing]
+
+    message = (
+        f"Measurement record {endpoint!r} evidence entry 1 has invalid fields. "
+        f"Expected exactly: {expected_fields}. Remeasure instead of hand-editing the evidence."
+    )
+    with pytest.raises(runner.MeasurementError, match=re.escape(message) + "$"):
+        runner.validate_measurement_report(report)
+
+
 def test_v6_request_count_must_equal_evidence_count():
     runner = load_runner()
     report = fixed_v6_report(runner)

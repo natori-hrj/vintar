@@ -424,8 +424,10 @@ def _validate_probe_evidence(record: dict[str, object]) -> None:
         expected_fields.update(("truncated", "matches"))
     for index, item in enumerate(evidence, start=1):
         if type(item) is not dict or item.keys() != expected_fields:
+            fields = ", ".join(sorted(expected_fields))
             raise MeasurementError(
-                f"Measurement record {endpoint!r} evidence entry {index} has invalid fields. Store only role, HTTP status, body byte size, and SHA-256 digest; remeasure instead of hand-editing it."
+                f"Measurement record {endpoint!r} evidence entry {index} has invalid fields. "
+                f"Expected exactly: {fields}. Remeasure instead of hand-editing the evidence."
             )
         if (
             type(item["status_code"]) is not int
