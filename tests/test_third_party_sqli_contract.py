@@ -1740,6 +1740,40 @@ def test_reviewed_documentation_matches_the_report_contract():
     assert "| sqli-dojo (mysql) |" in rendered
 
 
+@pytest.mark.doc_drift
+def test_measurement_input_revisions_match_reviewed_configs():
+    runner = load_runner()
+    source = runner.DOCS.read_text(encoding="utf-8")
+    _, heading, section = source.partition("## Measurement input revisions\n")
+    assert heading and (heading + section.split("\n## ", 1)[0]).strip() == (
+        runner.render_measurement_input_revisions()
+    ), (
+        "Measurement input revisions differ from the declared history. "
+        "Regenerate the section with render_measurement_input_revisions()."
+    )
+
+
+def test_missing_measurement_input_revision_is_rejected(tmp_path):
+    runner = load_runner()
+    original = THIRD_PARTY / "measurement-input-revisions.toml"
+    revisions = tmp_path / original.name
+    sections = original.read_text(encoding="utf-8").split("[[confirmation]]")
+    revisions.write_text(
+        "[[confirmation]]".join(
+            section
+            for section in sections
+            if 'endpoint = "sqli-dojo-boolean-id"' not in section
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"sqli-dojo/sqli-dojo-boolean-id.*without documented history.*Add a confirmation entry",
+    ):
+        runner.render_measurement_input_revisions(revisions)
+
+
 def test_mysql_by_target_counts_are_recomputed_from_records():
     runner = load_runner()
     report = expected_report()

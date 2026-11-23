@@ -1382,6 +1382,52 @@ def render_summary(report: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def render_measurement_input_revisions(
+    revisions_path: Path = THIRD_PARTY / "measurement-input-revisions.toml",
+) -> str:
+    """Render the review history for every explicit confirmation config."""
+    with revisions_path.open("rb") as stream:
+        revisions = tomllib.load(stream)["confirmation"]
+    history = {}
+    for entry in revisions:
+        target = required_text(entry, "target", "confirmation revision")
+        endpoint = required_text(entry, "endpoint", "confirmation revision")
+        key = (target, endpoint)
+        if key in history:
+            raise MeasurementError(
+                f"Duplicate confirmation history for {target}/{endpoint}. "
+                "Keep one entry per endpoint in measurement-input-revisions.toml."
+            )
+        history[key] = required_text(entry, "history", "confirmation revision")
+
+    targets, records = load_declarations()
+    for planned in plan_measurements(targets, records):
+        target, endpoint, _, mode = planned.key
+        if mode != "confirmation":
+            continue
+        with planned.config.open("rb") as stream:
+            probes = tomllib.load(stream)["probes"]
+        if probes.get("selection") == "explicit" and (target, endpoint) not in history:
+            raise MeasurementError(
+                f"{target}/{endpoint} uses explicit confirmation inputs without "
+                "documented history. Add a confirmation entry to "
+                "measurement-input-revisions.toml and regenerate the revisions section."
+            )
+
+    lines = [
+        "## Measurement input revisions",
+        "",
+        "Inputs are fixed for each measurement. The entries below identify explicit",
+        "confirmation configurations and record any earlier measurements.",
+        "",
+    ]
+    lines.extend(
+        f"- `{target}` / `{endpoint}` / confirmation. {text}"
+        for (target, endpoint), text in sorted(history.items())
+    )
+    return "\n".join(lines)
+
+
 def check_documented_summary(
     report: dict[str, object], documentation: Path = DOCS
 ) -> None:

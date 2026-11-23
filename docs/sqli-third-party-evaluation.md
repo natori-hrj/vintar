@@ -42,7 +42,7 @@ concatenates it into a MySQL query. The independent `source` negative is handled
 by `src/common/view_source.php:1-31`, which renders the page source and terminates
 before the vulnerable page reaches SQL. The Boolean numeric predicates, MySQL
 `SLEEP(0.5)` Time relation, Error quote, and 0.5-second Time expectation were all
-fixed before measurement.
+fixed for each measurement. The confirmation input revision is recorded below.
 
 The OWASP Training Lab labels come from MIT-licensed commit
 `9cb62dd2e30b08a0ddc753247c62b54b90e933ed`, whose archive SHA-256 is
@@ -70,6 +70,15 @@ The run is local-only. Preparation verifies the pinned archive before building a
 records the local image digest. Measurement uses `--pull=never`, an internal Docker
 network, and an ephemeral loopback-only published port. It runs a fresh target
 and fresh declared database volume for every record and mode.
+
+## Measurement input revisions
+
+Inputs are fixed for each measurement. The entries below identify explicit
+confirmation configurations and record any earlier measurements.
+
+- `owasp-lab` / `owasp-lab-boolean-greet` / confirmation. The reviewed configuration uses explicit confirmation inputs. No earlier preset measurement is recorded.
+- `owasp-lab` / `owasp-lab-boolean-search` / confirmation. The reviewed configuration uses explicit confirmation inputs. No earlier preset measurement is recorded.
+- `sqli-dojo` / `sqli-dojo-boolean-id` / confirmation. The initial numeric-preset measurement returned `candidate_confirmation_mismatch` (non-decision). The target's character filtering removed the distinction between the two confirmation predicates. The fixture was then revised to use explicit confirmation inputs. The tables show the post-revision remeasurement.
 
 ## Reviewed measurement
 
