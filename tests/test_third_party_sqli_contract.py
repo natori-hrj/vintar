@@ -1687,6 +1687,107 @@ def test_error_acceptance_contract_keeps_candidate_distinct_from_vulnerability()
     }
 
 
+REJECTED_INPUT_SENTINEL = "SENTINEL-SECRET-7f3a"
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "diagnostic"),
+    [
+        (
+            ("schema_version",),
+            {"value": REJECTED_INPUT_SENTINEL},
+            r"schema_version.*JSON type object.*integer.*4 or 7",
+        ),
+        (
+            ("schema_version",),
+            REJECTED_INPUT_SENTINEL,
+            r"schema_version.*JSON type string.*integer.*4 or 7",
+        ),
+        (
+            ("targets", REJECTED_INPUT_SENTINEL),
+            {},
+            r"at targets.*object with missing or unexpected keys.*declared in targets.toml",
+        ),
+        (
+            ("targets", "sqli-dojo", "service_images"),
+            {REJECTED_INPUT_SENTINEL: REJECTED_INPUT_SENTINEL},
+            r"targets.sqli-dojo.service_images.*JSON type object.*Expected an object",
+        ),
+        (
+            ("records", 0, "endpoint_id"),
+            {"value": REJECTED_INPUT_SENTINEL},
+            r"records\[0\].endpoint_id.*JSON type object.*Expected a reviewed nonempty string",
+        ),
+        (
+            ("records", 0, "expected_verdict"),
+            REJECTED_INPUT_SENTINEL,
+            r"records\[0\].expected_verdict.*JSON type string.*Expected string",
+        ),
+        (
+            ("records", 0, "classification"),
+            REJECTED_INPUT_SENTINEL,
+            r"records\[0\].classification.*JSON type string.*Expected a string",
+        ),
+        (
+            ("records", 0, "reason_code"),
+            REJECTED_INPUT_SENTINEL,
+            r"records\[0\].classification.*JSON type string.*Expected string 'non_decision'",
+        ),
+        (
+            ("records", "dsvw-error-id", "detail", "status"),
+            {"value": REJECTED_INPUT_SENTINEL},
+            r"detail status.*JSON type object.*Expected string",
+        ),
+        (
+            ("records", "dsvw-error-id", "detail", "request_count"),
+            REJECTED_INPUT_SENTINEL,
+            r"detail request_count.*JSON type string.*Expected a JSON integer",
+        ),
+        (
+            ("records", "dsvw-error-id", "detail", REJECTED_INPUT_SENTINEL),
+            True,
+            r"detail fields.*unexpected keys in object.*expected only",
+        ),
+        (
+            ("counts", "overall", "sqli.boolean", "confirmation", "tp"),
+            REJECTED_INPUT_SENTINEL,
+            r"counts.overall.sqli.boolean.confirmation.tp.*JSON type string.*Expected number",
+        ),
+    ],
+)
+def test_measurement_report_diagnostics_redact_rejected_input(path, value, diagnostic):
+    runner = load_runner()
+    report = expected_report()
+    container = report
+    for part in path[:-1]:
+        if part == "dsvw-error-id" and type(container) is list:
+            container = _report_record(report, part)
+        else:
+            container = container[part]
+    container[path[-1]] = value
+
+    with pytest.raises(runner.MeasurementError, match=diagnostic) as caught:
+        runner.validate_measurement_report(report)
+    assert REJECTED_INPUT_SENTINEL not in str(caught.value)
+
+
+def test_error_evidence_diagnostic_redacts_classifier_exception(monkeypatch):
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+
+    def fail_classification(observations):
+        raise ValueError(REJECTED_INPUT_SENTINEL)
+
+    monkeypatch.setattr(runner, "classify_error_observations", fail_classification)
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"records\[\d+\].evidence.*array.*bounded analyzer sequence.*Expected an array.*Remeasure",
+    ) as caught:
+        runner.validate_measurement_report(report)
+    assert REJECTED_INPUT_SENTINEL not in str(caught.value)
+    assert caught.value.__suppress_context__
+
+
 def _report_record(report, endpoint_id):
     return next(
         record for record in report["records"] if record["endpoint_id"] == endpoint_id
@@ -1735,9 +1836,9 @@ def test_error_candidate_rejects_unreviewed_dbms_signature_pair():
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("status", "inconclusive", "status 'inconclusive' contradicts reason"),
+        ("status", "inconclusive", "status observed JSON type string.*Expected string"),
         ("reason_code", "unstable_response", "detail contradicts its top-level"),
-        ("request_count", 3, "request_count contradicts reason"),
+        ("request_count", 3, "request_count contradicts the reason"),
     ],
 )
 def test_error_candidate_values_follow_error_result_rules(field, value, message):
@@ -1762,7 +1863,7 @@ def test_error_non_candidate_rejects_forbidden_evidence_fields(evidence_value):
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"dsvw-error-version-query.*detail fields contradict ERROR_RESULT_RULES: unexpected .*dbms.*signature_id.*Remeasure.*do not hand-edit reports",
+        match=r"dsvw-error-version-query.*detail fields contradict ERROR_RESULT_RULES: unexpected keys in object; expected only .*reason_code.*request_count.*status.*Remeasure.*do not hand-edit reports",
     ):
         runner.validate_measurement_report(report)
 
@@ -1817,7 +1918,7 @@ def test_reaggregated_counts_cannot_hide_classification_relabeling(
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"{endpoint_id}.*stored classification '{stored_classification}' contradicts ground truth '{ground_truth}' with {result}; expected '{expected}'.*Remeasure.*do not hand-edit reports",
+        match=rf"{endpoint_id}.*records\[\d+\].classification contradicts ground truth '{ground_truth}'.*Observed JSON type string.*Expected string '{expected}'.*Remeasure.*do not hand-edit reports",
     ):
         runner.validate_measurement_report(report)
 
@@ -1838,7 +1939,7 @@ def test_expected_verdict_must_follow_declared_ground_truth(
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"{endpoint_id}.*stored expected_verdict '{replacement}' contradicts ground-truth label '{ground_truth}'; expected '{expected}'.*Remeasure.*do not hand-edit reports",
+        match=rf"{endpoint_id}.*records\[\d+\].expected_verdict contradicts ground-truth label '{ground_truth}'.*Observed JSON type string.*Expected string '{expected}'.*Remeasure.*do not hand-edit reports",
     ):
         runner.validate_measurement_report(report)
 
@@ -2056,7 +2157,7 @@ def test_documented_schema_binding_makes_fixture_transition_mechanical(tmp_path)
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"bound to report schema version 7.*fixture is version 4.*update.*binding and fixture together.*do not fabricate",
+        match=r"bound to report schema version 7.*fixture schema_version has JSON type number outside the bound version.*update.*binding and fixture together.*do not fabricate",
     ):
         runner.check_documented_summary(expected_report(), documentation)
 
@@ -2226,10 +2327,11 @@ def test_v7_missing_evidence_field_lists_exact_family_fields(
 ):
     runner = load_runner()
     report = fixed_v7_report(runner)
-    del _report_record(report, endpoint)["evidence"][0][missing]
+    record = _report_record(report, endpoint)
+    del record["evidence"][0][missing]
 
     message = (
-        f"Measurement record {endpoint!r} evidence entry 1 has invalid fields. "
+        f"Measurement record {endpoint!r} (records[{report['records'].index(record)}]) evidence entry 1 has invalid fields. "
         f"Expected exactly: {expected_fields}. Remeasure instead of hand-editing the evidence."
     )
     with pytest.raises(runner.MeasurementError, match=re.escape(message) + "$"):
@@ -2250,31 +2352,34 @@ def test_v7_request_count_must_equal_evidence_count():
 
 
 @pytest.mark.parametrize(
-    "invalid_outcome",
+    ("invalid_outcome", "observed"),
     [
-        {"unexpected": "arbitrary text"},
-        ["completed"],
-        "unknown_outcome",
-        7,
-        True,
-        None,
+        ({"unexpected": REJECTED_INPUT_SENTINEL}, "object"),
+        ([REJECTED_INPUT_SENTINEL], "array"),
+        (REJECTED_INPUT_SENTINEL, "string outside the allowed set"),
+        (7, "number"),
+        (True, "boolean"),
+        (None, "null"),
     ],
 )
-def test_v7_time_outcome_rejects_non_enum_json_values(invalid_outcome):
+def test_v7_time_outcome_rejects_non_enum_json_values(invalid_outcome, observed):
     runner = load_runner()
     report = fixed_v7_report(runner)
-    item = _report_record(report, "dsvw-time-id")["evidence"][0]
-    item["outcome"] = invalid_outcome
+    record = _report_record(report, "dsvw-time-id")
+    record["evidence"][0]["outcome"] = invalid_outcome
     allowed = ", ".join(sorted(outcome.value for outcome in TimeProbeOutcome))
     message = (
-        "Measurement record 'dsvw-time-id' evidence entry 1 outcome has invalid "
-        f"{type(invalid_outcome).__name__} value {invalid_outcome!r}; it must be a "
-        f"string emitted by TimeProbeOutcome. Allowed values: {allowed}. "
+        f"Measurement record 'dsvw-time-id' (records[{report['records'].index(record)}]) "
+        f"evidence entry 1 outcome observed JSON type {observed}. "
+        f"Expected a string emitted by TimeProbeOutcome. Allowed values: {allowed}. "
         "Remeasure the target instead of hand-editing analyzer evidence."
     )
 
-    with pytest.raises(runner.MeasurementError, match=re.escape(message) + "$"):
+    with pytest.raises(
+        runner.MeasurementError, match=re.escape(message) + "$"
+    ) as caught:
         runner.validate_measurement_report(report)
+    assert REJECTED_INPUT_SENTINEL not in str(caught.value)
 
 
 @pytest.mark.parametrize("outcome", list(TimeProbeOutcome))
@@ -2289,22 +2394,33 @@ def test_v7_time_outcome_accepts_every_enum_value(outcome):
 
 
 @pytest.mark.parametrize(
-    ("evidence_index", "value", "expected"),
-    [(0, True, 1), (0, False, 1), (2, True, 3)],
+    ("evidence_index", "value", "expected", "observed"),
+    [
+        (0, True, 1, "boolean"),
+        (0, False, 1, "boolean"),
+        (2, True, 3, "boolean"),
+        (0, REJECTED_INPUT_SENTINEL, 1, "string"),
+    ],
 )
-def test_v7_sequence_rejects_json_booleans(evidence_index, value, expected):
+def test_v7_sequence_rejects_invalid_json_values(
+    evidence_index, value, expected, observed
+):
     runner = load_runner()
     report = fixed_v7_report(runner)
-    item = _report_record(report, "dsvw-time-id")["evidence"][evidence_index]
-    item["sequence"] = value
+    record = _report_record(report, "dsvw-time-id")
+    record["evidence"][evidence_index]["sequence"] = value
     message = (
-        f"Measurement record 'dsvw-time-id' evidence entry {expected} sequence "
-        f"must be JSON integer {expected} (not a boolean); observed bool {value!r}. "
+        f"Measurement record 'dsvw-time-id' (records[{report['records'].index(record)}]) "
+        f"evidence entry {expected} sequence observed JSON type {observed}. "
+        f"Expected JSON integer {expected}. "
         "Remeasure the target so production request order is recorded exactly."
     )
 
-    with pytest.raises(runner.MeasurementError, match=re.escape(message) + "$"):
+    with pytest.raises(
+        runner.MeasurementError, match=re.escape(message) + "$"
+    ) as caught:
         runner.validate_measurement_report(report)
+    assert REJECTED_INPUT_SENTINEL not in str(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -2328,16 +2444,21 @@ def test_v7_numeric_evidence_fields_reject_json_booleans(field):
         runner.validate_measurement_report(report)
 
 
-def test_v7_top_level_request_count_rejects_json_boolean():
+@pytest.mark.parametrize(
+    ("value", "observed"),
+    [(True, "boolean"), (-1, "number"), (REJECTED_INPUT_SENTINEL, "string")],
+)
+def test_v7_top_level_request_count_rejects_invalid_json_values(value, observed):
     runner = load_runner()
     report = fixed_v7_report(runner)
-    _report_record(report, "dsvw-time-id")["request_count"] = True
+    _report_record(report, "dsvw-time-id")["request_count"] = value
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"dsvw-time-id.*request_count must be a nonnegative JSON integer, not bool True.*Remeasure",
-    ):
+        match=rf"dsvw-time-id.*request_count observed JSON type {observed}.*Expected a nonnegative JSON integer.*Remeasure",
+    ) as caught:
         runner.validate_measurement_report(report)
+    assert REJECTED_INPUT_SENTINEL not in str(caught.value)
 
 
 def test_v7_error_detail_request_count_rejects_json_boolean():
@@ -2756,7 +2877,7 @@ def test_every_error_result_rule_round_trips_through_report_detail(reason):
         "request_count": request_count,
     }
 
-    runner._validate_error_detail(record)
+    runner._validate_error_detail(record, 0)
 
 
 def test_v6_http_response_recorder_retains_only_sanitized_facts():
@@ -2867,17 +2988,18 @@ def test_extra_or_missing_count_key_is_rejected(operation):
     report = expected_report()
     counts = report["counts"]["overall"]["sqli.boolean"]["six_probe"]
     if operation == "extra":
-        counts["other"] = 0
-        field = "other"
+        counts[REJECTED_INPUT_SENTINEL] = 0
+        field = r"\. Observed an object with unexpected keys"
     else:
         del counts["non_decision"]
-        field = "non_decision"
+        field = r"\.non_decision\. Missing field"
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"(?i)counts disagree with records at counts.overall.sqli.boolean.six_probe.{field}.*rerun the measurement",
-    ):
+        match=rf"(?i)counts disagree with records at counts.overall.sqli.boolean.six_probe{field}.*rerun the measurement",
+    ) as caught:
         runner.validate_measurement_report(report)
+    assert REJECTED_INPUT_SENTINEL not in str(caught.value)
 
 
 @pytest.mark.parametrize("recompute_counts", [True, False])
@@ -2915,7 +3037,8 @@ def test_duplicate_record_is_rejected_with_occurrence_count():
 
 
 @pytest.mark.parametrize(
-    ("field", "value"), [("endpoint_id", "undeclared-endpoint"), ("mode", "unknown")]
+    ("field", "value"),
+    [("endpoint_id", REJECTED_INPUT_SENTINEL), ("mode", REJECTED_INPUT_SENTINEL)],
 )
 def test_undeclared_record_key_is_rejected(field, value):
     runner = load_runner()
@@ -2925,9 +3048,10 @@ def test_undeclared_record_key_is_rejected(field, value):
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"Unexpected.*{field} '{value}'.*not in targets.toml.*full measurement run",
-    ):
+        match=rf"Unexpected.*{field}.*JSON type string outside the allowed set.*targets.toml.*full measurement run",
+    ) as caught:
         runner.validate_measurement_report(report)
+    assert REJECTED_INPUT_SENTINEL not in str(caught.value)
 
 
 def test_report_keys_follow_reviewed_measurement_plan(monkeypatch, tmp_path):
@@ -3010,13 +3134,14 @@ def test_v4_preserves_v3_records_and_aggregate_counts():
 def test_unknown_target_id_is_rejected_before_counts():
     runner = load_runner()
     report = expected_report()
-    report["records"][0]["target_id"] = "unknown"
+    report["records"][0]["target_id"] = REJECTED_INPUT_SENTINEL
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"Unexpected measurement record.*target_id 'unknown'.*not in targets.toml.*Regenerate",
-    ):
+        match=r"Unexpected measurement record.*target_id.*JSON type string outside the allowed set.*targets.toml.*Regenerate",
+    ) as caught:
         runner.validate_measurement_report(report)
+    assert REJECTED_INPUT_SENTINEL not in str(caught.value)
 
 
 @pytest.mark.parametrize("tree", ["overall", "by_target"])
@@ -3033,8 +3158,9 @@ def test_each_v4_count_tree_is_recomputed(tree):
     with pytest.raises(
         runner.MeasurementError,
         match=rf"counts disagree with records at counts.{tree}.*Rerun",
-    ):
+    ) as caught:
         runner.validate_measurement_report(report)
+    assert REJECTED_INPUT_SENTINEL not in str(caught.value)
 
 
 def test_report_target_metadata_must_match_declaration():
@@ -3109,7 +3235,7 @@ def test_old_measurement_report_is_rejected_with_regeneration_guidance(old_versi
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"found {old_version}; this reader supports legacy version 4 and current version 7.*rerun the measurement",
+        match=r"schema_version: observed JSON type number.*supports legacy version 4 and current version 7.*rerun the measurement",
     ):
         runner.render_summary(report)
 
@@ -3135,7 +3261,7 @@ def test_v3_version_with_v4_shape_is_rejected_before_shape_parsing():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"found 3; this reader supports legacy version 4 and current version 7.*rerun the measurement",
+        match=r"schema_version: observed JSON type number.*supports legacy version 4 and current version 7.*rerun the measurement",
     ):
         runner.unhealthy_count(report)
 
@@ -3326,7 +3452,11 @@ def test_pre_start_and_report_use_the_same_service_image_rule(
     else:
         with pytest.raises(
             runner.MeasurementError,
-            match=error + r".*Update targets.toml or the Compose file",
+            match=(
+                error + r".*Update targets.toml or the Compose file"
+                if entry_point == "pre_start"
+                else r"targets.dsvw.service_images.*JSON type object.*digest-pinned.*Rerun preparation"
+            ),
         ):
             call()
 
