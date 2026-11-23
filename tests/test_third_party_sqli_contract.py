@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import tarfile
+import threading
 import tomllib
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -736,7 +737,8 @@ def fixed_v5_report(runner):
             elif reason == "non_success_status":
                 statuses["error"] = 500
         responses = tuple(
-            runner.RecordedResponse(statuses[role], bodies[role]) for role in roles
+            runner._recorded_response(statuses[role], iter((bodies[role],)))
+            for role in roles
         )
         evidence, relations = runner.sanitized_probe_evidence(roles, responses)
         record["evidence"] = evidence
@@ -2028,7 +2030,7 @@ def test_v5_non_success_status_requires_stable_non_2xx_error_probes():
         runner.validate_measurement_report(report)
 
 
-def test_v5_http_response_recorder_retains_only_status_and_body_bytes():
+def test_v5_http_response_recorder_retains_only_status_size_and_digest():
     runner = load_runner()
     content_length = runner._parse_http_response(
         b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
@@ -2038,8 +2040,65 @@ def test_v5_http_response_recorder_retains_only_status_and_body_bytes():
         b"4\r\nbody\r\n0\r\n\r\n"
     )
 
-    assert content_length == runner.RecordedResponse(200, b"body")
-    assert chunked == runner.RecordedResponse(500, b"body")
+    expected_digest = hashlib.sha256(b"body").hexdigest()
+    assert content_length == runner.RecordedResponse(200, 4, expected_digest)
+    assert chunked == runner.RecordedResponse(500, 4, expected_digest)
+    assert not hasattr(content_length, "body")
+
+
+def test_bridge_records_responses_by_acceptance_sequence_not_completion_order():
+    runner = load_runner()
+    recorder = runner._ResponseRecorder()
+    first_waiting = threading.Event()
+    second_recorded = threading.Event()
+    first = runner._recorded_response(201, iter((b"first-response",)))
+    second = runner._recorded_response(202, iter((b"second-response",)))
+    first_sequence = recorder.accept()
+    second_sequence = recorder.accept()
+
+    def record_first() -> None:
+        first_waiting.set()
+        if not second_recorded.wait(timeout=5):
+            raise RuntimeError(
+                "The deterministic ordering barrier did not release. Check the test synchronization instead of adding a sleep."
+            )
+        recorder.record_response(first_sequence, first)
+
+    def record_second() -> None:
+        recorder.record_response(second_sequence, second)
+        second_recorded.set()
+
+    first_thread = threading.Thread(target=record_first)
+    second_thread = threading.Thread(target=record_second)
+    first_thread.start()
+    assert first_waiting.wait(timeout=5)
+    second_thread.start()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+    assert not first_thread.is_alive() and not second_thread.is_alive()
+
+    assert recorder.recorded_responses(2) == (first, second)
+
+
+def test_bridge_rejects_sequence_gaps_and_duplicates():
+    runner = load_runner()
+    response = runner._recorded_response(200, iter((b"response",)))
+    gap_recorder = runner._ResponseRecorder()
+    duplicate_recorder = runner._ResponseRecorder()
+    gap_recorder.record_response(0, response)
+    gap_recorder.record_response(2, response)
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"sequence gaps.*expected \[0, 1\], observed \[0, 2\].*rerun.*completion order",
+    ):
+        gap_recorder.recorded_responses(2)
+
+    duplicate_recorder.record_response(0, response)
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"duplicate sequence number 0.*rerun.*one probe twice",
+    ):
+        duplicate_recorder.record_response(0, response)
 
 
 def test_zeroed_counts_cannot_hide_recorded_non_decisions():

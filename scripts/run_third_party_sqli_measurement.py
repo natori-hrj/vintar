@@ -78,10 +78,11 @@ class TargetAdapter(NamedTuple):
 
 
 class RecordedResponse(NamedTuple):
-    """One response retained only until its sanitized evidence is derived."""
+    """One response's non-sensitive evidence, with no retained body bytes."""
 
     status_code: int
-    body: bytes
+    body_size: int
+    body_sha256: str
 
 
 _TARGET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
@@ -180,8 +181,8 @@ def sanitized_probe_evidence(
         )
     evidence = [
         {
-            "body_sha256": hashlib.sha256(response.body).hexdigest(),
-            "body_size": len(response.body),
+            "body_sha256": response.body_sha256,
+            "body_size": response.body_size,
             "role": role,
             "status_code": response.status_code,
         }
@@ -669,22 +670,33 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     return report
 
 
-class _BridgeServer(socketserver.ThreadingTCPServer):
-    """Byte-transparent loopback bridge to one private container address."""
+class _ResponseRecorder:
+    """Order sanitized responses by request acceptance, never thread completion."""
 
-    allow_reuse_address = False
-    daemon_threads = True
-
-    def __init__(self, upstream: tuple[str, int]) -> None:
-        self.upstream = upstream
-        self.handler_failed = False
-        self.responses: list[RecordedResponse] = []
+    def __init__(self) -> None:
+        self.responses: dict[int, RecordedResponse] = {}
         self.response_condition = threading.Condition()
-        super().__init__(("127.0.0.1", 0), _BridgeHandler)
+        self.next_sequence = 0
+        self.recording_error: str | None = None
+        self.failed = False
 
-    def record_response(self, response: RecordedResponse) -> None:
+    def accept(self) -> int:
         with self.response_condition:
-            self.responses.append(response)
+            sequence = self.next_sequence
+            self.next_sequence += 1
+            return sequence
+
+    def record_response(self, sequence: int, response: RecordedResponse) -> None:
+        with self.response_condition:
+            if sequence in self.responses:
+                self.recording_error = (
+                    f"The loopback recorder produced duplicate sequence number {sequence}. "
+                    "Check the bridge recorder and rerun the measurement instead of assigning one probe twice."
+                )
+                self.failed = True
+                self.response_condition.notify_all()
+                raise MeasurementError(self.recording_error)
+            self.responses[sequence] = response
             self.response_condition.notify_all()
 
     def recorded_responses(self, expected: int) -> tuple[RecordedResponse, ...]:
@@ -693,16 +705,71 @@ class _BridgeServer(socketserver.ThreadingTCPServer):
                 lambda: len(self.responses) >= expected or self.handler_failed,
                 timeout=5,
             )
-            if not complete or len(self.responses) != expected:
+            expected_sequences = set(range(expected))
+            observed_sequences = set(self.responses)
+            if self.recording_error is not None:
+                raise MeasurementError(self.recording_error)
+            if (
+                not complete
+                or len(self.responses) != expected
+                or observed_sequences != expected_sequences
+            ):
                 raise MeasurementError(
-                    "The loopback recorder response count differs from the completed request count. Check response framing and rerun the measurement."
+                    f"The loopback recorder has sequence gaps: expected {sorted(expected_sequences)!r}, observed {sorted(observed_sequences)!r}. Check response framing and handler completion, then rerun the measurement instead of pairing roles by completion order."
                 )
-            return tuple(self.responses)
+            return tuple(self.responses[index] for index in range(expected))
+
+    def record_failure(self) -> None:
+        with self.response_condition:
+            self.failed = True
+            self.response_condition.notify_all()
+
+    @property
+    def handler_failed(self) -> bool:
+        return self.failed
+
+
+class _BridgeServer(socketserver.ThreadingTCPServer):
+    """Byte-transparent loopback bridge to one private container address."""
+
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def __init__(self, upstream: tuple[str, int]) -> None:
+        self.upstream = upstream
+        self.recorder = _ResponseRecorder()
+        self.accepted_sequences: dict[int, int] = {}
+        super().__init__(("127.0.0.1", 0), _BridgeHandler)
+
+    def process_request(
+        self, request: socket.socket, client_address: tuple[str, int]
+    ) -> None:
+        sequence = self.recorder.accept()
+        with self.recorder.response_condition:
+            self.accepted_sequences[id(request)] = sequence
+        super().process_request(request, client_address)
+
+    def claim_sequence(self, request: socket.socket) -> int:
+        with self.recorder.response_condition:
+            sequence = self.accepted_sequences.pop(id(request), None)
+            if sequence is None:
+                raise MeasurementError(
+                    "The loopback recorder lost an accepted request sequence. Check the bridge lifecycle and rerun the measurement."
+                )
+            return sequence
+
+    def record_response(self, sequence: int, response: RecordedResponse) -> None:
+        self.recorder.record_response(sequence, response)
+
+    def recorded_responses(self, expected: int) -> tuple[RecordedResponse, ...]:
+        return self.recorder.recorded_responses(expected)
+
+    @property
+    def handler_failed(self) -> bool:
+        return self.recorder.handler_failed
 
     def handle_error(self, request: object, client_address: tuple[str, int]) -> None:
-        with self.response_condition:
-            self.handler_failed = True
-            self.response_condition.notify_all()
+        self.recorder.record_failure()
 
 
 class _BridgeHandler(socketserver.BaseRequestHandler):
@@ -712,6 +779,7 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
         server = self.server
         if not isinstance(server, _BridgeServer):
             raise TypeError("Unexpected loopback bridge server.")
+        sequence = server.claim_sequence(self.request)
         response = bytearray()
         with socket.create_connection(server.upstream, timeout=5) as upstream:
             peers = (self.request, upstream)
@@ -732,11 +800,10 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
                 if finished:
                     break
         recorded = _parse_http_response(bytes(response))
-        server.record_response(recorded)
+        server.record_response(sequence, recorded)
 
 
-def _decode_chunked_body(body: bytes) -> bytes:
-    decoded = bytearray()
+def _chunked_body_chunks(body: bytes) -> Iterator[bytes]:
     remaining = body
     while True:
         line, separator, remaining = remaining.partition(b"\r\n")
@@ -751,13 +818,22 @@ def _decode_chunked_body(body: bytes) -> bytes:
                 "The loopback recorder received invalid chunk framing. Check the target HTTP response and rerun the measurement."
             ) from exc
         if size == 0:
-            return bytes(decoded)
+            return
         if len(remaining) < size + 2 or remaining[size : size + 2] != b"\r\n":
             raise MeasurementError(
                 "The loopback recorder received a truncated chunk. Check the target HTTP response and rerun the measurement."
             )
-        decoded.extend(remaining[:size])
+        yield remaining[:size]
         remaining = remaining[size + 2 :]
+
+
+def _recorded_response(status_code: int, chunks: Iterator[bytes]) -> RecordedResponse:
+    digest = hashlib.sha256()
+    body_size = 0
+    for chunk in chunks:
+        body_size += len(chunk)
+        digest.update(chunk)
+    return RecordedResponse(status_code, body_size, digest.hexdigest())
 
 
 def _parse_http_response(response: bytes) -> RecordedResponse:
@@ -780,7 +856,7 @@ def _parse_http_response(response: bytes) -> RecordedResponse:
         if marker:
             header_values[name.strip().lower()] = value.strip().lower()
     if b"chunked" in header_values.get(b"transfer-encoding", b""):
-        body = _decode_chunked_body(body)
+        chunks = _chunked_body_chunks(body)
     elif b"content-length" in header_values:
         try:
             length = int(header_values[b"content-length"])
@@ -792,7 +868,10 @@ def _parse_http_response(response: bytes) -> RecordedResponse:
             raise MeasurementError(
                 "The loopback recorder body length disagrees with Content-Length. Check the target response and rerun the measurement."
             )
-    return RecordedResponse(status_code, body)
+        chunks = iter((body,))
+    else:
+        chunks = iter((body,))
+    return _recorded_response(status_code, chunks)
 
 
 @contextmanager
