@@ -1,5 +1,6 @@
 """Keep the offline third-party declaration and reviewed summary deterministic."""
 
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -31,10 +32,12 @@ from vintar.checks.sqli.error_analyzer import (
     classify_error_observations,
 )
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES, ErrorAnalysisStatus
-from vintar.checks.sqli.models import Verdict
+from vintar.checks.sqli.models import Observation, ProbeKind, Verdict
+from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
 from vintar.checks.sqli.presets import get_boolean_confirmation_preset
-from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER
+from vintar.checks.sqli.time_analyzer import TimeObservation, TimeProbeOutcome
+from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER, TimeProbeKind
 from vintar.cli import app
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
@@ -705,10 +708,10 @@ def expected_report() -> dict[str, object]:
     }
 
 
-def fixed_v6_report(runner):
-    """Build test-only v6 evidence from fixed fake responses, never live fixture data."""
+def fixed_v7_report(runner):
+    """Build test-only v7 evidence from fixed fake responses, never live fixture data."""
     report = expected_report()
-    report["schema_version"] = 6
+    report["schema_version"] = 7
     raw_bodies = {
         "baseline": b"fixed-baseline-response-body",
         "true": b"fixed-true-response-body",
@@ -762,8 +765,63 @@ def fixed_v6_report(runner):
             runner._recorded_response(statuses[role], iter((bodies[role],)))
             for role in roles
         )
+        observations = []
+        kinds = runner.OBSERVATION_KIND_ORDERS[(record["check_type"], record["mode"])][
+            : record["request_count"]
+        ]
+        for sequence, (role, kind) in enumerate(
+            zip(roles, kinds, strict=True), start=1
+        ):
+            body = bodies[role]
+            digest = hashlib.sha256(body).hexdigest()
+            status = statuses[role]
+            if record["check_type"] == "sqli.boolean" and sequence <= 6:
+                observation = Observation(
+                    ProbeKind(kind), status, len(body), 0.01, digest
+                )
+                family = "boolean"
+            elif record["check_type"] == "sqli.boolean":
+                observation = runner.ConfirmationObservation(
+                    runner.ConfirmationKind(kind), status, len(body), digest, False
+                )
+                family = "confirmation"
+            elif record["check_type"] == "sqli.time":
+                observation = TimeObservation(
+                    TimeProbeKind(kind),
+                    sequence,
+                    TimeProbeOutcome.COMPLETED,
+                    elapsed_seconds=0.01,
+                    status_code=status,
+                )
+                family = "time"
+            else:
+                matches = ()
+                if role == "error" and reason == "dbms_error_disclosed":
+                    matches = (
+                        ErrorMatch(
+                            record["detail"]["dbms"],
+                            record["detail"]["signature_id"],
+                        ),
+                    )
+                observation = ErrorObservation(
+                    ErrorProbeKind(kind),
+                    sequence,
+                    status,
+                    len(body),
+                    digest,
+                    False,
+                    matches,
+                )
+                family = "error"
+            observations.append(
+                RecordedSqliObservation(family, sequence, kind, observation)
+            )
         evidence, relations = runner.sanitized_probe_evidence(
-            roles, responses, check_type=record["check_type"]
+            roles,
+            responses,
+            tuple(observations),
+            check_type=record["check_type"],
+            expected_kinds=kinds,
         )
         record["evidence"] = evidence
         record["relations"] = relations
@@ -772,7 +830,7 @@ def fixed_v6_report(runner):
 
 def legacy_v5_report(runner):
     """Build the superseded v5 shape that omitted Error analyzer facts."""
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     report["schema_version"] = 5
     for record in report["records"]:
         if record["check_type"] == "sqli.error":
@@ -1830,7 +1888,7 @@ def test_reviewed_documentation_matches_the_report_contract():
     assert "| sqli-dojo (mysql) |" in rendered
     documentation = runner.DOCS.read_text(encoding="utf-8")
     readme = (THIRD_PARTY / "README.md").read_text(encoding="utf-8")
-    error_record = _report_record(fixed_v6_report(runner), "dsvw-error-id")
+    error_record = _report_record(fixed_v7_report(runner), "dsvw-error-id")
     evidence_fields = error_record["evidence"][0].keys()
     for field in evidence_fields:
         assert f"`{field}`" in documentation
@@ -1933,15 +1991,15 @@ def test_mysql_by_target_counts_are_recomputed_from_records():
     assert runner.validate_measurement_report(report) is report
 
 
-def test_new_output_uses_v6_while_committed_v4_fixture_remains_readable():
+def test_new_output_uses_v7_while_committed_v4_fixture_remains_readable():
     runner = load_runner()
     report = expected_report()
 
     assert report["schema_version"] == runner.LEGACY_MEASUREMENT_SCHEMA_VERSION == 4
-    assert runner.MEASUREMENT_SCHEMA_VERSION == 6
+    assert runner.MEASUREMENT_SCHEMA_VERSION == 7
     assert runner.validate_measurement_report(report) is report
-    current = fixed_v6_report(runner)
-    assert current["schema_version"] == 6
+    current = fixed_v7_report(runner)
+    assert current["schema_version"] == 7
     assert runner.validate_measurement_report(current) is current
 
 
@@ -1950,17 +2008,17 @@ def test_new_writer_rejects_legacy_v4_fixture(tmp_path):
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"requires schema version 6 with real per-probe evidence and sanitized Error analyzer facts.*current measurement.*legacy v4 or v5",
+        match=r"requires schema version 7 with wire provenance separated from exact analyzer observations.*legacy v4, v5, or v6",
     ):
         runner.write_report(tmp_path / "report.json", expected_report())
 
 
-def test_v5_error_evidence_requires_remeasurement_for_v6():
+def test_v5_error_evidence_requires_remeasurement_for_v7():
     runner = load_runner()
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"schema version 5.*v5 Error evidence lacks the sanitized truncation and signature-match facts.*Remeasure.*schema version 6.*cannot be reconstructed",
+        match=r"schema version 5.*wire bytes.*unreliable under HTTP content encoding.*Remeasure.*schema version 7",
     ):
         runner.validate_measurement_report(legacy_v5_report(runner))
 
@@ -1970,15 +2028,15 @@ def test_new_writer_rejects_v5_fixture(tmp_path):
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"schema version 5.*v5 Error evidence lacks.*Remeasure.*version 6",
+        match=r"schema version 5.*wire bytes.*Remeasure.*version 7",
     ):
         runner.write_report(tmp_path / "report.json", legacy_v5_report(runner))
 
 
-def test_v6_renderer_matches_legacy_summary_without_using_evidence():
+def test_v7_renderer_matches_legacy_summary_without_using_evidence():
     runner = load_runner()
 
-    assert runner.render_summary(fixed_v6_report(runner)) == runner.render_summary(
+    assert runner.render_summary(fixed_v7_report(runner)) == runner.render_summary(
         expected_report()
     )
 
@@ -1991,21 +2049,21 @@ def test_documented_schema_binding_makes_fixture_transition_mechanical(tmp_path)
     documentation.write_text(
         source.replace(
             "Reviewed report schema version: `4`.",
-            "Reviewed report schema version: `6`.",
+            "Reviewed report schema version: `7`.",
         ),
         encoding="utf-8",
     )
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"bound to report schema version 6.*fixture is version 4.*update.*binding and fixture together.*do not fabricate",
+        match=r"bound to report schema version 7.*fixture is version 4.*update.*binding and fixture together.*do not fabricate",
     ):
         runner.check_documented_summary(expected_report(), documentation)
 
 
-def test_v6_serialization_excludes_payloads_and_response_bodies():
+def test_v7_serialization_excludes_payloads_and_response_bodies():
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     serialized = json.dumps(report, sort_keys=True)
 
     for secret in (
@@ -2019,19 +2077,126 @@ def test_v6_serialization_excludes_payloads_and_response_bodies():
         " AND 7=7-- ",
     ):
         assert secret not in serialized, (
-            "v6 serialized a payload or response body; retain only role, status, "
+            "v7 serialized a payload or response body; retain only role, status, "
             "body size, digest, and mechanically derived relations instead."
         )
 
 
-def test_v6_strict_record_fields_reject_sensitive_values():
+@pytest.mark.parametrize("chunked", [False, True])
+def test_gzip_error_wire_provenance_keeps_analyzer_signature_evidence(chunked):
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
+    record = _report_record(report, "sqli-dojo-error-id")
+    encoded = gzip.compress(b"wire bytes do not expose the decoded signature", mtime=1)
+    if chunked:
+        framed = (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+            b"Content-Encoding: gzip\r\n\r\n"
+            + f"{len(encoded):x}\r\n".encode()
+            + encoded
+            + b"\r\n0\r\n\r\n"
+        )
+    else:
+        framed = (
+            b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: "
+            + str(len(encoded)).encode()
+            + b"\r\n\r\n"
+            + encoded
+        )
+    wire = runner._parse_http_response(framed)
+    for item in record["evidence"]:
+        if item["role"] == "error":
+            item["wire_body_size"] = wire.body_size
+            item["wire_body_sha256"] = wire.body_sha256
+
+    assert record["detail"]["signature_id"] == "mysql_syntax_error_1064"
+    assert runner.validate_measurement_report(report) is report
+
+
+def test_gzip_boolean_relations_use_decoded_analyzer_digests_not_wire_digests():
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+    record = next(
+        item
+        for item in report["records"]
+        if item["endpoint_id"] == "dsvw-blind-boolean-id"
+        and item["mode"] == "six_probe"
+    )
+    for sequence, item in enumerate(record["evidence"], start=1):
+        encoded = gzip.compress(b"same decoded relation", mtime=sequence)
+        item["wire_body_size"] = len(encoded)
+        item["wire_body_sha256"] = hashlib.sha256(encoded).hexdigest()
+
+    assert len({item["wire_body_sha256"] for item in record["evidence"]}) == 6
+    assert record["relations"]["baseline_equals_true"] is True
+    assert runner.validate_measurement_report(report) is report
+
+
+def test_observation_collector_rejects_duplicates_and_sequence_gaps():
+    runner = load_runner()
+    collector = runner.ObservationCollector()
+    observation = RecordedSqliObservation("boolean", 1, "baseline", object())
+    collector(observation)
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"duplicate sequence number 1.*runner emission.*rerun",
+    ):
+        collector(observation)
+
+    gap = runner.ObservationCollector()
+    gap(RecordedSqliObservation("boolean", 2, "true", object()))
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"sequence gaps.*expected \[1, 2\].*observed \[2\].*runner emission",
+    ):
+        gap.ordered(2)
+
+
+def test_probe_evidence_rejects_observation_role_mismatch_actionably():
+    runner = load_runner()
+    response = runner.RecordedResponse(200, 4, hashlib.sha256(b"same").hexdigest())
+    observation = Observation(
+        ProbeKind.TRUE,
+        200,
+        4,
+        0.01,
+        hashlib.sha256(b"same").hexdigest(),
+    )
+    recorded = RecordedSqliObservation("boolean", 1, "true", observation)
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"role mismatch at request 1.*expected boolean/baseline.*observed sequence 1 boolean/true.*runner observation emission",
+    ):
+        runner.sanitized_probe_evidence(
+            ("baseline",),
+            (response,),
+            (recorded,),
+            check_type="sqli.boolean",
+            expected_kinds=("baseline",),
+        )
+
+
+def test_v6_wire_derived_evidence_requires_remeasurement_for_v7():
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+    report["schema_version"] = 6
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"schema version 6.*wire bytes.*unreliable under HTTP content encoding.*Remeasure.*schema version 7",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_v7_strict_record_fields_reject_sensitive_values():
+    runner = load_runner()
+    report = fixed_v7_report(runner)
     _report_record(report, "dsvw-time-id")["payload"] = "sensitive-probe"
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"Invalid v6 fields.*dsvw-time-id.*remove payloads, bodies, headers, cookies, and URLs.*current runner",
+        match=r"Invalid v7 fields.*dsvw-time-id.*remove payloads, bodies, headers, cookies, and URLs.*current runner",
     ):
         runner.validate_measurement_report(report)
 
@@ -2042,25 +2207,25 @@ def test_v6_strict_record_fields_reject_sensitive_values():
         (
             "dsvw-error-id",
             "matches",
-            "body_sha256, body_size, matches, role, status_code, truncated",
+            "analyzer_body_sha256, analyzer_body_size, analyzer_status_code, matches, role, sequence, truncated, wire_body_sha256, wire_body_size, wire_status_code",
         ),
         (
             "dsvw-error-id",
             "truncated",
-            "body_sha256, body_size, matches, role, status_code, truncated",
+            "analyzer_body_sha256, analyzer_body_size, analyzer_status_code, matches, role, sequence, truncated, wire_body_sha256, wire_body_size, wire_status_code",
         ),
         (
             "dsvw-blind-boolean-id",
-            "body_size",
-            "body_sha256, body_size, role, status_code",
+            "analyzer_body_size",
+            "analyzer_body_sha256, analyzer_body_size, analyzer_status_code, role, sequence, truncated, wire_body_sha256, wire_body_size, wire_status_code",
         ),
     ],
 )
-def test_v6_missing_evidence_field_lists_exact_family_fields(
+def test_v7_missing_evidence_field_lists_exact_family_fields(
     endpoint, missing, expected_fields
 ):
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     del _report_record(report, endpoint)["evidence"][0][missing]
 
     message = (
@@ -2071,9 +2236,9 @@ def test_v6_missing_evidence_field_lists_exact_family_fields(
         runner.validate_measurement_report(report)
 
 
-def test_v6_request_count_must_equal_evidence_count():
+def test_v7_request_count_must_equal_evidence_count():
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     record = _report_record(report, "dsvw-time-id")
     record["evidence"].pop()
 
@@ -2086,7 +2251,7 @@ def test_v6_request_count_must_equal_evidence_count():
 
 def test_v6_relations_are_recomputed_from_evidence():
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     record = _report_record(report, "dsvw-blind-boolean-id")
     record["relations"]["baseline_stable"] = False
 
@@ -2136,8 +2301,29 @@ def test_fixed_dsvw_request_order_derives_and_validates_boolean_candidate():
         runner.RecordedResponse(200, 1333, false_digest),
         runner.RecordedResponse(200, 1394, matching_digest),
     )
+    observations = tuple(
+        RecordedSqliObservation(
+            "boolean",
+            sequence,
+            kind.value,
+            Observation(
+                kind,
+                response.status_code,
+                response.body_size,
+                0.01,
+                response.body_sha256,
+            ),
+        )
+        for sequence, (kind, response) in enumerate(
+            zip(BOOLEAN_PROBE_ORDER, responses, strict=True), start=1
+        )
+    )
     evidence, relations = runner.sanitized_probe_evidence(
-        runner.BOOLEAN_REPORT_ROLES, responses, check_type="sqli.boolean"
+        runner.BOOLEAN_REPORT_ROLES,
+        responses,
+        observations,
+        check_type="sqli.boolean",
+        expected_kinds=tuple(kind.value for kind in BOOLEAN_PROBE_ORDER),
     )
 
     assert relations == {
@@ -2148,7 +2334,7 @@ def test_fixed_dsvw_request_order_derives_and_validates_boolean_candidate():
         "baseline_equals_false": False,
         "true_equals_false": False,
     }
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     record = next(
         row
         for row in report["records"]
@@ -2161,14 +2347,14 @@ def test_fixed_dsvw_request_order_derives_and_validates_boolean_candidate():
 
 def test_changed_repeated_true_digest_still_rejects_boolean_candidate():
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     record = next(
         row
         for row in report["records"]
         if row["endpoint_id"] == "dsvw-blind-boolean-id" and row["mode"] == "six_probe"
     )
     true_evidence = [item for item in record["evidence"] if item["role"] == "true"]
-    true_evidence[1]["body_sha256"] = "0" * 64
+    true_evidence[1]["analyzer_body_sha256"] = "0" * 64
     record["relations"] = runner.derive_relations(record["evidence"])
 
     with pytest.raises(
@@ -2180,14 +2366,13 @@ def test_changed_repeated_true_digest_still_rejects_boolean_candidate():
 
 def test_v6_unexpected_difference_requires_distinct_stable_2xx_pairs():
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     record = _report_record(report, "dsvw-version-query")
-    baseline_digest = next(
-        item["body_sha256"] for item in record["evidence"] if item["role"] == "baseline"
-    )
+    baseline = next(item for item in record["evidence"] if item["role"] == "baseline")
     for item in record["evidence"]:
         if item["role"] == "true":
-            item["body_sha256"] = baseline_digest
+            item["analyzer_body_sha256"] = baseline["analyzer_body_sha256"]
+            item["analyzer_body_size"] = baseline["analyzer_body_size"]
     record["relations"] = runner.derive_relations(record["evidence"])
 
     with pytest.raises(
@@ -2199,11 +2384,12 @@ def test_v6_unexpected_difference_requires_distinct_stable_2xx_pairs():
 
 def test_v6_non_success_status_is_reclassified_by_shared_error_analyzer():
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     record = _report_record(report, "owasp-lab-error-search")
     for item in record["evidence"]:
         if item["role"] == "error":
-            item["status_code"] = 200
+            item["analyzer_status_code"] = 200
+            item["wire_status_code"] = 200
 
     with pytest.raises(
         runner.MeasurementError,
@@ -2246,15 +2432,19 @@ def _set_error_record_from_observations(runner, report, record, observations):
             item.status_code,
             item.body_size,
             item.body_digest,
-            item.truncated,
-            item.matches,
         )
+        for item in observations
+    )
+    recorded = tuple(
+        RecordedSqliObservation("error", item.sequence, item.kind.value, item)
         for item in observations
     )
     record["evidence"], record["relations"] = runner.sanitized_probe_evidence(
         runner.ERROR_REPORT_ROLES,
         responses,
+        recorded,
         check_type="sqli.error",
+        expected_kinds=tuple(kind.value for kind in ERROR_PROBE_ORDER),
     )
     rule = ERROR_RESULT_RULES[reason]
     record["actual_verdict"] = rule.product_verdict.value
@@ -2287,7 +2477,7 @@ MYSQL_MATCH = ErrorMatch("mysql", "mysql_syntax_error_1064")
 
 def test_fixed_dsvw_500_disclosure_uses_shared_error_classifier():
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     record = _report_record(report, "dsvw-error-id")
     observations = _error_observations(
         probe_statuses=(500, 500),
@@ -2348,22 +2538,26 @@ def test_tampered_error_reason_is_rejected_by_shared_classifier(
     observations, expected_reason
 ):
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     record = _report_record(report, "dsvw-error-id")
     responses = tuple(
         runner.RecordedResponse(
             item.status_code,
             item.body_size,
             item.body_digest,
-            item.truncated,
-            item.matches,
         )
+        for item in observations
+    )
+    recorded = tuple(
+        RecordedSqliObservation("error", item.sequence, item.kind.value, item)
         for item in observations
     )
     record["evidence"], record["relations"] = runner.sanitized_probe_evidence(
         runner.ERROR_REPORT_ROLES,
         responses,
+        recorded,
         check_type="sqli.error",
+        expected_kinds=tuple(kind.value for kind in ERROR_PROBE_ORDER),
     )
 
     assert classify_error_observations(observations)[1] == expected_reason
@@ -2414,7 +2608,7 @@ def test_every_analytical_error_rule_round_trips_through_report_validator(
     observations,
 ):
     runner = load_runner()
-    report = fixed_v6_report(runner)
+    report = fixed_v7_report(runner)
     record = _report_record(report, "dsvw-error-id")
     _, reason, _ = _set_error_record_from_observations(
         runner, report, record, observations
@@ -2800,7 +2994,7 @@ def test_old_measurement_report_is_rejected_with_regeneration_guidance(old_versi
 
     with pytest.raises(
         runner.MeasurementError,
-        match=rf"found {old_version}; this reader supports legacy version 4 and current version 6.*rerun the measurement",
+        match=rf"found {old_version}; this reader supports legacy version 4 and current version 7.*rerun the measurement",
     ):
         runner.render_summary(report)
 
@@ -2826,7 +3020,7 @@ def test_v3_version_with_v4_shape_is_rejected_before_shape_parsing():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"found 3; this reader supports legacy version 4 and current version 6.*rerun the measurement",
+        match=r"found 3; this reader supports legacy version 4 and current version 7.*rerun the measurement",
     ):
         runner.unhealthy_count(report)
 

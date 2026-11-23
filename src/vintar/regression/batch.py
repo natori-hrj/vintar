@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import httpx
 
 from vintar.checks.sqli.models import Verdict
+from vintar.checks.sqli.observation_sink import SqliObservationSink
 from vintar.core.budget import RequestBudget
 from vintar.core.rate_limit import RateLimiter
 from vintar.core.scope import ScopePolicy
@@ -125,6 +126,7 @@ def run_regression_batch(
     *,
     policy: TrustedExecutionPolicy,
     transport: httpx.BaseTransport | None = None,
+    observation_sink: SqliObservationSink | None = None,
 ) -> RegressionBatchResult:
     """Run a bounded batch with one shared budget and rate limiter.
 
@@ -192,6 +194,7 @@ def run_regression_batch(
             budget=budget,
             rate_limiter=rate_limiter,
             transport=transport,
+            observation_sink=observation_sink,
         )
         outcomes.append(outcome)
 

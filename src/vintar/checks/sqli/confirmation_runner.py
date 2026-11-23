@@ -34,6 +34,10 @@ from vintar.checks.sqli.models import (
     JSON_SAFE_INTEGER_MAX,
     VerificationResult,
 )
+from vintar.checks.sqli.observation_sink import (
+    SqliObservationSink,
+    emit_observation,
+)
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
 from vintar.core.budget import RequestBudgetExceededError
 from vintar.core.executor import ExecutionContext
@@ -500,6 +504,7 @@ def verify_boolean_sqli_with_confirmation(
     baseline_preserving_control: str,
     context: ExecutionContext,
     transport: httpx.BaseTransport | None = None,
+    observation_sink: SqliObservationSink | None = None,
 ) -> ConfirmationOutcome:
     """Run six initial probes and up to twelve confirmation probes.
 
@@ -556,6 +561,7 @@ def verify_boolean_sqli_with_confirmation(
         false_payload=payloads.false_1,
         context=context,
         transport=transport,
+        observation_sink=observation_sink,
     )
 
     def finish(
@@ -644,7 +650,15 @@ def verify_boolean_sqli_with_confirmation(
                 "confirmation_request_failed",
             )
 
-        observations.append(_observation(step.kind, response))
+        observation = _observation(step.kind, response)
+        observations.append(observation)
+        emit_observation(
+            observation_sink,
+            family="confirmation",
+            sequence=INITIAL_REQUESTS + len(observations),
+            kind=step.kind.value,
+            observation=observation,
+        )
 
         if response.status_code == 429:
             return finish(

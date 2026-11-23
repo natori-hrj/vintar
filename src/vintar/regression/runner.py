@@ -19,6 +19,7 @@ from vintar.checks.sqli.error_runner import (
     verify_error_based_sqli,
 )
 from vintar.checks.sqli.models import Verdict, VerificationResult
+from vintar.checks.sqli.observation_sink import SqliObservationSink
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
 from vintar.checks.sqli.time_contract import time_product_result
 from vintar.checks.sqli.time_plan import TIME_REQUESTS, TimePayloads
@@ -375,6 +376,7 @@ def _run_with_resources(
     rate_limiter: RateLimiter,
     transport: httpx.BaseTransport | None = None,
     scope: ScopePolicy | None = None,
+    observation_sink: SqliObservationSink | None = None,
 ) -> AnyRegressionOutcome:
     """Internal execution path for single-case and batch runners."""
     effective_scope = scope if scope is not None else _effective_scope(case, policy)
@@ -418,6 +420,7 @@ def _run_with_resources(
             context=context,
             max_total_seconds=policy.max_time_execution_seconds,
             transport=transport,
+            observation_sink=observation_sink,
         )
         for _ in range(time_run.budget_used):
             budget.consume()
@@ -438,6 +441,7 @@ def _run_with_resources(
             error_payload=case.error_payload,
             context=context,
             transport=transport,
+            observation_sink=observation_sink,
         )
         error_product = error_product_result(error_run.analysis)
         expectation_match = error_product.verdict is case.expected_verdict
@@ -459,6 +463,7 @@ def _run_with_resources(
             false_payload=case.false_payload,
             context=context,
             transport=transport,
+            observation_sink=observation_sink,
         )
         final_verdict = verification.verdict
     else:
@@ -473,6 +478,7 @@ def _run_with_resources(
             baseline_preserving_control=case.confirmation.baseline_preserving_control,
             context=context,
             transport=transport,
+            observation_sink=observation_sink,
         )
         verification = confirmation.initial
         final_verdict = (
@@ -501,6 +507,7 @@ def run_regression_case(
     *,
     policy: TrustedExecutionPolicy,
     transport: httpx.BaseTransport | None = None,
+    observation_sink: SqliObservationSink | None = None,
 ) -> AnyRegressionOutcome:
     """Execute one case within independent trusted limits.
 
@@ -531,4 +538,5 @@ def run_regression_case(
             )
         ),
         transport=transport,
+        observation_sink=observation_sink,
     )

@@ -12,6 +12,7 @@ from vintar.checks.sqli.confirmation_runner import (
     verify_boolean_sqli_with_confirmation,
 )
 from vintar.checks.sqli.models import Verdict
+from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -52,6 +53,7 @@ def run_check(
     context=None,
     template=None,
     point=None,
+    observation_sink=None,
 ):
     context = context or make_context()
     template = template or RequestTemplate(
@@ -76,6 +78,7 @@ def run_check(
         baseline_preserving_control=BASELINE_PRESERVING_CONTROL,
         context=context,
         transport=httpx.MockTransport(handler),
+        observation_sink=observation_sink,
     )
 
     return result, context
@@ -150,6 +153,30 @@ def test_vulnerable_sqlite_runs_eighteen_requests():
         "Pets" + FALSE_2,
     ]
     assert received[15] == "Pets" + BASELINE_PRESERVING_CONTROL
+
+
+def test_trusted_sink_receives_initial_and_confirmation_observations_in_order():
+    recorded: list[RecordedSqliObservation] = []
+
+    def handler(request):
+        category = request.url.params["category"]
+        return httpx.Response(200, content=sqlite_body(category, vulnerable=True))
+
+    result, _ = run_check(handler, observation_sink=recorded.append)
+
+    assert [item.sequence for item in recorded] == list(range(1, 19))
+    assert [item.family for item in recorded] == ["boolean"] * 6 + ["confirmation"] * 12
+    assert [item.kind for item in recorded[:6]] == [
+        "baseline",
+        "true",
+        "false",
+        "baseline",
+        "false",
+        "true",
+    ]
+    assert [item.kind for item in recorded[6:]] == [
+        kind.value for kind in confirmation_runner.CONFIRMATION_ORDER
+    ]
 
     assert result.evidence is not None
     assert result.evidence.baseline_matches_true

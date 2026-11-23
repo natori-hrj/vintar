@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from vintar.checks.sqli.models import ProbeError, ProbeKind, Verdict
+from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
@@ -88,6 +89,27 @@ def test_sends_six_probes_in_order():
         ProbeKind.FALSE,
         ProbeKind.FALSE,
     ]
+
+
+def test_trusted_sink_receives_boolean_observations_in_request_order():
+    recorded: list[RecordedSqliObservation] = []
+    verify(
+        make_context(),
+        httpx.MockTransport(lambda request: httpx.Response(200, content=b"same")),
+        observation_sink=recorded.append,
+    )
+
+    assert [item.sequence for item in recorded] == list(range(1, 7))
+    assert [item.kind for item in recorded] == [
+        "baseline",
+        "true",
+        "false",
+        "baseline",
+        "false",
+        "true",
+    ]
+    assert all(item.family == "boolean" for item in recorded)
+    assert all(item.observation.status_code == 200 for item in recorded)
 
 
 def test_identical_responses_are_not_detected():

@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
+import httpx
 from third_party_sqli_contract import (
     ServiceImageMismatch,
     is_image_digest,
@@ -29,19 +30,27 @@ from third_party_sqli_contract import (
 )
 
 from vintar.checks.sqli.confirmation import CONFIRMATION_ORDER, ConfirmationKind
+from vintar.checks.sqli.confirmation_runner import ConfirmationObservation
 from vintar.checks.sqli.error_analyzer import (
     ERROR_PROBE_ORDER,
     ErrorMatch,
     ErrorObservation,
     ErrorProbeKind,
     classify_error_observations,
-    match_error_signatures,
 )
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
+from vintar.checks.sqli.models import Observation
+from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
+from vintar.checks.sqli.time_analyzer import TimeObservation
 from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER
-from vintar.regression.cases import CASE_MAX_RESPONSE_SIZE
+from vintar.regression import (
+    TrustedExecutionPolicy,
+    load_regression_case,
+    regression_batch_report_dict,
+    run_regression_batch,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
@@ -56,9 +65,9 @@ CLASSIFICATIONS = {
     "sqli.time": ("tp", "fn", "fp", "tn", "non_decision"),
     "sqli.error": ("candidate", "fn", "fp", "tn", "non_decision"),
 }
-MEASUREMENT_SCHEMA_VERSION = 6
+MEASUREMENT_SCHEMA_VERSION = 7
 LEGACY_MEASUREMENT_SCHEMA_VERSION = 4
-UNSUPPORTED_ERROR_EVIDENCE_SCHEMA_VERSION = 5
+UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS = frozenset({5, 6})
 PROBE_MODES = {
     "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
     "sqli.time": {"time": "nine_probe"},
@@ -91,13 +100,11 @@ class TargetAdapter(NamedTuple):
 
 
 class RecordedResponse(NamedTuple):
-    """One response's non-sensitive evidence, with no retained body bytes."""
+    """Wire-level response provenance, with no retained body bytes."""
 
     status_code: int
     body_size: int
     body_sha256: str
-    truncated: bool = False
-    error_matches: tuple[ErrorMatch, ...] = ()
 
 
 _TARGET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
@@ -105,6 +112,29 @@ _TARGET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 
 class MeasurementError(RuntimeError):
     """An actionable third-party measurement failure."""
+
+
+class ObservationCollector:
+    """Collect one trusted runner's exact observations by request sequence."""
+
+    def __init__(self) -> None:
+        self._observations: dict[int, RecordedSqliObservation] = {}
+
+    def __call__(self, recorded: RecordedSqliObservation) -> None:
+        if recorded.sequence in self._observations:
+            raise MeasurementError(
+                f"The analyzer observation sink produced duplicate sequence number {recorded.sequence}. Check runner emission and rerun the measurement."
+            )
+        self._observations[recorded.sequence] = recorded
+
+    def ordered(self, expected: int) -> tuple[RecordedSqliObservation, ...]:
+        expected_sequences = set(range(1, expected + 1))
+        observed_sequences = set(self._observations)
+        if observed_sequences != expected_sequences:
+            raise MeasurementError(
+                f"The analyzer observation sink has sequence gaps: expected {sorted(expected_sequences)!r}, observed {sorted(observed_sequences)!r}. Check runner emission and rerun the measurement."
+            )
+        return tuple(self._observations[index] for index in range(1, expected + 1))
 
 
 def _confirmation_role(kind: ConfirmationKind) -> str:
@@ -134,19 +164,32 @@ PROBE_ROLE_ORDERS = {
     ("sqli.time", "nine_probe"): TIME_REPORT_ROLES,
     ("sqli.error", "error_probe"): ERROR_REPORT_ROLES,
 }
+OBSERVATION_KIND_ORDERS = {
+    ("sqli.boolean", "six_probe"): tuple(kind.value for kind in BOOLEAN_PROBE_ORDER),
+    ("sqli.boolean", "confirmation"): tuple(kind.value for kind in BOOLEAN_PROBE_ORDER)
+    + tuple(kind.value for kind in CONFIRMATION_ORDER),
+    ("sqli.time", "nine_probe"): tuple(kind.value for kind in TIME_PROBE_ORDER),
+    ("sqli.error", "error_probe"): tuple(kind.value for kind in ERROR_PROBE_ORDER),
+}
 
 
 def derive_relations(evidence: list[dict[str, object]]) -> dict[str, bool]:
-    """Derive equality and repeat stability solely from sanitized evidence."""
-    digests: dict[str, list[str]] = {}
+    """Derive analyzer response relations from decoded observation evidence."""
+    signatures: dict[str, list[tuple[object, object, object]]] = {}
     for item in evidence:
         role = item.get("role")
-        digest = item.get("body_sha256")
+        digest = item.get("analyzer_body_sha256")
         if type(role) is str and type(digest) is str:
-            digests.setdefault(role, []).append(digest)
+            signatures.setdefault(role, []).append(
+                (
+                    item.get("analyzer_status_code"),
+                    item.get("analyzer_body_size"),
+                    digest,
+                )
+            )
     relations = {
         f"{role}_stable": len(set(values)) == 1
-        for role, values in sorted(digests.items())
+        for role, values in sorted(signatures.items())
     }
     for left, right in (
         ("baseline", "true"),
@@ -157,11 +200,11 @@ def derive_relations(evidence: list[dict[str, object]]) -> dict[str, bool]:
         ("false", "false2"),
         ("baseline", "error"),
     ):
-        if left in digests and right in digests:
+        if left in signatures and right in signatures:
             relations[f"{left}_equals_{right}"] = (
-                len(set(digests[left])) == 1
-                and len(set(digests[right])) == 1
-                and digests[left][0] == digests[right][0]
+                len(set(signatures[left])) == 1
+                and len(set(signatures[right])) == 1
+                and signatures[left][0] == signatures[right][0]
             )
     return relations
 
@@ -169,28 +212,69 @@ def derive_relations(evidence: list[dict[str, object]]) -> dict[str, bool]:
 def sanitized_probe_evidence(
     roles: tuple[str, ...],
     responses: tuple[RecordedResponse, ...],
+    observations: tuple[RecordedSqliObservation, ...],
     *,
     check_type: str,
+    expected_kinds: tuple[str, ...] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, bool]]:
     """Discard bodies after deriving bounded, non-sensitive response evidence."""
-    if len(roles) != len(responses):
+    if len(roles) != len(responses) or len(roles) != len(observations):
         raise MeasurementError(
-            "Probe response evidence count differs from the fixed request plan. Check the loopback recorder and rerun the measurement instead of emitting incomplete evidence."
+            "Wire responses and analyzer observations differ from the fixed request plan. Check the trusted observation sink and loopback recorder, then rerun instead of pairing incomplete evidence."
         )
     evidence: list[dict[str, object]] = []
-    for role, response in zip(roles, responses, strict=True):
+    for sequence, (role, response, recorded) in enumerate(
+        zip(roles, responses, observations, strict=True), start=1
+    ):
+        expected_kind = role if expected_kinds is None else expected_kinds[sequence - 1]
+        expected_family = check_type.removeprefix("sqli.")
+        if check_type == "sqli.boolean" and sequence > len(BOOLEAN_PROBE_ORDER):
+            expected_family = "confirmation"
+        if (
+            recorded.sequence != sequence
+            or recorded.kind != expected_kind
+            or recorded.family != expected_family
+        ):
+            raise MeasurementError(
+                f"Analyzer observation sequence, family, or role mismatch at request {sequence}: expected {expected_family}/{expected_kind}, observed sequence {recorded.sequence} {recorded.family}/{recorded.kind}. Check runner observation emission and rerun the measurement."
+            )
+        observation = recorded.observation
+        status = getattr(observation, "status_code", None)
+        if status != response.status_code:
+            raise MeasurementError(
+                f"Wire and analyzer status disagree at request {sequence}: wire {response.status_code}, analyzer {status!r}. Check the bridge and trusted observation sink, then rerun the measurement."
+            )
         item: dict[str, object] = {
-            "body_sha256": response.body_sha256,
-            "body_size": response.body_size,
             "role": role,
-            "status_code": response.status_code,
+            "sequence": sequence,
+            "wire_status_code": response.status_code,
+            "wire_body_size": response.body_size,
+            "wire_body_sha256": response.body_sha256,
         }
-        if check_type == "sqli.error":
+        if isinstance(
+            observation, (Observation, ConfirmationObservation, ErrorObservation)
+        ):
             item.update(
-                truncated=response.truncated,
+                analyzer_status_code=observation.status_code,
+                analyzer_body_size=observation.body_size,
+                analyzer_body_sha256=observation.body_digest,
+                truncated=observation.truncated,
+            )
+        elif type(observation) is TimeObservation:
+            item.update(
+                analyzer_status_code=observation.status_code,
+                outcome=observation.outcome.value,
+                truncated=observation.truncated,
+            )
+        else:
+            raise MeasurementError(
+                f"Analyzer observation at request {sequence} has an unsupported type. Check the production runner sink and rerun the measurement."
+            )
+        if check_type == "sqli.error" and type(observation) is ErrorObservation:
+            item.update(
                 matches=[
                     {"dbms": match.dbms, "signature_id": match.signature_id}
-                    for match in response.error_matches
+                    for match in observation.matches
                 ],
             )
         evidence.append(item)
@@ -212,7 +296,7 @@ def _validate_reason_evidence(
     endpoint = required_text(record, "endpoint_id", "report record")
     check_type = required_text(record, "check_type", "report record")
     reason = required_text(record, "reason_code", "report record")
-    statuses = [item["status_code"] for item in evidence]
+    statuses = [item["analyzer_status_code"] for item in evidence]
     all_success = all(type(value) is int and 200 <= value < 300 for value in statuses)
     stable = _boolean_relation_is_stable(relations)
     if check_type == "sqli.boolean" and reason == "unexpected_difference":
@@ -343,9 +427,9 @@ def _validate_error_probe_evidence(
             observation = ErrorObservation(
                 kind=kind,
                 sequence=sequence,
-                status_code=item["status_code"],
-                body_size=item["body_size"],
-                body_digest=item["body_sha256"],
+                status_code=item["analyzer_status_code"],
+                body_size=item["analyzer_body_size"],
+                body_digest=item["analyzer_body_sha256"],
                 truncated=item["truncated"],
                 matches=matches,
             )
@@ -385,13 +469,13 @@ def _validate_error_probe_evidence(
 
 
 def _validate_probe_evidence(record: dict[str, object]) -> None:
-    """Validate strict v6 evidence, order, derived relations, and reason consistency."""
+    """Validate strict v7 wire provenance and analyzer observation evidence."""
     endpoint = required_text(record, "endpoint_id", "report record")
     evidence = record.get("evidence")
     relations = record.get("relations")
     if type(evidence) is not list or type(relations) is not dict:
         raise MeasurementError(
-            f"Measurement record {endpoint!r} lacks strict v6 evidence or derived relations. Remeasure with the current runner instead of fabricating probe evidence."
+            f"Measurement record {endpoint!r} lacks strict v7 evidence or derived relations. Remeasure with the current runner instead of fabricating probe evidence."
         )
     planned_roles = PROBE_ROLE_ORDERS.get(
         (record.get("check_type"), record.get("mode"))
@@ -415,13 +499,20 @@ def _validate_probe_evidence(record: dict[str, object]) -> None:
             f"Measurement record {endpoint!r} evidence roles do not match the fixed request order. Remeasure the target and fix the recorder instead of reordering evidence."
         )
     expected_fields = {
-        "body_sha256",
-        "body_size",
+        "sequence",
         "role",
-        "status_code",
+        "wire_status_code",
+        "wire_body_size",
+        "wire_body_sha256",
+        "analyzer_status_code",
+        "truncated",
     }
+    if record.get("check_type") == "sqli.time":
+        expected_fields.add("outcome")
+    else:
+        expected_fields.update(("analyzer_body_size", "analyzer_body_sha256"))
     if record.get("check_type") == "sqli.error":
-        expected_fields.update(("truncated", "matches"))
+        expected_fields.add("matches")
     for index, item in enumerate(evidence, start=1):
         if type(item) is not dict or item.keys() != expected_fields:
             fields = ", ".join(sorted(expected_fields))
@@ -430,22 +521,29 @@ def _validate_probe_evidence(record: dict[str, object]) -> None:
                 f"Expected exactly: {fields}. Remeasure instead of hand-editing the evidence."
             )
         if (
-            type(item["status_code"]) is not int
-            or not 100 <= item["status_code"] <= 599
-            or type(item["body_size"]) is not int
-            or item["body_size"] < 0
-            or type(item["body_sha256"]) is not str
-            or not is_sha256(item["body_sha256"])
+            item["sequence"] != index
+            or type(item["wire_status_code"]) is not int
+            or not 100 <= item["wire_status_code"] <= 599
+            or type(item["wire_body_size"]) is not int
+            or item["wire_body_size"] < 0
+            or type(item["wire_body_sha256"]) is not str
+            or not is_sha256(item["wire_body_sha256"])
+            or type(item["analyzer_status_code"]) is not int
+            or not 100 <= item["analyzer_status_code"] <= 599
+            or item["wire_status_code"] != item["analyzer_status_code"]
+            or type(item["truncated"]) is not bool
         ):
             raise MeasurementError(
                 f"Measurement record {endpoint!r} evidence entry {index} has an invalid status, size, or body digest. Remeasure the target to regenerate bounded non-sensitive evidence."
             )
-        if (
-            record.get("check_type") == "sqli.error"
-            and type(item["truncated"]) is not bool
+        if record.get("check_type") != "sqli.time" and (
+            type(item["analyzer_body_size"]) is not int
+            or item["analyzer_body_size"] < 0
+            or type(item["analyzer_body_sha256"]) is not str
+            or not is_sha256(item["analyzer_body_sha256"])
         ):
             raise MeasurementError(
-                f"Measurement record {endpoint!r} evidence entry {index} has an invalid truncation fact. Remeasure the target to record analyzer facts mechanically."
+                f"Measurement record {endpoint!r} evidence entry {index} has invalid analyzer body facts. Remeasure the target to record the exact production observation."
             )
     derived = derive_relations(evidence)
     if relations != derived:
@@ -534,12 +632,12 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     """Accept only the current multi-target measurement report contract."""
     if type(report) is not dict:
         raise MeasurementError(
-            "The third-party measurement report is not a JSON object. This reader supports schema versions 4 and 6; rerun the measurement to regenerate the report."
+            "The third-party measurement report is not a JSON object. This reader supports schema versions 4 and 7; rerun the measurement to regenerate the report."
         )
     version = report.get("schema_version")
-    if version == UNSUPPORTED_ERROR_EVIDENCE_SCHEMA_VERSION:
+    if version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS:
         raise MeasurementError(
-            "Unsupported third-party measurement report schema version 5: v5 Error evidence lacks the sanitized truncation and signature-match facts required for validation. Remeasure with the current tooling to produce a schema version 6 report; the missing facts cannot be reconstructed without response bodies."
+            f"Unsupported third-party measurement report schema version {version}: v5/v6 analytical facts were derived from wire bytes and are unreliable under HTTP content encoding. Remeasure with the current tooling to produce schema version 7 from the exact analyzer observations."
         )
     if type(version) is not int or version not in {
         LEGACY_MEASUREMENT_SCHEMA_VERSION,
@@ -547,7 +645,7 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     }:
         found = repr(version) if version is not None else "missing"
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema version: found {found}; this reader supports legacy version 4 and current version 6. The report shape cannot be inferred from another version; rerun the measurement to regenerate it."
+            f"Unsupported third-party measurement report schema version: found {found}; this reader supports legacy version 4 and current version 7. The report shape cannot be inferred from another version; rerun the measurement to regenerate it."
         )
     if report.keys() != {"counts", "records", "schema_version", "targets"}:
         raise MeasurementError(
@@ -667,7 +765,7 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             "target_id",
         }:
             raise MeasurementError(
-                f"Invalid v6 fields for measurement record {record.get('endpoint_id')!r}. Store only the reviewed result, sanitized evidence, and derived relations; remove payloads, bodies, headers, cookies, and URLs by remeasuring with the current runner."
+                f"Invalid v7 fields for measurement record {record.get('endpoint_id')!r}. Store only the reviewed result, sanitized evidence, and derived relations; remove payloads, bodies, headers, cookies, and URLs by remeasuring with the current runner."
             )
         if type(record.get("detail")) is not dict or "confirmation" in record:
             raise MeasurementError(
@@ -892,20 +990,10 @@ def _chunked_body_chunks(body: bytes) -> Iterator[bytes]:
 def _recorded_response(status_code: int, chunks: Iterator[bytes]) -> RecordedResponse:
     digest = hashlib.sha256()
     body_size = 0
-    signature_prefix = bytearray()
     for chunk in chunks:
         body_size += len(chunk)
         digest.update(chunk)
-        remaining = CASE_MAX_RESPONSE_SIZE - len(signature_prefix)
-        if remaining > 0:
-            signature_prefix.extend(chunk[:remaining])
-    return RecordedResponse(
-        status_code,
-        body_size,
-        digest.hexdigest(),
-        body_size > CASE_MAX_RESPONSE_SIZE,
-        match_error_signatures(bytes(signature_prefix)),
-    )
+    return RecordedResponse(status_code, body_size, digest.hexdigest())
 
 
 def _parse_http_response(response: bytes) -> RecordedResponse:
@@ -1766,25 +1854,24 @@ def run_pipeline_case(
             "Materialization did not preserve the reviewed probe mode. Check the config and case limits instead of running a different request plan."
         )
 
-    verified = cli(
-        [
-            "verify",
-            "--cases",
-            str(case),
-            "--max-requests",
-            str(max_requests),
-            "--rps",
-            "10",
-            "--timeout",
-            "5",
-            "--time-deadline",
-            "60",
-            "--authorized",
-        ],
-        cwd=folder,
-        expected_codes={0, 1, 3},
-        environment=pipeline_environment(origin),
+    loaded_case = load_regression_case(case)
+    collector = ObservationCollector()
+    policy = TrustedExecutionPolicy(
+        scope=loaded_case.scope,
+        max_requests=max_requests,
+        max_requests_per_second=10,
+        max_timeout_seconds=5,
+        max_time_execution_seconds=60,
+        max_response_size=loaded_case.max_response_size,
     )
+    with httpx.HTTPTransport() as transport:
+        result = run_regression_batch(
+            [loaded_case],
+            policy=policy,
+            transport=transport,
+            observation_sink=collector,
+        )
+    verified = regression_batch_report_dict(result)
     outcomes = verified.get("outcomes")
     if (
         type(outcomes) is not list
@@ -1809,10 +1896,13 @@ def run_pipeline_case(
             "Verification omitted request or check evidence. Check the installed Vintar report contract."
         )
     roles = PROBE_ROLE_ORDERS[(check_type, report_mode)][:request_count]
+    kinds = OBSERVATION_KIND_ORDERS[(check_type, report_mode)][:request_count]
     evidence, relations = sanitized_probe_evidence(
         roles,
         recorder.recorded_responses(request_count),
+        collector.ordered(request_count),
         check_type=check_type,
+        expected_kinds=kinds,
     )
     return {
         "actual_verdict": verdict,
@@ -2074,7 +2164,7 @@ def write_report(path: Path, report: dict[str, object]) -> None:
     validate_measurement_report(report)
     if report.get("schema_version") != MEASUREMENT_SCHEMA_VERSION:
         raise MeasurementError(
-            "New measurement output requires schema version 6 with real per-probe evidence and sanitized Error analyzer facts. Rerun the current measurement instead of writing a legacy v4 or v5 fixture."
+            "New measurement output requires schema version 7 with wire provenance separated from exact analyzer observations. Rerun the current measurement instead of writing a legacy v4, v5, or v6 fixture."
         )
     resolved = path.resolve()
     if resolved == ROOT or ROOT in resolved.parents:
