@@ -1401,26 +1401,38 @@ def render_measurement_input_revisions(
         history[key] = required_text(entry, "history", "confirmation revision")
 
     targets, records = load_declarations()
-    declared_keys = set()
+    explicit_keys = set()
+    preset_keys = set()
     for planned in plan_measurements(targets, records):
         target, endpoint, _, mode = planned.key
         if mode != "confirmation":
             continue
         key = (target, endpoint, mode)
-        declared_keys.add(key)
         with planned.config.open("rb") as stream:
             probes = tomllib.load(stream)["probes"]
-        if probes.get("selection") == "explicit" and key not in history:
+        selection = probes.get("selection")
+        if selection == "preset":
+            preset_keys.add(key)
+        if selection != "explicit":
+            continue
+        explicit_keys.add(key)
+        if key not in history:
             raise MeasurementError(
                 f"{target}/{endpoint} uses explicit confirmation inputs without "
                 "documented history. Add a confirmation entry to "
                 "measurement-input-revisions.toml and regenerate the revisions section."
             )
-    if stale_keys := history.keys() - declared_keys:
-        target, endpoint, mode = min(stale_keys)
+    if stale_keys := history.keys() - explicit_keys:
+        key = min(stale_keys)
+        target, endpoint, mode = key
+        reason = (
+            "describe a preset config as explicit"
+            if key in preset_keys
+            else "present a removed config as current"
+        )
         raise MeasurementError(
             f"Stale measurement revision for {target}/{endpoint}/{mode}: the docs "
-            "would present a removed config as current. Remove the entry from "
+            f"would {reason}. Remove the entry from "
             "measurement-input-revisions.toml and regenerate the revisions section."
         )
 

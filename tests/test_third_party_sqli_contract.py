@@ -1792,6 +1792,35 @@ def test_stale_measurement_input_revision_is_rejected(tmp_path):
         runner.render_measurement_input_revisions(revisions)
 
 
+def test_preset_confirmation_revision_is_rejected(tmp_path, monkeypatch):
+    runner = load_runner()
+    plan_measurements = runner.plan_measurements
+    preset_config = tmp_path / "owasp-lab-boolean-greet-confirmation.toml"
+    source = THIRD_PARTY / "dsvw/configs/dsvw-version-query-confirmation.toml"
+    preset_config.write_bytes(source.read_bytes())
+    revision_key = (
+        "owasp-lab",
+        "owasp-lab-boolean-greet",
+        "sqli.boolean",
+        "confirmation",
+    )
+
+    def plan_with_preset(targets, records):
+        for planned in plan_measurements(targets, records):
+            yield (
+                planned._replace(config=preset_config)
+                if planned.key == revision_key
+                else planned
+            )
+
+    monkeypatch.setattr(runner, "plan_measurements", plan_with_preset)
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"owasp-lab/owasp-lab-boolean-greet/confirmation.*describe a preset config as explicit.*Remove the entry",
+    ):
+        runner.render_measurement_input_revisions()
+
+
 def test_mysql_by_target_counts_are_recomputed_from_records():
     runner = load_runner()
     report = expected_report()
