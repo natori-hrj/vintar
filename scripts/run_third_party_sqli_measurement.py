@@ -29,11 +29,19 @@ from third_party_sqli_contract import (
 )
 
 from vintar.checks.sqli.confirmation import CONFIRMATION_ORDER, ConfirmationKind
-from vintar.checks.sqli.error_analyzer import ERROR_PROBE_ORDER, ErrorProbeKind
+from vintar.checks.sqli.error_analyzer import (
+    ERROR_PROBE_ORDER,
+    ErrorMatch,
+    ErrorObservation,
+    ErrorProbeKind,
+    classify_error_observations,
+    match_error_signatures,
+)
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
 from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER
+from vintar.regression.cases import CASE_MAX_RESPONSE_SIZE
 
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
@@ -48,8 +56,9 @@ CLASSIFICATIONS = {
     "sqli.time": ("tp", "fn", "fp", "tn", "non_decision"),
     "sqli.error": ("candidate", "fn", "fp", "tn", "non_decision"),
 }
-MEASUREMENT_SCHEMA_VERSION = 5
+MEASUREMENT_SCHEMA_VERSION = 6
 LEGACY_MEASUREMENT_SCHEMA_VERSION = 4
+UNSUPPORTED_ERROR_EVIDENCE_SCHEMA_VERSION = 5
 PROBE_MODES = {
     "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
     "sqli.time": {"time": "nine_probe"},
@@ -87,6 +96,8 @@ class RecordedResponse(NamedTuple):
     status_code: int
     body_size: int
     body_sha256: str
+    truncated: bool = False
+    error_matches: tuple[ErrorMatch, ...] = ()
 
 
 _TARGET_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
@@ -156,22 +167,33 @@ def derive_relations(evidence: list[dict[str, object]]) -> dict[str, bool]:
 
 
 def sanitized_probe_evidence(
-    roles: tuple[str, ...], responses: tuple[RecordedResponse, ...]
+    roles: tuple[str, ...],
+    responses: tuple[RecordedResponse, ...],
+    *,
+    check_type: str,
 ) -> tuple[list[dict[str, object]], dict[str, bool]]:
     """Discard bodies after deriving bounded, non-sensitive response evidence."""
     if len(roles) != len(responses):
         raise MeasurementError(
             "Probe response evidence count differs from the fixed request plan. Check the loopback recorder and rerun the measurement instead of emitting incomplete evidence."
         )
-    evidence = [
-        {
+    evidence: list[dict[str, object]] = []
+    for role, response in zip(roles, responses, strict=True):
+        item: dict[str, object] = {
             "body_sha256": response.body_sha256,
             "body_size": response.body_size,
             "role": role,
             "status_code": response.status_code,
         }
-        for role, response in zip(roles, responses, strict=True)
-    ]
+        if check_type == "sqli.error":
+            item.update(
+                truncated=response.truncated,
+                matches=[
+                    {"dbms": match.dbms, "signature_id": match.signature_id}
+                    for match in response.error_matches
+                ],
+            )
+        evidence.append(item)
     return evidence, derive_relations(evidence)
 
 
@@ -294,44 +316,82 @@ def _validate_reason_evidence(
         raise MeasurementError(
             f"Probe evidence for {endpoint!r} contradicts {reason}: timing analysis requires completed 2xx responses. Remeasure the target and preserve a transport reason for non-2xx evidence."
         )
+
+
+def _validate_error_probe_evidence(
+    record: dict[str, object], evidence: list[dict[str, object]]
+) -> None:
+    """Reclassify sanitized Error observations through the product analyzer."""
+    endpoint = required_text(record, "endpoint_id", "report record")
+    observations: list[ErrorObservation] = []
+    for sequence, item in enumerate(evidence, start=1):
+        role = item["role"]
+        kind = ErrorProbeKind.BASELINE if role == "baseline" else ErrorProbeKind.PROBE
+        raw_matches = item["matches"]
+        if type(raw_matches) is not list:
+            raise MeasurementError(
+                f"Error probe evidence for {endpoint!r} has invalid signature matches. Remeasure the target so reviewed DBMS/signature facts are recorded instead of hand-edited."
+            )
+        try:
+            matches = tuple(
+                ErrorMatch(match["dbms"], match["signature_id"])
+                for match in raw_matches
+                if type(match) is dict and match.keys() == {"dbms", "signature_id"}
+            )
+            if len(matches) != len(raw_matches):
+                raise ValueError
+            observation = ErrorObservation(
+                kind=kind,
+                sequence=sequence,
+                status_code=item["status_code"],
+                body_size=item["body_size"],
+                body_digest=item["body_sha256"],
+                truncated=item["truncated"],
+                matches=matches,
+            )
+        except (KeyError, TypeError, ValueError):
+            raise MeasurementError(
+                f"Error probe evidence for {endpoint!r} has invalid analyzer facts. Remeasure the target so truncation and sorted reviewed signature matches are recorded mechanically."
+            ) from None
+        observations.append(observation)
+    try:
+        status, reason, classified_evidence = classify_error_observations(
+            tuple(observations)
+        )
+    except (TypeError, ValueError) as exc:
+        raise MeasurementError(
+            f"Error probe evidence for {endpoint!r} cannot form the bounded analyzer sequence: {exc} Remeasure the target and preserve the fixed request order instead of hand-editing evidence."
+        ) from None
+    detail = record.get("detail")
+    expected_evidence = (
+        None
+        if classified_evidence is None
+        else (classified_evidence.dbms, classified_evidence.signature_id)
+    )
+    stored_evidence = (
+        (detail.get("dbms"), detail.get("signature_id"))
+        if type(detail) is dict and "dbms" in detail and "signature_id" in detail
+        else None
+    )
     if (
-        check_type == "sqli.error"
-        and reason
-        in {
-            "dbms_error_disclosed",
-            "dbms_error_not_observed",
-            "baseline_dbms_error",
-            "unstable_response",
-            "unstable_error_signal",
-            "ambiguous_dbms_error",
-        }
-        and not all_success
+        record.get("reason_code") != reason
+        or type(detail) is not dict
+        or detail.get("status") != status.value
+        or stored_evidence != expected_evidence
     ):
         raise MeasurementError(
-            f"Probe evidence for {endpoint!r} contradicts {reason}: analytical Error results require completed 2xx responses. Remeasure the target and preserve the non-success reason instead."
+            f"Error probe evidence for {endpoint!r} classifies as {status.value}/{reason} with evidence {expected_evidence!r}, which contradicts the stored Error result. Remeasure the target so the report is produced by classify_error_observations instead of hand-editing it."
         )
-    if check_type == "sqli.error" and reason == "non_success_status":
-        probe_statuses = [
-            item["status_code"] for item in evidence if item["role"] == "error"
-        ]
-        if (
-            len(probe_statuses) != 2
-            or len(set(probe_statuses)) != 1
-            or 200 <= probe_statuses[0] < 300
-        ):
-            raise MeasurementError(
-                f"Probe evidence for {endpoint!r} contradicts non_success_status: repeated Error probes must have one stable non-2xx status. Remeasure the target and fix the recorder or reason instead of hand-editing evidence."
-            )
 
 
 def _validate_probe_evidence(record: dict[str, object]) -> None:
-    """Validate strict v5 evidence, order, derived relations, and reason consistency."""
+    """Validate strict v6 evidence, order, derived relations, and reason consistency."""
     endpoint = required_text(record, "endpoint_id", "report record")
     evidence = record.get("evidence")
     relations = record.get("relations")
     if type(evidence) is not list or type(relations) is not dict:
         raise MeasurementError(
-            f"Measurement record {endpoint!r} lacks strict v5 evidence or derived relations. Remeasure with the current runner instead of fabricating probe evidence."
+            f"Measurement record {endpoint!r} lacks strict v6 evidence or derived relations. Remeasure with the current runner instead of fabricating probe evidence."
         )
     planned_roles = PROBE_ROLE_ORDERS.get(
         (record.get("check_type"), record.get("mode"))
@@ -354,15 +414,20 @@ def _validate_probe_evidence(record: dict[str, object]) -> None:
         raise MeasurementError(
             f"Measurement record {endpoint!r} evidence roles do not match the fixed request order. Remeasure the target and fix the recorder instead of reordering evidence."
         )
+    expected_fields = {
+        "body_sha256",
+        "body_size",
+        "role",
+        "status_code",
+    }
+    if record.get("check_type") == "sqli.error":
+        expected_fields.update(("truncated", "matches"))
     for index, item in enumerate(evidence, start=1):
-        if type(item) is not dict or item.keys() != {
-            "body_sha256",
-            "body_size",
-            "role",
-            "status_code",
-        }:
+        if type(item) is not dict or item.keys() != expected_fields:
+            fields = ", ".join(sorted(expected_fields))
             raise MeasurementError(
-                f"Measurement record {endpoint!r} evidence entry {index} has invalid fields. Store only role, HTTP status, body byte size, and SHA-256 digest; remeasure instead of hand-editing it."
+                f"Measurement record {endpoint!r} evidence entry {index} has invalid fields. "
+                f"Expected exactly: {fields}. Remeasure instead of hand-editing the evidence."
             )
         if (
             type(item["status_code"]) is not int
@@ -375,12 +440,21 @@ def _validate_probe_evidence(record: dict[str, object]) -> None:
             raise MeasurementError(
                 f"Measurement record {endpoint!r} evidence entry {index} has an invalid status, size, or body digest. Remeasure the target to regenerate bounded non-sensitive evidence."
             )
+        if (
+            record.get("check_type") == "sqli.error"
+            and type(item["truncated"]) is not bool
+        ):
+            raise MeasurementError(
+                f"Measurement record {endpoint!r} evidence entry {index} has an invalid truncation fact. Remeasure the target to record analyzer facts mechanically."
+            )
     derived = derive_relations(evidence)
     if relations != derived:
         raise MeasurementError(
             f"Measurement record {endpoint!r} relations disagree with its body digests. Remeasure the target so relations are derived mechanically instead of hand-edited."
         )
     _validate_reason_evidence(record, evidence, relations)
+    if record.get("check_type") == "sqli.error":
+        _validate_error_probe_evidence(record, evidence)
 
 
 def _validate_error_detail(record: dict[str, object]) -> None:
@@ -460,16 +534,20 @@ def validate_measurement_report(report: object) -> dict[str, object]:
     """Accept only the current multi-target measurement report contract."""
     if type(report) is not dict:
         raise MeasurementError(
-            "The third-party measurement report is not a JSON object. This reader supports schema versions 4 and 5; rerun the measurement to regenerate the report."
+            "The third-party measurement report is not a JSON object. This reader supports schema versions 4 and 6; rerun the measurement to regenerate the report."
         )
     version = report.get("schema_version")
+    if version == UNSUPPORTED_ERROR_EVIDENCE_SCHEMA_VERSION:
+        raise MeasurementError(
+            "Unsupported third-party measurement report schema version 5: v5 Error evidence lacks the sanitized truncation and signature-match facts required for validation. Remeasure with the current tooling to produce a schema version 6 report; the missing facts cannot be reconstructed without response bodies."
+        )
     if type(version) is not int or version not in {
         LEGACY_MEASUREMENT_SCHEMA_VERSION,
         MEASUREMENT_SCHEMA_VERSION,
     }:
         found = repr(version) if version is not None else "missing"
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema version: found {found}; this reader supports legacy version 4 and current version 5. The report shape cannot be inferred from another version; rerun the measurement to regenerate it."
+            f"Unsupported third-party measurement report schema version: found {found}; this reader supports legacy version 4 and current version 6. The report shape cannot be inferred from another version; rerun the measurement to regenerate it."
         )
     if report.keys() != {"counts", "records", "schema_version", "targets"}:
         raise MeasurementError(
@@ -589,7 +667,7 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             "target_id",
         }:
             raise MeasurementError(
-                f"Invalid v5 fields for measurement record {record.get('endpoint_id')!r}. Store only the reviewed result, sanitized evidence, and derived relations; remove payloads, bodies, headers, cookies, and URLs by remeasuring with the current runner."
+                f"Invalid v6 fields for measurement record {record.get('endpoint_id')!r}. Store only the reviewed result, sanitized evidence, and derived relations; remove payloads, bodies, headers, cookies, and URLs by remeasuring with the current runner."
             )
         if type(record.get("detail")) is not dict or "confirmation" in record:
             raise MeasurementError(
@@ -633,7 +711,7 @@ def validate_measurement_report(report: object) -> dict[str, object]:
             _validate_probe_evidence(record)
         elif "evidence" in record or "relations" in record:
             raise MeasurementError(
-                f"Legacy v4 measurement record {key[1]!r} contains v5 probe evidence. Rerun the measurement instead of mixing report versions."
+                f"Legacy v4 measurement record {key[1]!r} contains v6 probe evidence. Rerun the measurement instead of mixing report versions."
             )
         recomputed_records.append({**record, "classification": classification})
 
@@ -814,10 +892,20 @@ def _chunked_body_chunks(body: bytes) -> Iterator[bytes]:
 def _recorded_response(status_code: int, chunks: Iterator[bytes]) -> RecordedResponse:
     digest = hashlib.sha256()
     body_size = 0
+    signature_prefix = bytearray()
     for chunk in chunks:
         body_size += len(chunk)
         digest.update(chunk)
-    return RecordedResponse(status_code, body_size, digest.hexdigest())
+        remaining = CASE_MAX_RESPONSE_SIZE - len(signature_prefix)
+        if remaining > 0:
+            signature_prefix.extend(chunk[:remaining])
+    return RecordedResponse(
+        status_code,
+        body_size,
+        digest.hexdigest(),
+        body_size > CASE_MAX_RESPONSE_SIZE,
+        match_error_signatures(bytes(signature_prefix)),
+    )
 
 
 def _parse_http_response(response: bytes) -> RecordedResponse:
@@ -1722,7 +1810,9 @@ def run_pipeline_case(
         )
     roles = PROBE_ROLE_ORDERS[(check_type, report_mode)][:request_count]
     evidence, relations = sanitized_probe_evidence(
-        roles, recorder.recorded_responses(request_count)
+        roles,
+        recorder.recorded_responses(request_count),
+        check_type=check_type,
     )
     return {
         "actual_verdict": verdict,
@@ -1984,7 +2074,7 @@ def write_report(path: Path, report: dict[str, object]) -> None:
     validate_measurement_report(report)
     if report.get("schema_version") != MEASUREMENT_SCHEMA_VERSION:
         raise MeasurementError(
-            "New measurement output requires schema version 5 with real per-probe evidence. Rerun the current measurement instead of writing a legacy v4 fixture."
+            "New measurement output requires schema version 6 with real per-probe evidence and sanitized Error analyzer facts. Rerun the current measurement instead of writing a legacy v4 or v5 fixture."
         )
     resolved = path.resolve()
     if resolved == ROOT or ROOT in resolved.parents:

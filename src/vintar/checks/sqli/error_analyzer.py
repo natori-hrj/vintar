@@ -173,12 +173,32 @@ def _operational_sequence_stop(
     return None
 
 
-def _expected_result(
+def classify_error_observations(
     observations: tuple[ErrorObservation, ...],
 ) -> tuple[ErrorAnalysisStatus, str, ErrorEvidence | None]:
+    """Classify sanitized observations from the fixed Error request plan."""
+    if type(observations) is not tuple or any(
+        type(item) is not ErrorObservation for item in observations
+    ):
+        raise TypeError(
+            "Invalid Error SQLi observations. Supply an immutable tuple of ErrorObservation values."
+        )
+    if tuple(item.kind for item in observations) != ERROR_PROBE_ORDER[
+        : len(observations)
+    ] or tuple(item.sequence for item in observations) != tuple(
+        range(1, len(observations) + 1)
+    ):
+        raise ValueError(
+            "Invalid Error SQLi observation order. Use baseline, probe, baseline, probe in sequence."
+        )
     terminal_reason = _operational_sequence_stop(observations)
     if terminal_reason is not None:
         return ErrorAnalysisStatus.INCONCLUSIVE, terminal_reason, None
+
+    if len(observations) != len(ERROR_PROBE_ORDER):
+        raise ValueError(
+            "Incomplete analytical Error SQLi observations. Supply all four responses, or end the sequence at its operational stop."
+        )
 
     baselines = (observations[0], observations[2])
     probes = (observations[1], observations[3])
@@ -310,7 +330,7 @@ class ErrorAnalysis:
                 "Operational error analysis lacks its declared terminal condition. Stop after HTTP 429 or truncation, or record the runner failure instead."
             )
         else:
-            expected = _expected_result(self.observations)
+            expected = classify_error_observations(self.observations)
         if (self.status, self.reason_code, self.evidence) != expected:
             raise ValueError(
                 "Error analysis fields disagree with the recorded responses. Construct results through analyze_error_responses."
@@ -321,7 +341,12 @@ class ErrorAnalysis:
         return len(self.observations) + len(self.failures)
 
 
-def _matches(body: bytes) -> tuple[ErrorMatch, ...]:
+def match_error_signatures(body: bytes) -> tuple[ErrorMatch, ...]:
+    """Return reviewed matches from the bounded response prefix."""
+    if type(body) is not bytes:
+        raise TypeError(
+            "Invalid Error SQLi response body. Supply immutable response bytes."
+        )
     bounded = body[:ERROR_SCAN_LIMIT]
     return tuple(
         sorted(
@@ -342,7 +367,7 @@ def validate_error_probe_payload(payload: object) -> str:
         raise ValueError(
             "Invalid error probe payload. Remove control characters and supply reviewed SQL syntax."
         )
-    if _matches(payload.encode("utf-8")):
+    if match_error_signatures(payload.encode("utf-8")):
         raise ValueError(
             "Error probe payload contains a registered DBMS diagnostic and could create a reflected false positive. Supply SQL syntax that does not contain error-signature text."
         )
@@ -365,7 +390,7 @@ def error_observation(
         body_size=len(response.body),
         body_digest=hashlib.sha256(response.body).hexdigest(),
         truncated=response.truncated,
-        matches=_matches(response.body),
+        matches=match_error_signatures(response.body),
     )
 
 
@@ -397,7 +422,7 @@ def analyze_error_responses(
             zip(ERROR_PROBE_ORDER, ordered, strict=True), start=1
         )
     )
-    status, reason_code, evidence = _expected_result(observations)
+    status, reason_code, evidence = classify_error_observations(observations)
     return ErrorAnalysis(
         status=status,
         reason_code=reason_code,

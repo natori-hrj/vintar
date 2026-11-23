@@ -61,13 +61,16 @@ reviewed OpenAPI document contains three GET operations; each record binds its
 own `operation_path`, so discovery evidence remains tied to the actual upstream
 route rather than a fabricated combined operation.
 
-New manual measurement artifacts use schema version 5. They retain the v4
+New manual measurement artifacts use schema version 6. They retain the v4
 target-bound records and count trees and add request-ordered response evidence:
-probe role, HTTP status, body byte size, and body SHA-256 only. Derived equality
-and repeat-stability flags are recomputed from those digests. Bodies, payloads,
-headers, cookies, and query values are never stored. The existing reviewed v4
-fixture remains readable for documentation drift until it is replaced by a real
-v5 measurement; the writer cannot emit v4. Other versions and mixed shapes are
+`role`, `status_code`, `body_size`, and `body_sha256`. Error evidence also has a
+`truncated` boolean and sorted `matches` entries containing only `dbms` and
+`signature_id`. Derived equality and repeat-stability flags are recomputed from
+the digests. Bodies, payloads, headers, cookies, matched text, and query values
+are never stored. The existing reviewed v4 fixture remains readable for
+documentation drift until it is replaced by a real v6 measurement; the writer
+cannot emit v4 or v5. Version 5 Error evidence lacks the analyzer facts and must
+be regenerated rather than upgraded. Other versions and mixed shapes are
 rejected. Error candidates remain `candidate`, never `tp` or `vulnerable`.
 
 Docker absence, an unavailable loopback binding, a changed archive, a changed local

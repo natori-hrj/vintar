@@ -113,17 +113,20 @@ Version 4 moves the former `target` object to target-id-keyed `targets`, adds
 `target_id` to every record, moves the former counts tree to `counts.overall`, and
 adds the same complete tree for each target under `counts.by_target`.
 
-New runs emit version 5. Each record adds request-ordered evidence containing
-only probe role, HTTP status, body byte size, and body SHA-256. Equality and
-repeat-pair stability flags are derived mechanically from those digests. The
-report never stores response bodies, payloads, headers, cookies, or URLs with
-query values. The writer requires v5; a narrow legacy reader keeps this reviewed
-v4 fixture usable until a real v5 measurement replaces it. Versions 1 through 3
-and mixed v4/v5 records are rejected rather than inferred or silently upgraded.
+New runs emit version 6. Each record adds request-ordered evidence with `role`,
+`status_code`, `body_size`, and `body_sha256`. Error records additionally carry
+the sanitized analyzer facts `truncated` and sorted `matches`; every match has
+only `dbms` and `signature_id`. Equality and repeat-pair stability flags are
+derived mechanically from the digests. The report never stores response bodies,
+payloads, headers, cookies, matched text, or URLs with query values. The writer
+requires v6; a narrow legacy reader keeps this reviewed v4 fixture usable until
+a real v6 measurement replaces it. Version 5 lacks the Error analyzer facts and
+must be regenerated rather than upgraded in place. Versions 1 through 3 and
+mixed v4/v6 records are rejected rather than inferred or silently upgraded.
 
 Reviewed report schema version: `4`.
 
-Each v4 or v5 target metadata object records the prepared app image ID and the resolved
+Each v4 or v6 target metadata object records the prepared app image ID and the resolved
 digest-pinned auxiliary `service_images` map. The runner compares that map with
 the declaration before starting Compose, so the report identifies every image
 that participated in the measurement.
