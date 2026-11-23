@@ -61,12 +61,14 @@ reviewed OpenAPI document contains three GET operations; each record binds its
 own `operation_path`, so discovery evidence remains tied to the actual upstream
 route rather than a fabricated combined operation.
 
-The saved manual measurement artifact uses schema version 4. `targets` is keyed
-by target id, records carry `target_id`, and counts contain both `overall` and
-`by_target` trees. The runner and documentation drift check reject older or
-mixed-shape reports. Regenerate version 1, 2, or 3 artifacts rather than attempting
-an in-place conversion. Error candidates remain `candidate`, never `tp` or
-`vulnerable`.
+New manual measurement artifacts use schema version 5. They retain the v4
+target-bound records and count trees and add request-ordered response evidence:
+probe role, HTTP status, body byte size, and body SHA-256 only. Derived equality
+and repeat-stability flags are recomputed from those digests. Bodies, payloads,
+headers, cookies, and query values are never stored. The existing reviewed v4
+fixture remains readable for documentation drift until it is replaced by a real
+v5 measurement; the writer cannot emit v4. Other versions and mixed shapes are
+rejected. Error candidates remain `candidate`, never `tp` or `vulnerable`.
 
 Docker absence, an unavailable loopback binding, a changed archive, a changed local
 image, source-evidence drift, startup failure, or documentation drift produces an

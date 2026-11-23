@@ -86,7 +86,7 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
-The manual maintainer report uses schema version 4. Versions 2 and 3 introduced
+The current reviewed fixture uses schema version 4. Versions 2 and 3 introduced
 per-technique records and Error evidence. Version 4 generalizes that contract to
 multiple independently prepared targets:
 
@@ -111,12 +111,19 @@ the existing decision contract.
 
 Version 4 moves the former `target` object to target-id-keyed `targets`, adds
 `target_id` to every record, moves the former counts tree to `counts.overall`, and
-adds the same complete tree for each target under `counts.by_target`. Readers
-accept only version 4 and reject a report whose version or shape differs. Version
-1, 2, and 3 artifacts must be regenerated with the current measurement script;
-there is no silent fallback or dual-shape parsing.
+adds the same complete tree for each target under `counts.by_target`.
 
-Each v4 target metadata object records the prepared app image ID and the resolved
+New runs emit version 5. Each record adds request-ordered evidence containing
+only probe role, HTTP status, body byte size, and body SHA-256. Equality and
+repeat-pair stability flags are derived mechanically from those digests. The
+report never stores response bodies, payloads, headers, cookies, or URLs with
+query values. The writer requires v5; a narrow legacy reader keeps this reviewed
+v4 fixture usable until a real v5 measurement replaces it. Versions 1 through 3
+and mixed v4/v5 records are rejected rather than inferred or silently upgraded.
+
+Reviewed report schema version: `4`.
+
+Each v4 or v5 target metadata object records the prepared app image ID and the resolved
 digest-pinned auxiliary `service_images` map. The runner compares that map with
 the declaration before starting Compose, so the report identifies every image
 that participated in the measurement.
