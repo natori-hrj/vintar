@@ -43,7 +43,7 @@ from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
 from vintar.checks.sqli.models import Observation
 from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
-from vintar.checks.sqli.time_analyzer import TimeObservation
+from vintar.checks.sqli.time_analyzer import TimeObservation, TimeProbeOutcome
 from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER
 from vintar.regression import (
     TrustedExecutionPolicy,
@@ -73,6 +73,7 @@ PROBE_MODES = {
     "sqli.time": {"time": "nine_probe"},
     "sqli.error": {"error": "error_probe"},
 }
+TIME_PROBE_OUTCOMES = frozenset(outcome.value for outcome in TimeProbeOutcome)
 
 
 class PlannedMeasurement(NamedTuple):
@@ -481,6 +482,10 @@ def _validate_probe_evidence(record: dict[str, object]) -> None:
         (record.get("check_type"), record.get("mode"))
     )
     request_count = record.get("request_count")
+    if type(request_count) is not int or request_count < 0:
+        raise MeasurementError(
+            f"Measurement record {endpoint!r} request_count must be a nonnegative JSON integer, not {type(request_count).__name__} {request_count!r}. Remeasure the target instead of hand-editing request accounting."
+        )
     expected_roles = (
         planned_roles[:request_count]
         if planned_roles is not None and type(request_count) is int
@@ -520,9 +525,13 @@ def _validate_probe_evidence(record: dict[str, object]) -> None:
                 f"Measurement record {endpoint!r} evidence entry {index} has invalid fields. "
                 f"Expected exactly: {fields}. Remeasure instead of hand-editing the evidence."
             )
+        sequence = item["sequence"]
+        if type(sequence) is not int or sequence != index:
+            raise MeasurementError(
+                f"Measurement record {endpoint!r} evidence entry {index} sequence must be JSON integer {index} (not a boolean); observed {type(sequence).__name__} {sequence!r}. Remeasure the target so production request order is recorded exactly."
+            )
         if (
-            item["sequence"] != index
-            or type(item["wire_status_code"]) is not int
+            type(item["wire_status_code"]) is not int
             or not 100 <= item["wire_status_code"] <= 599
             or type(item["wire_body_size"]) is not int
             or item["wire_body_size"] < 0
@@ -545,6 +554,13 @@ def _validate_probe_evidence(record: dict[str, object]) -> None:
             raise MeasurementError(
                 f"Measurement record {endpoint!r} evidence entry {index} has invalid analyzer body facts. Remeasure the target to record the exact production observation."
             )
+        if record.get("check_type") == "sqli.time":
+            outcome = item["outcome"]
+            if type(outcome) is not str or outcome not in TIME_PROBE_OUTCOMES:
+                allowed = ", ".join(sorted(TIME_PROBE_OUTCOMES))
+                raise MeasurementError(
+                    f"Measurement record {endpoint!r} evidence entry {index} outcome has invalid {type(outcome).__name__} value {outcome!r}; it must be a string emitted by TimeProbeOutcome. Allowed values: {allowed}. Remeasure the target instead of hand-editing analyzer evidence."
+                )
     derived = derive_relations(evidence)
     if relations != derived:
         raise MeasurementError(

@@ -2249,6 +2249,121 @@ def test_v7_request_count_must_equal_evidence_count():
         runner.validate_measurement_report(report)
 
 
+@pytest.mark.parametrize(
+    "invalid_outcome",
+    [
+        {"unexpected": "arbitrary text"},
+        ["completed"],
+        "unknown_outcome",
+        7,
+        True,
+        None,
+    ],
+)
+def test_v7_time_outcome_rejects_non_enum_json_values(invalid_outcome):
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+    item = _report_record(report, "dsvw-time-id")["evidence"][0]
+    item["outcome"] = invalid_outcome
+    allowed = ", ".join(sorted(outcome.value for outcome in TimeProbeOutcome))
+    message = (
+        "Measurement record 'dsvw-time-id' evidence entry 1 outcome has invalid "
+        f"{type(invalid_outcome).__name__} value {invalid_outcome!r}; it must be a "
+        f"string emitted by TimeProbeOutcome. Allowed values: {allowed}. "
+        "Remeasure the target instead of hand-editing analyzer evidence."
+    )
+
+    with pytest.raises(runner.MeasurementError, match=re.escape(message) + "$"):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize("outcome", list(TimeProbeOutcome))
+def test_v7_time_outcome_accepts_every_enum_value(outcome):
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+    record = _report_record(report, "dsvw-time-id")
+    for item in record["evidence"]:
+        item["outcome"] = outcome.value
+
+    assert runner.validate_measurement_report(report) is report
+
+
+@pytest.mark.parametrize(
+    ("evidence_index", "value", "expected"),
+    [(0, True, 1), (0, False, 1), (2, True, 3)],
+)
+def test_v7_sequence_rejects_json_booleans(evidence_index, value, expected):
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+    item = _report_record(report, "dsvw-time-id")["evidence"][evidence_index]
+    item["sequence"] = value
+    message = (
+        f"Measurement record 'dsvw-time-id' evidence entry {expected} sequence "
+        f"must be JSON integer {expected} (not a boolean); observed bool {value!r}. "
+        "Remeasure the target so production request order is recorded exactly."
+    )
+
+    with pytest.raises(runner.MeasurementError, match=re.escape(message) + "$"):
+        runner.validate_measurement_report(report)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "wire_status_code",
+        "wire_body_size",
+        "analyzer_status_code",
+        "analyzer_body_size",
+    ],
+)
+def test_v7_numeric_evidence_fields_reject_json_booleans(field):
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+    _report_record(report, "dsvw-blind-boolean-id")["evidence"][0][field] = True
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-blind-boolean-id.*invalid (?:status, size, or body digest|analyzer body facts).*Remeasure",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_v7_top_level_request_count_rejects_json_boolean():
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+    _report_record(report, "dsvw-time-id")["request_count"] = True
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-time-id.*request_count must be a nonnegative JSON integer, not bool True.*Remeasure",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_v7_error_detail_request_count_rejects_json_boolean():
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+    _report_record(report, "dsvw-error-id")["detail"]["request_count"] = True
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-error-id.*detail request_count contradicts.*bounded ERROR_RESULT_RULES request range",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def test_v7_count_tree_rejects_json_boolean_even_when_true_equals_one():
+    runner = load_runner()
+    report = fixed_v7_report(runner)
+    report["counts"]["overall"]["sqli.error"]["error_probe"]["candidate"] = True
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"(?i)counts disagree with records at counts.overall.sqli.error.error_probe.candidate.*rerun",
+    ):
+        runner.validate_measurement_report(report)
+
+
 def test_v6_relations_are_recomputed_from_evidence():
     runner = load_runner()
     report = fixed_v7_report(runner)
