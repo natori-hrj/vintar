@@ -24,8 +24,17 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
-from vintar.checks.sqli.time_analyzer import TimeAnalysisStatus
-from vintar.checks.sqli.time_plan import TimePayloads, TimeProbeKind
+from vintar.checks.sqli.time_analyzer import (
+    TimeAnalysisStatus,
+    TimeObservation,
+    TimeProbeOutcome,
+    analyze_time_probes,
+)
+from vintar.checks.sqli.time_plan import (
+    TIME_PROBE_ORDER,
+    TimePayloads,
+    prepare_time_plan,
+)
 from vintar.checks.sqli.time_runner import verify_time_based_sqli
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
@@ -46,6 +55,10 @@ POSTGRES_DELAY = "' AND (SELECT COUNT(*) FROM pg_sleep(0.4))=1-- "
 POSTGRES_CONTROL = "' AND (SELECT COUNT(*) FROM pg_sleep(0))=1-- "
 MYSQL_DELAY = "' AND SLEEP(0.4)=0-- "
 MYSQL_CONTROL = "' AND SLEEP(0)=0-- "
+DATABASE_DELAY_EXPRESSIONS = {
+    "postgres": "pg_sleep(0.4)",
+    "mysql": "SLEEP(0.4)",
+}
 
 TABLE_NAME = "vintar_time_products"
 DATABASE_NAME = "vintar_corpus"
@@ -65,6 +78,36 @@ SQLITE_MODES = (
     "rate_limited",
 )
 
+SAFE_LIVE_OUTCOMES = frozenset(
+    {
+        (TimeAnalysisStatus.NOT_CONFIRMED, "timing_pattern_not_matched"),
+        (TimeAnalysisStatus.INCONCLUSIVE, "unstable_timing"),
+    }
+)
+DELAY_SIGNAL_LIVE_OUTCOMES = frozenset(
+    {
+        (TimeAnalysisStatus.CANDIDATE, "timing_pattern_matched"),
+        (TimeAnalysisStatus.INCONCLUSIVE, "unstable_timing"),
+    }
+)
+
+RECORDED_ELAPSED_SECONDS = {
+    "delay_signal": (
+        0.006,
+        0.003,
+        0.404,
+        0.003,
+        0.403,
+        0.002,
+        0.405,
+        0.002,
+        0.002,
+    ),
+    "safe": (0.006, 0.003, 0.003, 0.003, 0.002, 0.002, 0.003, 0.002, 0.002),
+    "slow": (0.404, 0.403, 0.403, 0.402, 0.402, 0.402, 0.403, 0.402, 0.402),
+    "jitter": (0.006, 0.003, 0.003, 0.003, 0.003, 0.220, 0.003, 0.002, 0.002),
+}
+
 
 @dataclass(repr=False)
 class FixtureState:
@@ -72,6 +115,7 @@ class FixtureState:
     sql_executions: Counter = field(default_factory=Counter)
     errors: Counter = field(default_factory=Counter)
     delay_evaluations: Counter = field(default_factory=Counter)
+    delay_statement_executions: Counter = field(default_factory=Counter)
     received: dict[str, list[str]] = field(default_factory=dict)
     lock: threading.Lock = field(
         default_factory=threading.Lock,
@@ -99,6 +143,14 @@ class FixtureState:
     def delay_evaluation_count(self, key: str, seconds: float) -> int:
         with self.lock:
             return self.delay_evaluations[(key, seconds)]
+
+    def record_delay_statement_execution(self, key: str, seconds: float) -> None:
+        with self.lock:
+            self.delay_statement_executions[(key, seconds)] += 1
+
+    def delay_statement_execution_count(self, key: str, seconds: float) -> int:
+        with self.lock:
+            return self.delay_statement_executions[(key, seconds)]
 
     def snapshot(self, key: str) -> tuple[int, int, int]:
         with self.lock:
@@ -224,15 +276,17 @@ def database_query(
     mode: str,
     category: str,
     password: str,
+    on_delay_statement_execution: Callable[[float], None],
 ) -> bytes:
     with (
         closing(database_connection(engine, password)) as connection,
         closing(connection.cursor()) as cursor,
     ):
         if mode == "vulnerable":
-            cursor.execute(
-                f"SELECT name FROM {TABLE_NAME} WHERE category = '{category}'"
-            )
+            statement = f"SELECT name FROM {TABLE_NAME} WHERE category = '{category}'"
+            cursor.execute(statement)
+            if DATABASE_DELAY_EXPRESSIONS[engine] in statement:
+                on_delay_statement_execution(ACTUAL_DELAY)
         else:
             cursor.execute(
                 f"SELECT name FROM {TABLE_NAME} WHERE category = %s",
@@ -242,6 +296,83 @@ def database_query(
         rows = cursor.fetchall()
 
     return "\n".join(str(row[0]) for row in rows).encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("engine", "delay_payload"),
+    (("postgres", POSTGRES_DELAY), ("mysql", MYSQL_DELAY)),
+)
+def test_database_query_records_delay_statement_execution(
+    monkeypatch, engine, delay_payload
+):
+    cursors = []
+
+    class FakeCursor:
+        def __init__(self):
+            self.executions = []
+
+        def execute(self, statement, params=None):
+            self.executions.append((statement, params))
+
+        def fetchall(self):
+            return []
+
+        def close(self):
+            return None
+
+    class FakeConnection:
+        def __init__(self):
+            self.cursor_instance = FakeCursor()
+            cursors.append(self.cursor_instance)
+
+        def cursor(self):
+            return self.cursor_instance
+
+        def close(self):
+            return None
+
+    def fake_connection(_engine, _password):
+        return FakeConnection()
+
+    monkeypatch.setitem(globals(), "database_connection", fake_connection)
+    vulnerable_delay_statements = []
+    safe_delay_statements = []
+
+    vulnerable_body = database_query(
+        engine,
+        "vulnerable",
+        "Pets" + delay_payload,
+        "unused",
+        vulnerable_delay_statements.append,
+    )
+    safe_body = database_query(
+        engine,
+        "safe",
+        "Pets" + delay_payload,
+        "unused",
+        safe_delay_statements.append,
+    )
+
+    assert vulnerable_body == b""
+    assert safe_body == b""
+    assert vulnerable_delay_statements == [ACTUAL_DELAY]
+    assert safe_delay_statements == []
+    assert DATABASE_DELAY_EXPRESSIONS[engine] in cursors[0].executions[0][0]
+    assert cursors[1].executions[0][1] == ("Pets" + delay_payload,)
+
+
+def test_fixture_state_separates_delay_counter_semantics():
+    state = FixtureState()
+
+    state.record_delay_evaluation("sqlite:vulnerable", ACTUAL_DELAY)
+    state.record_delay_statement_execution("postgres:vulnerable", ACTUAL_DELAY)
+
+    assert state.delay_evaluation_count("sqlite:vulnerable", ACTUAL_DELAY) == 1
+    assert state.delay_statement_execution_count("sqlite:vulnerable", ACTUAL_DELAY) == 0
+    assert state.delay_evaluation_count("postgres:vulnerable", ACTUAL_DELAY) == 0
+    assert (
+        state.delay_statement_execution_count("postgres:vulnerable", ACTUAL_DELAY) == 1
+    )
 
 
 def create_app(
@@ -284,15 +415,18 @@ def create_app(
 
         if mode == "mimic":
             if category.endswith(SQLITE_DELAY):
+                state.record_delay_evaluation(key, ACTUAL_DELAY)
                 time.sleep(ACTUAL_DELAY)
             return Response(b"non-sql", media_type="text/plain")
 
         if mode == "slow":
+            state.record_delay_evaluation(key, ACTUAL_DELAY)
             time.sleep(ACTUAL_DELAY)
             return Response(b"slow", media_type="text/plain")
 
         if mode == "jitter":
             if category == "Pets" and number % 2 == 0:
+                state.record_delay_evaluation(key, ACTUAL_DELAY)
                 time.sleep(ACTUAL_DELAY)
             return Response(b"jitter", media_type="text/plain")
 
@@ -315,6 +449,12 @@ def create_app(
                     mode,
                     category,
                     password,
+                    on_delay_statement_execution=lambda seconds: (
+                        state.record_delay_statement_execution(
+                            key,
+                            seconds,
+                        )
+                    ),
                 )
         except (sqlite3.Error, psycopg.Error, pymysql.MySQLError):
             state.record_error(key)
@@ -477,21 +617,62 @@ def run_case(
     return report
 
 
+def analyze_fixed_elapsed(elapsed_values: tuple[float, ...]):
+    origin = "http://127.0.0.1:18084"
+    context = ExecutionContext(
+        scope=ScopePolicy(
+            allowed_origins=frozenset({AllowedOrigin("http", "127.0.0.1", 18084)})
+        ),
+        budget=RequestBudget(9),
+        timeout=3.0,
+        rate_limiter=RateLimiter(requests_per_second=100.0),
+    )
+    plan = prepare_time_plan(
+        template=RequestTemplate(
+            method="GET",
+            url=origin + "/time/sqlite/fixed",
+            params=(("category", "Pets"),),
+        ),
+        point=InjectionPoint(
+            location=InjectionLocation.QUERY,
+            name="category",
+            mode=InjectionMode.APPEND,
+        ),
+        payloads=make_payloads("sqlite"),
+        expected_delay_seconds=EXPECTED_DELAY,
+        context=context,
+    )
+    observations = tuple(
+        TimeObservation(
+            kind=kind,
+            sequence=sequence,
+            outcome=TimeProbeOutcome.COMPLETED,
+            elapsed_seconds=elapsed,
+            status_code=200,
+        )
+        for sequence, (kind, elapsed) in enumerate(
+            zip(TIME_PROBE_ORDER, elapsed_values, strict=True), start=1
+        )
+    )
+    return analyze_time_probes(plan=plan, observations=observations)
+
+
 @pytest.mark.parametrize(
-    ("mode", "expected", "uses_sql"),
+    ("mode", "delay_signal", "uses_sql", "actual_delay_count"),
     [
-        ("vulnerable", TimeAnalysisStatus.CANDIDATE, True),
-        ("safe", TimeAnalysisStatus.NOT_CONFIRMED, True),
-        ("mimic", TimeAnalysisStatus.CANDIDATE, False),
-        ("slow", TimeAnalysisStatus.NOT_CONFIRMED, False),
-        ("jitter", TimeAnalysisStatus.INCONCLUSIVE, False),
+        ("vulnerable", True, True, 3),
+        ("safe", False, True, 0),
+        ("mimic", True, False, 3),
+        ("slow", False, False, 9),
+        ("jitter", False, False, 2),
     ],
 )
 def test_sqlite_and_non_sql_http_corpus(
     http_server,
     mode,
-    expected,
+    delay_signal,
     uses_sql,
+    actual_delay_count,
 ):
     state, origin = http_server
     key = f"sqlite:{mode}"
@@ -502,30 +683,110 @@ def test_sqlite_and_non_sql_http_corpus(
 
     after_requests, after_sql, after_errors = state.snapshot(key)
 
-    assert report.analysis.status is expected
-    assert report.analysis.request_count == 9
-    assert report.budget_used == 9
-    assert report.transport_attempts == 9
-    assert not report.deadline_exceeded
+    analysis = report.analysis
+    elapsed_values = tuple(item.elapsed_seconds for item in analysis.observations)
+    diagnostic = (
+        f"case_id={'sqlite:' + mode!r}, status={analysis.status.value!r}, "
+        f"reason_code={analysis.reason_code!r}, elapsed_seconds={elapsed_values!r}"
+    )
+    allowed = DELAY_SIGNAL_LIVE_OUTCOMES if delay_signal else SAFE_LIVE_OUTCOMES
 
-    assert after_requests - before_requests == 9
-    assert after_sql - before_sql == (9 if uses_sql else 0)
-    assert after_errors == before_errors
+    assert (analysis.status, analysis.reason_code) in allowed, diagnostic
+    if mode == "vulnerable":
+        assert analysis.status is not TimeAnalysisStatus.NOT_CONFIRMED, diagnostic
+    assert analysis.request_count == 9, diagnostic
+    assert report.budget_used == 9, diagnostic
+    assert report.transport_attempts == 9, diagnostic
+    assert not report.deadline_exceeded, diagnostic
+
+    assert after_requests - before_requests == 9, diagnostic
+    assert after_sql - before_sql == (9 if uses_sql else 0), diagnostic
+    assert after_errors == before_errors, diagnostic
 
     values = state.values_since(key, before_requests)
-    assert values == expected_probe_values("sqlite")
-
-    if expected is TimeAnalysisStatus.INCONCLUSIVE:
-        assert report.analysis.reason_code == "unstable_timing"
-    else:
-        assert report.analysis.evidence is not None
+    assert values == expected_probe_values("sqlite"), diagnostic
+    assert state.delay_evaluation_count(key, ACTUAL_DELAY) == actual_delay_count, (
+        diagnostic
+    )
 
     if mode == "vulnerable":
-        assert state.delay_evaluation_count(key, ACTUAL_DELAY) == 3
         assert state.delay_evaluation_count(key, 0.0) == 3
     elif mode == "safe":
         assert state.delay_evaluation_count(key, ACTUAL_DELAY) == 0
         assert state.delay_evaluation_count(key, 0.0) == 0
+
+
+@pytest.mark.parametrize(
+    ("case_id", "recording", "expected_status", "expected_reason"),
+    [
+        (
+            "sqlite:vulnerable",
+            "delay_signal",
+            TimeAnalysisStatus.CANDIDATE,
+            "timing_pattern_matched",
+        ),
+        (
+            "sqlite:safe",
+            "safe",
+            TimeAnalysisStatus.NOT_CONFIRMED,
+            "timing_pattern_not_matched",
+        ),
+        (
+            "sqlite:mimic",
+            "delay_signal",
+            TimeAnalysisStatus.CANDIDATE,
+            "timing_pattern_matched",
+        ),
+        (
+            "sqlite:slow",
+            "slow",
+            TimeAnalysisStatus.NOT_CONFIRMED,
+            "timing_pattern_not_matched",
+        ),
+        (
+            "sqlite:jitter",
+            "jitter",
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "unstable_timing",
+        ),
+        (
+            "postgres:vulnerable",
+            "delay_signal",
+            TimeAnalysisStatus.CANDIDATE,
+            "timing_pattern_matched",
+        ),
+        (
+            "postgres:safe",
+            "safe",
+            TimeAnalysisStatus.NOT_CONFIRMED,
+            "timing_pattern_not_matched",
+        ),
+        (
+            "mysql:vulnerable",
+            "delay_signal",
+            TimeAnalysisStatus.CANDIDATE,
+            "timing_pattern_matched",
+        ),
+        (
+            "mysql:safe",
+            "safe",
+            TimeAnalysisStatus.NOT_CONFIRMED,
+            "timing_pattern_not_matched",
+        ),
+    ],
+)
+def test_fixed_observations_classify_http_corpus_exactly(
+    case_id, recording, expected_status, expected_reason
+):
+    analysis = analyze_fixed_elapsed(RECORDED_ELAPSED_SECONDS[recording])
+    elapsed_values = tuple(item.elapsed_seconds for item in analysis.observations)
+    diagnostic = (
+        f"case_id={case_id!r}, status={analysis.status.value!r}, "
+        f"reason_code={analysis.reason_code!r}, elapsed_seconds={elapsed_values!r}"
+    )
+
+    assert analysis.status is expected_status, diagnostic
+    assert analysis.reason_code == expected_reason, diagnostic
 
 
 def test_http_rate_limit_stops_after_one_request(http_server):
@@ -600,10 +861,10 @@ def prepared_databases():
 
 @pytest.mark.parametrize("engine", ("postgres", "mysql"))
 @pytest.mark.parametrize(
-    ("mode", "expected"),
+    ("mode", "delay_signal"),
     [
-        ("vulnerable", TimeAnalysisStatus.CANDIDATE),
-        ("safe", TimeAnalysisStatus.NOT_CONFIRMED),
+        ("vulnerable", True),
+        ("safe", False),
     ],
 )
 def test_database_time_http_corpus(
@@ -611,7 +872,7 @@ def test_database_time_http_corpus(
     http_server,
     engine,
     mode,
-    expected,
+    delay_signal,
 ):
     state, origin = http_server
     key = f"{engine}:{mode}"
@@ -622,31 +883,29 @@ def test_database_time_http_corpus(
 
     after_requests, after_sql, after_errors = state.snapshot(key)
 
-    assert report.analysis.status is expected
-    assert report.analysis.request_count == 9
-    assert report.budget_used == 9
-    assert report.transport_attempts == 9
-    assert not report.deadline_exceeded
+    analysis = report.analysis
+    elapsed_values = tuple(item.elapsed_seconds for item in analysis.observations)
+    diagnostic = (
+        f"case_id={engine + ':' + mode!r}, status={analysis.status.value!r}, "
+        f"reason_code={analysis.reason_code!r}, elapsed_seconds={elapsed_values!r}"
+    )
+    allowed = DELAY_SIGNAL_LIVE_OUTCOMES if delay_signal else SAFE_LIVE_OUTCOMES
 
-    assert after_requests - before_requests == 9
-    assert after_sql - before_sql == 9
-    assert after_errors == before_errors
-    assert state.values_since(key, before_requests) == expected_probe_values(engine)
+    assert (analysis.status, analysis.reason_code) in allowed, diagnostic
+    if mode == "vulnerable":
+        assert analysis.status is not TimeAnalysisStatus.NOT_CONFIRMED, diagnostic
+    assert analysis.request_count == 9, diagnostic
+    assert report.budget_used == 9, diagnostic
+    assert report.transport_attempts == 9, diagnostic
+    assert not report.deadline_exceeded, diagnostic
 
-    if expected is TimeAnalysisStatus.CANDIDATE:
-        assert report.analysis.evidence is not None
-        assert report.analysis.evidence.median_excess > 0
-        delay_observations = tuple(
-            observation
-            for observation in report.analysis.observations
-            if observation.kind is TimeProbeKind.DELAY
-        )
-        assert len(delay_observations) == 3
-        assert all(
-            ACTUAL_DELAY * 0.85 <= observation.elapsed_seconds < ACTUAL_DELAY * 1.75
-            for observation in delay_observations
-        )
+    assert after_requests - before_requests == 9, diagnostic
+    assert after_sql - before_sql == 9, diagnostic
+    assert after_errors == before_errors, diagnostic
+    assert state.values_since(key, before_requests) == expected_probe_values(engine), (
+        diagnostic
+    )
 
-    else:
-        assert report.analysis.evidence is not None
-        assert report.analysis.evidence.median_excess < (EXPECTED_DELAY * 0.25)
+    assert state.delay_statement_execution_count(key, ACTUAL_DELAY) == (
+        3 if delay_signal else 0
+    ), diagnostic
