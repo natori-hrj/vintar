@@ -112,7 +112,6 @@ class BridgeHandlerFailure(NamedTuple):
     """One redacted bridge failure and its request-order context."""
 
     sequence: int | None
-    exception: BaseException
     exception_type: str
     cause: str
     accepted_sequences: tuple[int, ...]
@@ -125,6 +124,10 @@ _POOLED_CONNECTION_ERROR = (
     "The loopback bridge records one HTTP response per TCP connection, but a "
     "pooled or keep-alive client sent multiple HTTP exchanges on one connection. "
     "Use measurement_http_transport() with keep-alive disabled."
+)
+_PROTOCOL_UPGRADE_ERROR = (
+    "The loopback bridge does not support HTTP 101 protocol upgrades. "
+    "Use an HTTP endpoint that returns a final non-upgrade response."
 )
 
 
@@ -955,17 +958,15 @@ class _ResponseRecorder:
                     f"The loopback recorder produced duplicate sequence number {sequence}. "
                     "Check the bridge recorder and rerun the measurement instead of assigning one probe twice."
                 )
-                exception = MeasurementError(self.recording_error)
                 self.failure = BridgeHandlerFailure(
                     sequence=sequence,
-                    exception=exception,
-                    exception_type=type(exception).__name__,
+                    exception_type="MeasurementError",
                     cause=self.recording_error,
                     accepted_sequences=tuple(range(self.next_sequence)),
                     completed_sequences=tuple(sorted(self.responses)),
                 )
                 self.response_condition.notify_all()
-                raise exception
+                raise MeasurementError(self.recording_error)
             self.responses[sequence] = response
             self.response_condition.notify_all()
 
@@ -989,14 +990,15 @@ class _ResponseRecorder:
                 )
             return tuple(self.responses[index] for index in range(expected))
 
-    def record_failure(self, sequence: int | None, exception: BaseException) -> None:
+    def record_failure(
+        self, sequence: int | None, exception_type: str, cause: str
+    ) -> None:
         with self.response_condition:
             if self.failure is None:
                 self.failure = BridgeHandlerFailure(
                     sequence=sequence,
-                    exception=exception,
-                    exception_type=type(exception).__name__,
-                    cause=_redacted_bridge_cause(exception),
+                    exception_type=exception_type,
+                    cause=cause,
                     accepted_sequences=tuple(range(self.next_sequence)),
                     completed_sequences=tuple(sorted(self.responses)),
                 )
@@ -1008,8 +1010,15 @@ class _ResponseRecorder:
 
 
 def _redacted_bridge_cause(exception: BaseException) -> str:
-    if isinstance(exception, MeasurementError):
+    if isinstance(exception, MeasurementError) and str(exception) in {
+        _POOLED_CONNECTION_ERROR,
+        _PROTOCOL_UPGRADE_ERROR,
+    }:
         return str(exception)
+    if isinstance(exception, MeasurementError):
+        return (
+            "The loopback bridge rejected invalid HTTP framing or request sequencing."
+        )
     if isinstance(exception, TimeoutError):
         return "The loopback bridge exchange timed out."
     if isinstance(exception, OSError):
@@ -1066,7 +1075,11 @@ class _BridgeServer(socketserver.ThreadingTCPServer):
             exception = RuntimeError("The bridge handler failed without an exception.")
         with self.recorder.response_condition:
             sequence = self.accepted_sequences.pop(id(request), None)
-        self.recorder.record_failure(sequence, exception)
+        self.recorder.record_failure(
+            sequence,
+            type(exception).__name__,
+            _redacted_bridge_cause(exception),
+        )
 
 
 class _BridgeHandler(socketserver.BaseRequestHandler):
@@ -1154,25 +1167,46 @@ def _recorded_response(status_code: int, chunks: Iterator[bytes]) -> RecordedRes
 
 
 def _parse_http_response(response: bytes) -> RecordedResponse:
-    headers, separator, body = response.partition(b"\r\n\r\n")
-    lines = headers.split(b"\r\n")
-    if not separator or not lines:
-        raise MeasurementError(
-            "The loopback recorder could not parse an HTTP response. Check the target transport and rerun the measurement."
-        )
-    status = lines[0].split(b" ", 2)
-    try:
-        status_code = int(status[1])
-    except (IndexError, ValueError) as exc:
-        raise MeasurementError(
-            "The loopback recorder received an invalid HTTP status line. Check the target transport and rerun the measurement."
-        ) from exc
+    remaining = response
+    while True:
+        headers, separator, body = remaining.partition(b"\r\n\r\n")
+        lines = headers.split(b"\r\n")
+        if not separator or not lines:
+            raise MeasurementError(
+                "The loopback recorder could not parse a complete HTTP response header. Check the target transport and rerun the measurement."
+            )
+        status = lines[0].split(b" ", 2)
+        try:
+            status_code = int(status[1])
+        except (IndexError, ValueError) as exc:
+            raise MeasurementError(
+                "The loopback recorder received an invalid HTTP status line. Check the target transport and rerun the measurement."
+            ) from exc
+        if not 100 <= status_code <= 599:
+            raise MeasurementError(
+                "The loopback recorder received an out-of-range HTTP status. Check the target transport and rerun the measurement."
+            )
+        if status_code == 101:
+            raise MeasurementError(_PROTOCOL_UPGRADE_ERROR)
+        if 100 <= status_code < 200:
+            remaining = body
+            if not remaining:
+                raise MeasurementError(
+                    "The loopback recorder received an interim HTTP response without a final response. Check the target response and rerun the measurement."
+                )
+            continue
+        break
+
     header_values: dict[bytes, bytes] = {}
     for line in lines[1:]:
         name, marker, value = line.partition(b":")
         if marker:
             header_values[name.strip().lower()] = value.strip().lower()
-    if b"chunked" in header_values.get(b"transfer-encoding", b""):
+    if status_code in {204, 304}:
+        if body:
+            raise MeasurementError(_POOLED_CONNECTION_ERROR)
+        chunks: Iterator[bytes] | tuple[bytes, ...] = ()
+    elif b"chunked" in header_values.get(b"transfer-encoding", b""):
         chunks, extra = _chunked_body_chunks(body)
         if extra:
             raise MeasurementError(_POOLED_CONNECTION_ERROR)
@@ -1241,7 +1275,7 @@ def loopback_bridge(
                 f"with {failure.exception_type}: {failure.cause} "
                 f"Accepted sequences: {list(failure.accepted_sequences)!r}; completed sequences: {list(failure.completed_sequences)!r}. "
                 "Fix the bridge transport or response framing, then rerun the measurement."
-            ) from failure.exception
+            ) from None
         if thread.is_alive():
             raise MeasurementError(
                 f"The {target.target_id} loopback bridge serve thread did not stop. Check outstanding handler lifecycle before rerunning the measurement."

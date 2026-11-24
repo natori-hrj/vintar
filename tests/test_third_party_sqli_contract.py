@@ -10,6 +10,7 @@ import sys
 import tarfile
 import threading
 import tomllib
+import traceback
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -2916,6 +2917,73 @@ def test_bridge_rejects_extra_content_length_and_chunked_frames():
         )
 
 
+def test_bridge_skips_one_or_more_interim_responses_before_final_response():
+    runner = load_runner()
+    expected_digest = hashlib.sha256(b"body").hexdigest()
+
+    one_interim = runner._parse_http_response(
+        b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n"
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
+    )
+    multiple_interim = runner._parse_http_response(
+        b"HTTP/1.1 100 Continue\r\n\r\n"
+        b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n"
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
+    )
+
+    expected = runner.RecordedResponse(200, 4, expected_digest)
+    assert one_interim == expected
+    assert multiple_interim == expected
+
+
+def test_bridge_rejects_extra_frame_after_interim_and_final_response():
+    runner = load_runner()
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"records one HTTP response per TCP connection.*keep-alive client.*measurement_http_transport",
+    ):
+        runner._parse_http_response(
+            b"HTTP/1.1 103 Early Hints\r\n\r\n"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nextra"
+        )
+
+
+def test_bridge_rejects_protocol_upgrade_and_truncated_interim_headers():
+    runner = load_runner()
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"does not support HTTP 101 protocol upgrades.*non-upgrade response",
+    ):
+        runner._parse_http_response(
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"
+        )
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"complete HTTP response header.*target transport.*rerun",
+    ):
+        runner._parse_http_response(
+            b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload"
+        )
+
+
+@pytest.mark.parametrize("status_code", [204, 304])
+def test_bridge_records_no_body_final_statuses(status_code):
+    runner = load_runner()
+
+    response = runner._parse_http_response(
+        f"HTTP/1.1 {status_code} No Body\r\nContent-Length: 0\r\n\r\n".encode()
+    )
+
+    assert response == runner.RecordedResponse(
+        status_code,
+        0,
+        hashlib.sha256(b"").hexdigest(),
+    )
+
+
 class _KeepAliveUpstream(socketserver.ThreadingTCPServer):
     allow_reuse_address = False
     daemon_threads = True
@@ -3065,12 +3133,15 @@ def test_measurement_transport_factory_disables_keep_alive(monkeypatch):
 def test_bridge_handler_parse_failure_preserves_redacted_cause_and_sequence():
     runner = load_runner()
     target = SimpleNamespace(target_id="fixed-diagnostic", service_port=1)
-    sensitive = b"private response body bytes"
+    sentinel = "SENTINEL-SECRET-7f3a"
+    malformed = (
+        b"HTTP/1.1 200 OK\r\nContent-Length: " + sentinel.encode() + b"\r\n\r\nbody"
+    )
 
     with (
         pytest.raises(
             runner.MeasurementError,
-            match=r"handler failed at sequence 0 with MeasurementError.*Accepted sequences: \[0\]; completed sequences: \[\]",
+            match=r"handler failed at sequence 0 with MeasurementError.*rejected invalid HTTP framing or request sequencing.*Accepted sequences: \[0\]; completed sequences: \[\]",
         ) as caught,
         runner.loopback_bridge("127.0.0.1", target) as (_, bridge),
     ):
@@ -3078,13 +3149,14 @@ def test_bridge_handler_parse_failure_preserves_redacted_cause_and_sequence():
         sequence = bridge.recorder.accept()
         bridge.accepted_sequences[id(request)] = sequence
         try:
-            runner._parse_http_response(sensitive)
+            runner._parse_http_response(malformed)
         except runner.MeasurementError:
             bridge.handle_error(request, ("127.0.0.1", 1))
 
-    assert isinstance(caught.value.__cause__, runner.MeasurementError)
-    assert sensitive.decode() not in str(caught.value)
-    assert sensitive.decode() not in str(caught.value.__cause__)
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    assert sentinel not in str(caught.value)
+    assert sentinel not in "".join(traceback.format_exception(caught.value))
 
 
 def test_bridge_records_responses_by_acceptance_sequence_not_completion_order():
