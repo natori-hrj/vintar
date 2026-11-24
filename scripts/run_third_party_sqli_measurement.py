@@ -17,6 +17,7 @@ import uuid
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
+from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -349,10 +350,17 @@ def _confirmation_remaining_relation_matches(
     )
 
 
+class _ConfirmationReasonRules(Enum):
+    REVIEWED_V8 = 8
+    CURRENT_V9 = 9
+
+
 def _validate_reason_evidence(
     record: dict[str, object],
     evidence: list[dict[str, object]],
     relations: dict[str, object],
+    *,
+    confirmation_rules: _ConfirmationReasonRules,
 ) -> None:
     endpoint = required_text(record, "endpoint_id", "report record")
     check_type = required_text(record, "check_type", "report record")
@@ -405,6 +413,29 @@ def _validate_reason_evidence(
         "candidate_confirmation_mismatch",
         "confirmation_unstable",
     }:
+        if confirmation_rules is _ConfirmationReasonRules.REVIEWED_V8:
+            if reason == "candidate_confirmation_mismatch" and not (
+                all_success
+                and stable
+                and relations.get("baseline_equals_true") is True
+                and relations.get("baseline_equals_false") is False
+                and relations.get("true_equals_false") is False
+                and not all(
+                    relations.get(name) is True
+                    for name in (
+                        "baseline_equals_control",
+                        "baseline_equals_true2",
+                        "false_equals_false2",
+                    )
+                )
+            ):
+                raise MeasurementError(
+                    f"Probe evidence for {endpoint!r} contradicts the reviewed v8 "
+                    "candidate_confirmation_mismatch rule. Restore the reviewed stable "
+                    "2xx evidence of an initial candidate and a mismatching confirmation "
+                    "relation, or remeasure with the current runner."
+                )
+            return
         initial_evidence = evidence[: len(BOOLEAN_PROBE_ORDER)]
         confirmation_evidence = evidence[len(BOOLEAN_PROBE_ORDER) :]
         initial_relations = derive_relations(initial_evidence)
@@ -573,6 +604,7 @@ def _validate_probe_evidence(
     record_index: int,
     *,
     require_normalization_evidence: bool,
+    confirmation_rules: _ConfirmationReasonRules,
 ) -> None:
     """Validate strict wire provenance and analyzer observation evidence."""
     endpoint = required_text(record, "endpoint_id", "report record")
@@ -693,7 +725,9 @@ def _validate_probe_evidence(
         raise MeasurementError(
             f"{location} relations disagree with its body digests. Remeasure the target so relations are derived mechanically instead of hand-edited."
         )
-    _validate_reason_evidence(record, evidence, relations)
+    _validate_reason_evidence(
+        record, evidence, relations, confirmation_rules=confirmation_rules
+    )
     if record.get("check_type") == "sqli.error":
         _validate_error_probe_evidence(record, evidence, record_index)
 
@@ -808,7 +842,7 @@ _NON_OBJECT_REPORT_MESSAGE = (
 def _validate_measurement_report(
     report: object,
     *,
-    reviewed_schema_version: int | None = None,
+    reviewed_schema_version: int | None,
 ) -> dict[str, object]:
     """Validate current output or one explicitly docs-bound reviewed fixture."""
     if type(report) is not dict:
@@ -838,6 +872,11 @@ def _validate_measurement_report(
         raise MeasurementError(
             f"Unsupported third-party measurement report schema_version: observed JSON type {_json_type(version)}. Expected the integer 9. Older report reason rules and shapes cannot be reinterpreted; re-run scripts/run_third_party_sqli_measurement.py on current main."
         )
+    confirmation_rules = (
+        _ConfirmationReasonRules.REVIEWED_V8
+        if reviewed_v8
+        else _ConfirmationReasonRules.CURRENT_V9
+    )
     if report.keys() != {"counts", "records", "schema_version", "targets"}:
         raise MeasurementError(
             f"Invalid third-party measurement report v{version} top-level keys. Use targets, records, counts.overall, counts.by_target, and schema_version; rerun the current measurement instead of mixing report versions."
@@ -1025,6 +1064,7 @@ def _validate_measurement_report(
                 record_index,
                 require_normalization_evidence=version
                 in {8, MEASUREMENT_SCHEMA_VERSION},
+                confirmation_rules=confirmation_rules,
             )
         elif "evidence" in record or "relations" in record:
             raise MeasurementError(
@@ -1052,7 +1092,7 @@ def _validate_measurement_report(
 
 def validate_measurement_report(report: object) -> dict[str, object]:
     """Accept only current schema v9 output."""
-    return _validate_measurement_report(report)
+    return _validate_measurement_report(report, reviewed_schema_version=None)
 
 
 class _ResponseRecorder:

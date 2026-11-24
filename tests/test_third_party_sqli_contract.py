@@ -2729,7 +2729,7 @@ def _confirmation_report_record(report):
     )
 
 
-def test_v9_unreproduced_pair_accepts_unstable_and_rejects_mismatch():
+def test_unreproduced_pair_uses_schema_specific_confirmation_precedence(tmp_path):
     runner = load_runner()
     unstable_report = v9_report_from_legacy_v4(runner)
     unstable_record = _confirmation_report_record(unstable_report)
@@ -2752,6 +2752,14 @@ def test_v9_unreproduced_pair_accepts_unstable_and_rejects_mismatch():
     )
     previous_v8_report = copy.deepcopy(mismatch_report)
     previous_v8_report["schema_version"] = 8
+    _confirmation_report_record(previous_v8_report)["detail"]["status"] = "mismatch"
+    documentation = tmp_path / "evaluation.md"
+    summary = runner._render_summary(previous_v8_report)
+    documentation.write_text(
+        f"Reviewed report schema version: `8`.\n\n{summary}\n", encoding="utf-8"
+    )
+    assert runner.check_documented_summary(previous_v8_report, documentation) == summary
+
     with pytest.raises(
         runner.MeasurementError,
         match=r"schema version 8.*previous confirmation reason rules.*v9 predicate-pair stability precedence.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*version 9",
