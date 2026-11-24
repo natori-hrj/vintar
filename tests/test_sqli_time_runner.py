@@ -6,6 +6,7 @@ from dataclasses import replace
 import httpx
 import pytest
 
+from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.time_analyzer import TimeAnalysisStatus
 from vintar.checks.sqli.time_plan import (
     TimePayloads,
@@ -96,6 +97,7 @@ def run_with_transport(
     expected_delay=0.25,
     total_seconds=5.0,
     clock=None,
+    observation_sink=None,
 ):
     context = context or make_context()
 
@@ -108,6 +110,7 @@ def run_with_transport(
         max_total_seconds=total_seconds,
         transport=httpx.MockTransport(handler),
         clock=clock or time.monotonic,
+        observation_sink=observation_sink,
     )
 
     return report, context
@@ -139,6 +142,29 @@ def test_nine_successful_requests_are_accounted_for():
         "Pets",
         "Pets_control",
     ]
+
+
+def test_trusted_sink_receives_time_observations_in_request_order():
+    recorded: list[RecordedSqliObservation] = []
+
+    run_with_transport(
+        lambda request: httpx.Response(200, text="ok"),
+        observation_sink=recorded.append,
+    )
+
+    assert [item.sequence for item in recorded] == list(range(1, 10))
+    assert [item.kind for item in recorded] == [
+        "baseline",
+        "control",
+        "delay",
+        "control",
+        "delay",
+        "baseline",
+        "delay",
+        "baseline",
+        "control",
+    ]
+    assert all(item.family == "time" for item in recorded)
 
 
 def test_controlled_delay_produces_experimental_candidate(monkeypatch):

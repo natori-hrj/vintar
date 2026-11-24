@@ -16,6 +16,10 @@ from vintar.checks.sqli.error_analyzer import (
     validate_error_probe_payload,
 )
 from vintar.checks.sqli.error_contract import ErrorAnalysisStatus
+from vintar.checks.sqli.observation_sink import (
+    SqliObservationSink,
+    emit_observation,
+)
 from vintar.core.executor import ExecutionContext
 from vintar.core.injector import inject
 from vintar.core.models import HttpResult
@@ -81,6 +85,7 @@ def verify_error_based_sqli(
     error_payload: str,
     context: ExecutionContext,
     transport: httpx.BaseTransport | None = None,
+    observation_sink: SqliObservationSink | None = None,
 ) -> ErrorRunReport:
     """Run baseline, probe, baseline, probe with no retries."""
     if type(template) is not RequestTemplate:
@@ -162,6 +167,13 @@ def verify_error_based_sqli(
 
         observation = error_observation(kind, sequence, response)
         observations.append(observation)
+        emit_observation(
+            observation_sink,
+            family="error",
+            sequence=sequence,
+            kind=kind.value,
+            observation=observation,
+        )
         responses[kind].append(response)
         stop_reason = operational_stop_reason(observation)
         if stop_reason is not None:

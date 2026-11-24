@@ -8,6 +8,7 @@ import pytest
 from vintar.checks.sqli.error_analyzer import ErrorAnalysis
 from vintar.checks.sqli.error_contract import ErrorAnalysisStatus
 from vintar.checks.sqli.error_runner import ErrorRunReport, verify_error_based_sqli
+from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -40,6 +41,7 @@ def run(
     handler,
     *,
     execution_context: ExecutionContext | None = None,
+    observation_sink=None,
 ):
     return verify_error_based_sqli(
         template=RequestTemplate(
@@ -56,7 +58,26 @@ def run(
         error_payload="'",
         context=execution_context or context(),
         transport=httpx.MockTransport(handler),
+        observation_sink=observation_sink,
     )
+
+
+def test_trusted_sink_receives_error_observations_in_request_order():
+    recorded: list[RecordedSqliObservation] = []
+
+    run(
+        lambda request: httpx.Response(200, content=b"stable"),
+        observation_sink=recorded.append,
+    )
+
+    assert [item.sequence for item in recorded] == [1, 2, 3, 4]
+    assert [item.kind for item in recorded] == [
+        "baseline",
+        "probe",
+        "baseline",
+        "probe",
+    ]
+    assert all(item.family == "error" for item in recorded)
 
 
 def verification_inputs() -> dict[str, object]:

@@ -17,6 +17,10 @@ from dataclasses import dataclass, field
 import httpx
 
 from vintar.checks.sqli._errors import redact_runtime_errors
+from vintar.checks.sqli.observation_sink import (
+    SqliObservationSink,
+    emit_observation,
+)
 from vintar.checks.sqli.time_analyzer import (
     TimeAnalysis,
     TimeAnalysisStatus,
@@ -128,6 +132,7 @@ def verify_time_based_sqli(
     max_total_seconds: float = 45.0,
     transport: httpx.BaseTransport | None = None,
     clock: Callable[[], float] = time.monotonic,
+    observation_sink: SqliObservationSink | None = None,
 ) -> TimeRunReport:
     """Run one bounded experimental timing verification.
 
@@ -272,16 +277,22 @@ def verify_time_based_sqli(
                 elapsed = max(0.0, elapsed)
 
                 try:
-                    observations.append(
-                        TimeObservation(
-                            kind=step.kind,
-                            sequence=sequence,
-                            outcome=TimeProbeOutcome.COMPLETED,
-                            elapsed_seconds=elapsed,
-                            status_code=response.status_code,
-                            truncated=response.truncated,
-                            rate_wait_seconds=rate_wait_seconds,
-                        )
+                    observation = TimeObservation(
+                        kind=step.kind,
+                        sequence=sequence,
+                        outcome=TimeProbeOutcome.COMPLETED,
+                        elapsed_seconds=elapsed,
+                        status_code=response.status_code,
+                        truncated=response.truncated,
+                        rate_wait_seconds=rate_wait_seconds,
+                    )
+                    observations.append(observation)
+                    emit_observation(
+                        observation_sink,
+                        family="time",
+                        sequence=sequence,
+                        kind=step.kind.value,
+                        observation=observation,
                     )
                 except (TypeError, ValueError, OverflowError):
                     raise RuntimeError(
@@ -301,13 +312,19 @@ def verify_time_based_sqli(
             raise RuntimeError("Time verification execution failed.")
 
         try:
-            observations.append(
-                TimeObservation(
-                    kind=step.kind,
-                    sequence=sequence,
-                    outcome=outcome,
-                    rate_wait_seconds=rate_wait_seconds,
-                )
+            observation = TimeObservation(
+                kind=step.kind,
+                sequence=sequence,
+                outcome=outcome,
+                rate_wait_seconds=rate_wait_seconds,
+            )
+            observations.append(observation)
+            emit_observation(
+                observation_sink,
+                family="time",
+                sequence=sequence,
+                kind=step.kind.value,
+                observation=observation,
             )
         except (TypeError, ValueError, OverflowError):
             raise RuntimeError("Time verification observation failed.") from None

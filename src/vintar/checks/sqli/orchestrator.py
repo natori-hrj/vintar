@@ -11,6 +11,10 @@ from vintar.checks.sqli.models import (
     Verdict,
     VerificationResult,
 )
+from vintar.checks.sqli.observation_sink import (
+    SqliObservationSink,
+    emit_observation,
+)
 from vintar.core.budget import RequestBudgetExceededError
 from vintar.core.executor import ExecutionContext
 from vintar.core.injector import inject
@@ -66,6 +70,7 @@ def verify_boolean_sqli(
     false_payload: str,
     context: ExecutionContext,
     transport: httpx.BaseTransport | None = None,
+    observation_sink: SqliObservationSink | None = None,
 ) -> VerificationResult:
     """Run six bounded Boolean probes through ExecutionContext.
 
@@ -166,7 +171,15 @@ def verify_boolean_sqli(
             )
             break
 
-        observations.append(_observation(kind, response))
+        observation = _observation(kind, response)
+        observations.append(observation)
+        emit_observation(
+            observation_sink,
+            family="boolean",
+            sequence=len(observations),
+            kind=kind.value,
+            observation=observation,
+        )
         responses[kind].append(response)
 
         if response.status_code == 429:
