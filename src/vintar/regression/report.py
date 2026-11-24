@@ -10,6 +10,7 @@ from vintar.checks.sqli.decision_facts import (
     OperationalDecisionFacts,
     PairLocalization,
     ResponseDynamicsDecisionFacts,
+    TimingDynamicsDecisionFacts,
 )
 from vintar.checks.sqli.error_contract import error_product_result
 from vintar.checks.sqli.models import VerificationResult
@@ -95,6 +96,18 @@ def _decision_facts_dict(facts: object) -> dict[str, object]:
                 item.value for item in facts.cross_phase_mismatched_kinds
             ],
         }
+    if isinstance(facts, TimingDynamicsDecisionFacts):
+        result = {
+            "category": "timing_dynamics",
+            "instability_causes": [item.value for item in facts.instability_causes],
+        }
+        if facts.reason_code == "ambiguous_timing":
+            result.update(
+                candidate_median_met=facts.candidate_median_met,
+                candidate_margin_met=facts.candidate_margin_met,
+                no_delay_condition_met=facts.no_delay_condition_met,
+            )
+        return result
     raise TypeError("Unsupported decision facts. Serialize checks-layer facts instead.")
 
 
@@ -196,23 +209,30 @@ def regression_batch_report_dict(
 
         if type(outcome) is TimeRegressionOutcome:
             time_product = time_product_result(outcome.time_run.analysis)
-            outcomes.append(
-                {
-                    "case_id": outcome.case_id,
-                    "check_type": "sqli.time",
-                    "expected_verdict": outcome.expected_verdict.value,
-                    "actual_verdict": time_product.verdict.value,
-                    "actual_reason_code": time_product.reason_code,
+            time_report: dict[str, object] = {
+                "case_id": outcome.case_id,
+                "check_type": "sqli.time",
+                "expected_verdict": outcome.expected_verdict.value,
+                "actual_verdict": time_product.verdict.value,
+                "actual_reason_code": time_product.reason_code,
+                "request_count": time_product.request_count,
+                "expectation_match": outcome.expectation_match,
+                "status": outcome.status.value,
+                "timing": {
+                    "status": outcome.time_run.analysis.status.value,
+                    "reason_code": time_product.reason_code,
                     "request_count": time_product.request_count,
-                    "expectation_match": outcome.expectation_match,
-                    "status": outcome.status.value,
-                    "timing": {
-                        "status": outcome.time_run.analysis.status.value,
-                        "reason_code": time_product.reason_code,
-                        "request_count": time_product.request_count,
-                    },
-                }
-            )
+                },
+            }
+            time_facts = outcome.time_run.analysis.decision_facts
+            if time_product.reason_code in DECISION_FACT_REASONS and time_facts is None:
+                raise ValueError(
+                    "Time non-decision facts are missing. Use the timing analysis "
+                    "produced by the current runner instead of constructing report fields."
+                )
+            if time_facts is not None:
+                time_report["decision_facts"] = _decision_facts_dict(time_facts)
+            outcomes.append(time_report)
             continue
 
         if not isinstance(outcome, RegressionOutcome):

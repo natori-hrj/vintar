@@ -9,6 +9,14 @@ import statistics
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from vintar.checks.sqli.decision_facts import (
+    DecisionStage,
+    OperationalDecisionFacts,
+    TimeDecisionFacts,
+    TimeOperationalCondition,
+    TimingDynamicsDecisionFacts,
+    TimingInstabilityCause,
+)
 from vintar.checks.sqli.time_contract import (
     TIME_RESULT_RULES,
     TimeAnalysisStatus,
@@ -179,6 +187,82 @@ def _validate_observation_series(
     return terminal_reason, tuple(completed)
 
 
+def time_operational_decision_facts(
+    *,
+    reason_code: str,
+    sequence: int,
+    probe_kind: TimeProbeKind,
+    status_code: int | None = None,
+    deadline: bool = False,
+) -> OperationalDecisionFacts:
+    """Build bounded operational facts from the same terminal reason decision."""
+    if type(deadline) is not bool:
+        raise TypeError("Time deadline fact selector must be a boolean.")
+    if deadline:
+        condition = TimeOperationalCondition.DEADLINE
+    else:
+        conditions = {
+            "incomplete_probes": TimeOperationalCondition.DEADLINE,
+            "probe_timeout": TimeOperationalCondition.TIMEOUT,
+            "probe_failed": TimeOperationalCondition.REQUEST_FAILED,
+            "probe_interrupted": TimeOperationalCondition.INTERRUPTED,
+            "rate_limited": TimeOperationalCondition.RATE_LIMITED,
+            "non_success_status": TimeOperationalCondition.NON_SUCCESS_STATUS,
+            "truncated_response": TimeOperationalCondition.TRUNCATED,
+        }
+        try:
+            condition = conditions[reason_code]
+        except KeyError:
+            raise ValueError(
+                "Time operational facts require a terminal Time reason. Use the "
+                "reason selected by the timing analyzer."
+            ) from None
+    return OperationalDecisionFacts(
+        reason_code=reason_code,
+        stage=DecisionStage.TIME,
+        sequence=sequence,
+        probe_kind=probe_kind,
+        condition=condition,
+        status_code=status_code,
+    )
+
+
+def _validate_time_operational_facts(
+    facts: TimeDecisionFacts,
+    *,
+    observations: tuple[TimeObservation, ...],
+) -> None:
+    if not isinstance(facts, OperationalDecisionFacts):
+        raise TypeError(
+            "Operational Time reason requires operational facts. Use facts produced "
+            "by the timing analyzer or runner."
+        )
+    if facts.reason_code == "incomplete_probes":
+        expected_sequence = len(observations) + 1
+        expected_kind = TIME_PROBE_ORDER[expected_sequence - 1]
+    else:
+        last = observations[-1]
+        expected_sequence = last.sequence
+        expected_kind = last.kind
+    if facts.sequence != expected_sequence or facts.probe_kind is not expected_kind:
+        raise ValueError(
+            "Time operational facts do not identify the stopping plan position. Use "
+            "the sequence and probe kind selected by the bounded runner."
+        )
+    last_status = (
+        observations[-1].status_code
+        if facts.reason_code != "incomplete_probes"
+        and observations
+        and observations[-1].outcome is TimeProbeOutcome.COMPLETED
+        else None
+    )
+    if facts.status_code != last_status:
+        raise ValueError(
+            "Time operational status facts contradict the stopping observation. Use "
+            "the completed response status or omit it when no response exists."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class TimeEvidence:
     """Experimental timing summary without raw HTTP response content."""
@@ -241,6 +325,7 @@ class TimeAnalysis:
     expected_delay_seconds: float
     observations: tuple[TimeObservation, ...] = field(repr=False)
     evidence: TimeEvidence | None = field(default=None, repr=False)
+    decision_facts: TimeDecisionFacts | None = None
 
     def __post_init__(self) -> None:
         if type(self.status) is not TimeAnalysisStatus:
@@ -275,6 +360,17 @@ class TimeAnalysis:
 
         if self.evidence is not None and type(self.evidence) is not TimeEvidence:
             raise TypeError("Invalid timing evidence.")
+        if self.decision_facts is not None:
+            if not isinstance(
+                self.decision_facts,
+                (OperationalDecisionFacts, TimingDynamicsDecisionFacts),
+            ):
+                raise TypeError("Invalid timing decision facts.")
+            if self.decision_facts.reason_code != self.reason_code:
+                raise ValueError(
+                    "Timing decision facts contradict the reason. Use facts produced "
+                    "by the same timing decision."
+                )
 
         request_count = len(self.observations)
         if not rule.minimum_requests <= request_count <= rule.maximum_requests:
@@ -299,6 +395,11 @@ class TimeAnalysis:
                 or self.evidence is not None
             ):
                 raise ValueError("Inconsistent terminal timing analysis.")
+            if self.decision_facts is not None:
+                _validate_time_operational_facts(
+                    self.decision_facts,
+                    observations=self.observations,
+                )
             return
 
         if len(self.observations) != TIME_REQUESTS:
@@ -308,6 +409,11 @@ class TimeAnalysis:
                 or self.evidence is not None
             ):
                 raise ValueError("Incomplete timing classification.")
+            if self.decision_facts is not None:
+                _validate_time_operational_facts(
+                    self.decision_facts,
+                    observations=self.observations,
+                )
             return
 
         if self.reason_code not in _EVIDENCE_REASONS or self.evidence is None:
@@ -316,12 +422,17 @@ class TimeAnalysis:
         if self.evidence != _build_evidence(completed):
             raise ValueError("Evidence does not match timing observations.")
 
-        expected_classification = _classify_evidence(
+        expected_status, expected_reason, expected_facts = _classify_evidence(
             self.evidence,
             float(expected_delay),
         )
-        if (self.status, self.reason_code) != expected_classification:
+        if (self.status, self.reason_code) != (expected_status, expected_reason):
             raise ValueError("Classification does not match timing evidence.")
+        if self.decision_facts is not None and self.decision_facts != expected_facts:
+            raise ValueError(
+                "Timing dynamics facts do not match timing evidence. Use facts "
+                "computed by the timing analyzer."
+            )
 
     @property
     def request_count(self) -> int:
@@ -403,40 +514,91 @@ def _delay_stable_enough_to_conclude_absence(
 def _classify_evidence(
     evidence: TimeEvidence,
     expected_delay: float,
-) -> tuple[TimeAnalysisStatus, str]:
+) -> tuple[TimeAnalysisStatus, str, TimingDynamicsDecisionFacts | None]:
     # Conservative empirical limits for a laboratory experiment.
     # These thresholds are not production calibrated.
     stability_limit = max(0.12, expected_delay * 0.25)
     candidate_median_limit = expected_delay * 0.75
     candidate_margin_limit = expected_delay * 0.50
     no_delay_limit = expected_delay * 0.25
+    drift_unstable = _greater_than(evidence.drift, stability_limit)
 
-    unstable = (
-        _greater_than(evidence.baseline_span, stability_limit)
-        or _greater_than(evidence.control_span, stability_limit)
-        or _greater_than(
-            evidence.baseline_control_difference,
-            stability_limit,
+    instability_causes = tuple(
+        cause
+        for cause, unstable in (
+            (
+                TimingInstabilityCause.BASELINE_SPAN,
+                _greater_than(evidence.baseline_span, stability_limit)
+                and not drift_unstable,
+            ),
+            (
+                TimingInstabilityCause.CONTROL_SPAN,
+                _greater_than(evidence.control_span, stability_limit)
+                and not drift_unstable,
+            ),
+            (
+                TimingInstabilityCause.BASELINE_CONTROL_DIFFERENCE,
+                _greater_than(
+                    evidence.baseline_control_difference,
+                    stability_limit,
+                ),
+            ),
+            (
+                TimingInstabilityCause.DRIFT,
+                drift_unstable,
+            ),
+            (
+                TimingInstabilityCause.DELAY_SPAN,
+                not _delay_stable_enough_to_conclude_absence(evidence, stability_limit),
+            ),
         )
-        or _greater_than(evidence.drift, stability_limit)
+        if unstable
     )
+    baseline_control_unstable = any(
+        cause is not TimingInstabilityCause.DELAY_SPAN for cause in instability_causes
+    )
+    candidate_median_met = _at_least(evidence.median_excess, candidate_median_limit)
+    candidate_margin_met = _at_least(
+        evidence.minimum_delay_margin, candidate_margin_limit
+    )
+    no_delay_condition_met = _at_most(evidence.median_excess, no_delay_limit)
 
-    if unstable:
-        return TimeAnalysisStatus.INCONCLUSIVE, "unstable_timing"
+    if baseline_control_unstable:
+        return (
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "unstable_timing",
+            TimingDynamicsDecisionFacts(
+                reason_code="unstable_timing",
+                instability_causes=instability_causes,
+            ),
+        )
 
-    if _at_least(evidence.median_excess, candidate_median_limit) and _at_least(
-        evidence.minimum_delay_margin,
-        candidate_margin_limit,
-    ):
-        return TimeAnalysisStatus.CANDIDATE, "timing_pattern_matched"
+    if candidate_median_met and candidate_margin_met:
+        return TimeAnalysisStatus.CANDIDATE, "timing_pattern_matched", None
 
-    if not _delay_stable_enough_to_conclude_absence(evidence, stability_limit):
-        return TimeAnalysisStatus.INCONCLUSIVE, "unstable_timing"
+    if TimingInstabilityCause.DELAY_SPAN in instability_causes:
+        return (
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "unstable_timing",
+            TimingDynamicsDecisionFacts(
+                reason_code="unstable_timing",
+                instability_causes=instability_causes,
+            ),
+        )
 
-    if _at_most(evidence.median_excess, no_delay_limit):
-        return TimeAnalysisStatus.NOT_CONFIRMED, "timing_pattern_not_matched"
+    if no_delay_condition_met:
+        return TimeAnalysisStatus.NOT_CONFIRMED, "timing_pattern_not_matched", None
 
-    return TimeAnalysisStatus.INCONCLUSIVE, "ambiguous_timing"
+    return (
+        TimeAnalysisStatus.INCONCLUSIVE,
+        "ambiguous_timing",
+        TimingDynamicsDecisionFacts(
+            reason_code="ambiguous_timing",
+            candidate_median_met=candidate_median_met,
+            candidate_margin_met=candidate_margin_met,
+            no_delay_condition_met=no_delay_condition_met,
+        ),
+    )
 
 
 def analyze_time_probes(
@@ -461,26 +623,44 @@ def analyze_time_probes(
     terminal_reason, completed = _validate_observation_series(observations)
 
     if terminal_reason is not None:
+        last = observations[-1]
         return TimeAnalysis(
             status=TimeAnalysisStatus.INCONCLUSIVE,
             reason_code=terminal_reason,
             expected_delay_seconds=plan.expected_delay_seconds,
             observations=observations,
+            decision_facts=time_operational_decision_facts(
+                reason_code=terminal_reason,
+                sequence=last.sequence,
+                probe_kind=last.kind,
+                status_code=(
+                    last.status_code
+                    if last.outcome is TimeProbeOutcome.COMPLETED
+                    else None
+                ),
+            ),
         )
 
     if len(observations) != TIME_REQUESTS:
+        next_sequence = len(observations) + 1
         return TimeAnalysis(
             status=TimeAnalysisStatus.INCONCLUSIVE,
             reason_code="incomplete_probes",
             expected_delay_seconds=plan.expected_delay_seconds,
             observations=observations,
+            decision_facts=time_operational_decision_facts(
+                reason_code="incomplete_probes",
+                sequence=next_sequence,
+                probe_kind=TIME_PROBE_ORDER[next_sequence - 1],
+                deadline=True,
+            ),
         )
 
     # Span-based jitter and endpoint drift are conservative
     # heuristics, not formal statistical tests.
     evidence = _build_evidence(completed)
 
-    status, reason_code = _classify_evidence(
+    status, reason_code, decision_facts = _classify_evidence(
         evidence,
         plan.expected_delay_seconds,
     )
@@ -490,4 +670,5 @@ def analyze_time_probes(
         expected_delay_seconds=plan.expected_delay_seconds,
         observations=observations,
         evidence=evidence,
+        decision_facts=decision_facts,
     )

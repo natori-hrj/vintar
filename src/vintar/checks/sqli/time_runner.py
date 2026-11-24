@@ -12,7 +12,7 @@ import math
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import httpx
 
@@ -27,8 +27,10 @@ from vintar.checks.sqli.time_analyzer import (
     TimeObservation,
     TimeProbeOutcome,
     analyze_time_probes,
+    time_operational_decision_facts,
 )
 from vintar.checks.sqli.time_plan import (
+    TIME_PROBE_ORDER,
     TIME_REQUESTS,
     TimePayloads,
     prepare_time_plan,
@@ -181,6 +183,23 @@ def verify_time_based_sqli(
                 plan=plan,
                 observations=tuple(observations),
             )
+            if deadline_exceeded:
+                if analysis.reason_code == "incomplete_probes":
+                    sequence = len(observations) + 1
+                    probe_kind = TIME_PROBE_ORDER[sequence - 1]
+                else:
+                    stopping = observations[-1]
+                    sequence = stopping.sequence
+                    probe_kind = stopping.kind
+                analysis = replace(
+                    analysis,
+                    decision_facts=time_operational_decision_facts(
+                        reason_code=analysis.reason_code,
+                        sequence=sequence,
+                        probe_kind=probe_kind,
+                        deadline=True,
+                    ),
+                )
 
             report = TimeRunReport(
                 analysis=analysis,

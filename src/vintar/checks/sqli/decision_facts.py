@@ -1,15 +1,17 @@
-"""Bounded, non-sensitive facts explaining Boolean SQLi non-decisions."""
+"""Bounded, non-sensitive facts explaining SQLi non-decisions."""
 
 from dataclasses import dataclass
 from enum import StrEnum
 
 from vintar.checks.sqli.confirmation import ConfirmationKind
 from vintar.checks.sqli.models import ProbeError, ProbeKind
+from vintar.checks.sqli.time_plan import TIME_REQUESTS, TimeProbeKind
 
 
 class DecisionStage(StrEnum):
     INITIAL = "initial"
     CONFIRMATION = "confirmation"
+    TIME = "time"
 
 
 class OperationalCondition(StrEnum):
@@ -20,6 +22,24 @@ class OperationalCondition(StrEnum):
     RATE_LIMITED = "rate_limited"
     TRUNCATED = "truncated"
     NON_SUCCESS_STATUS = "non_success_status"
+
+
+class TimeOperationalCondition(StrEnum):
+    TIMEOUT = "timeout"
+    REQUEST_FAILED = "request_failed"
+    INTERRUPTED = "interrupted"
+    RATE_LIMITED = "rate_limited"
+    NON_SUCCESS_STATUS = "non_success_status"
+    TRUNCATED = "truncated"
+    DEADLINE = "deadline"
+
+
+class TimingInstabilityCause(StrEnum):
+    BASELINE_SPAN = "baseline_span"
+    CONTROL_SPAN = "control_span"
+    BASELINE_CONTROL_DIFFERENCE = "baseline_control_difference"
+    DRIFT = "drift"
+    DELAY_SPAN = "delay_span"
 
 
 class PairLocalization(StrEnum):
@@ -38,8 +58,8 @@ class ConfirmationRelation(StrEnum):
     BASELINE_FALSE = "baseline_false"
 
 
-type DecisionProbeKind = ProbeKind | ConfirmationKind
-type DecisionCondition = ProbeError | OperationalCondition
+type DecisionProbeKind = ProbeKind | ConfirmationKind | TimeProbeKind
+type DecisionCondition = ProbeError | OperationalCondition | TimeOperationalCondition
 
 
 _OPERATIONAL_REASON_CONDITIONS: dict[
@@ -104,8 +124,23 @@ _OPERATIONAL_REASON_CONDITIONS: dict[
     ),
 }
 
+_TIME_OPERATIONAL_REASON_CONDITIONS = {
+    "incomplete_probes": (TimeOperationalCondition.DEADLINE,),
+    "probe_timeout": (TimeOperationalCondition.TIMEOUT,),
+    "probe_failed": (TimeOperationalCondition.REQUEST_FAILED,),
+    "probe_interrupted": (
+        TimeOperationalCondition.INTERRUPTED,
+        TimeOperationalCondition.DEADLINE,
+    ),
+    "rate_limited": (TimeOperationalCondition.RATE_LIMITED,),
+    "non_success_status": (TimeOperationalCondition.NON_SUCCESS_STATUS,),
+    "truncated_response": (TimeOperationalCondition.TRUNCATED,),
+}
+
 DECISION_FACT_CATEGORY_REASONS = {
-    "operational": frozenset(_OPERATIONAL_REASON_CONDITIONS),
+    "operational": frozenset(
+        _OPERATIONAL_REASON_CONDITIONS | _TIME_OPERATIONAL_REASON_CONDITIONS
+    ),
     "response_dynamics": frozenset({"possible_dynamic_response", "unstable_response"}),
     "confirmation_relation": frozenset(
         {
@@ -114,6 +149,7 @@ DECISION_FACT_CATEGORY_REASONS = {
             "confirmation_cross_phase_mismatch",
         }
     ),
+    "timing_dynamics": frozenset({"unstable_timing", "ambiguous_timing"}),
 }
 
 
@@ -127,25 +163,46 @@ class OperationalDecisionFacts:
     status_code: int | None = None
 
     def __post_init__(self) -> None:
-        expected = _OPERATIONAL_REASON_CONDITIONS.get(self.reason_code)
-        if expected is None:
+        conditions: tuple[DecisionCondition, ...] | None
+        if self.stage is DecisionStage.TIME:
+            expected_stage = DecisionStage.TIME
+            conditions = _TIME_OPERATIONAL_REASON_CONDITIONS.get(self.reason_code)
+        else:
+            expected = _OPERATIONAL_REASON_CONDITIONS.get(self.reason_code)
+            if expected is None:
+                expected_stage = self.stage
+                conditions = None
+            else:
+                expected_stage, conditions = expected
+        if conditions is None:
             raise ValueError(
                 "Operational decision facts require a supported operational reason."
             )
-        expected_stage, conditions = expected
         if self.stage is not expected_stage or self.condition not in conditions:
             raise ValueError(
                 "Operational decision facts contradict the reason. Use the stage and "
                 "condition produced by the bounded runner."
             )
-        if type(self.sequence) is not int or not 1 <= self.sequence <= 18:
-            raise ValueError("Operational decision sequence must be from 1 through 18.")
-        if not isinstance(self.probe_kind, (ProbeKind, ConfirmationKind)):
+        maximum_sequence = TIME_REQUESTS if self.stage is DecisionStage.TIME else 18
+        if type(self.sequence) is not int or not 1 <= self.sequence <= maximum_sequence:
+            raise ValueError(
+                "Operational decision sequence must be from 1 through "
+                f"{maximum_sequence} for the bounded stage plan."
+            )
+        expected_kind_type = {
+            DecisionStage.INITIAL: ProbeKind,
+            DecisionStage.CONFIRMATION: ConfirmationKind,
+            DecisionStage.TIME: TimeProbeKind,
+        }[self.stage]
+        if not isinstance(self.probe_kind, expected_kind_type):
             raise TypeError("Operational probe kind is invalid.")
         response_condition = self.condition in {
             OperationalCondition.RATE_LIMITED,
             OperationalCondition.TRUNCATED,
             OperationalCondition.NON_SUCCESS_STATUS,
+            TimeOperationalCondition.RATE_LIMITED,
+            TimeOperationalCondition.TRUNCATED,
+            TimeOperationalCondition.NON_SUCCESS_STATUS,
         }
         if response_condition:
             if type(self.status_code) is not int or not 100 <= self.status_code <= 599:
@@ -154,11 +211,15 @@ class OperationalDecisionFacts:
                 )
             if (
                 self.condition is OperationalCondition.RATE_LIMITED
-                and self.status_code != 429
-            ):
+                or self.condition is TimeOperationalCondition.RATE_LIMITED
+            ) and self.status_code != 429:
                 raise ValueError("Rate-limited facts require HTTP status 429.")
             if (
-                self.condition is OperationalCondition.NON_SUCCESS_STATUS
+                self.condition
+                in {
+                    OperationalCondition.NON_SUCCESS_STATUS,
+                    TimeOperationalCondition.NON_SUCCESS_STATUS,
+                }
                 and 200 <= self.status_code < 300
             ):
                 raise ValueError("Non-success facts require a non-2xx status.")
@@ -306,10 +367,62 @@ class ConfirmationRelationDecisionFacts:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class TimingDynamicsDecisionFacts:
+    reason_code: str
+    instability_causes: tuple[TimingInstabilityCause, ...] = ()
+    candidate_median_met: bool | None = None
+    candidate_margin_met: bool | None = None
+    no_delay_condition_met: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.reason_code not in {"unstable_timing", "ambiguous_timing"}:
+            raise ValueError(
+                "Timing-dynamics facts require unstable_timing or ambiguous_timing."
+            )
+        if type(self.instability_causes) is not tuple or any(
+            not isinstance(item, TimingInstabilityCause)
+            for item in self.instability_causes
+        ):
+            raise TypeError("Invalid timing instability causes.")
+        ordered = tuple(
+            item for item in TimingInstabilityCause if item in self.instability_causes
+        )
+        if self.instability_causes != ordered:
+            raise ValueError("Timing instability causes must use deterministic order.")
+        candidate_values = (
+            self.candidate_median_met,
+            self.candidate_margin_met,
+            self.no_delay_condition_met,
+        )
+        if self.reason_code == "unstable_timing":
+            if not self.instability_causes or any(
+                value is not None for value in candidate_values
+            ):
+                raise ValueError(
+                    "Unstable timing facts require causes and must omit candidate flags."
+                )
+        elif self.instability_causes or any(
+            type(value) is not bool for value in candidate_values
+        ):
+            raise ValueError(
+                "Ambiguous timing facts require three boolean decision flags and no "
+                "instability causes."
+            )
+        elif (
+            self.candidate_median_met and self.candidate_margin_met
+        ) or self.no_delay_condition_met:
+            raise ValueError(
+                "Ambiguous timing facts contradict the decision. Use candidate or "
+                "not-matched classification for those flag combinations."
+            )
+
+
 type BooleanDecisionFacts = OperationalDecisionFacts | ResponseDynamicsDecisionFacts
 type ConfirmationDecisionFacts = (
     OperationalDecisionFacts | ConfirmationRelationDecisionFacts
 )
+type TimeDecisionFacts = OperationalDecisionFacts | TimingDynamicsDecisionFacts
 
 
 DECISION_FACT_REASONS = frozenset(

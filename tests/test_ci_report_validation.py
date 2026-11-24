@@ -387,6 +387,56 @@ def make_time_report(reason: str):
     }
 
 
+def time_decision_facts(reason: str, request_count: int) -> dict[str, object]:
+    if reason == "unstable_timing":
+        return {
+            "category": "timing_dynamics",
+            "instability_causes": ["control_span"],
+        }
+    if reason == "ambiguous_timing":
+        return {
+            "category": "timing_dynamics",
+            "instability_causes": [],
+            "candidate_median_met": True,
+            "candidate_margin_met": False,
+            "no_delay_condition_met": False,
+        }
+    sequence = request_count + 1 if reason == "incomplete_probes" else request_count
+    condition = {
+        "incomplete_probes": "deadline",
+        "probe_timeout": "timeout",
+        "probe_failed": "request_failed",
+        "probe_interrupted": "interrupted",
+        "rate_limited": "rate_limited",
+        "non_success_status": "non_success_status",
+        "truncated_response": "truncated",
+    }[reason]
+    result: dict[str, object] = {
+        "category": "operational",
+        "stage": "time",
+        "sequence": sequence,
+        "probe_kind": [
+            "baseline",
+            "control",
+            "delay",
+            "control",
+            "delay",
+            "baseline",
+            "delay",
+            "baseline",
+            "control",
+        ][sequence - 1],
+        "condition": condition,
+    }
+    if reason == "rate_limited":
+        result["status_code"] = 429
+    elif reason == "non_success_status":
+        result["status_code"] = 403
+    elif reason == "truncated_response":
+        result["status_code"] = 200
+    return result
+
+
 def make_error_report(reason: str):
     rule = ERROR_RESULT_RULES[reason]
     request_count = rule.minimum_requests
@@ -697,6 +747,61 @@ def test_time_schema_reason_enum_matches_product_contract():
         TIME_RESULT_RULES
     )
     assert _VALIDATOR_MODULE["TIME_RESULT_RULES"] is TIME_RESULT_RULES
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "incomplete_probes",
+        "probe_timeout",
+        "probe_failed",
+        "probe_interrupted",
+        "rate_limited",
+        "non_success_status",
+        "truncated_response",
+        "unstable_timing",
+        "ambiguous_timing",
+    ],
+)
+def test_time_decision_facts_are_accepted_by_schema_and_validator(tmp_path, reason):
+    report = make_time_report(reason)
+    outcome = report["outcomes"][0]
+    outcome["decision_facts"] = time_decision_facts(reason, outcome["request_count"])
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    Draft202012Validator(schema).validate(report)
+    _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize(
+    ("reason", "mutation"),
+    [
+        ("probe_timeout", {"sequence": 2}),
+        ("probe_timeout", {"probe_kind": "control"}),
+        ("rate_limited", {"status_code": 200}),
+        ("non_success_status", {"status_code": 200}),
+    ],
+)
+def test_time_operational_fact_mutations_are_rejected(tmp_path, reason, mutation):
+    report = make_time_report(reason)
+    outcome = report["outcomes"][0]
+    facts = time_decision_facts(reason, outcome["request_count"])
+    facts.update(mutation)
+    outcome["decision_facts"] = facts
+
+    with pytest.raises((ValueError, ValidationError), match=r"facts|status|429"):
+        _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+def test_time_decision_fact_reason_mislabel_is_rejected(tmp_path):
+    report = make_time_report("unstable_timing")
+    report["outcomes"][0]["decision_facts"] = time_decision_facts("ambiguous_timing", 9)
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(report)
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 3)
 
 
 @pytest.mark.parametrize("reason", TIME_RESULT_RULES)

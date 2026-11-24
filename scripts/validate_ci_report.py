@@ -28,6 +28,9 @@ from vintar.checks.sqli.decision_facts import (
     PairLocalization,
     PredicatePair,
     ResponseDynamicsDecisionFacts,
+    TimeOperationalCondition,
+    TimingDynamicsDecisionFacts,
+    TimingInstabilityCause,
     UnstablePairFacts,
 )
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
@@ -43,6 +46,7 @@ from vintar.checks.sqli.models import (
     VerificationResult,
 )
 from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
+from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER, TimeProbeKind
 
 _SCHEMA = (
     Path(__file__).resolve().parents[1]
@@ -232,16 +236,19 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
         if category == "operational":
             stage = DecisionStage(facts["stage"])
             kind_value = facts["probe_kind"]
-            probe_kind = (
-                ProbeKind(kind_value)
-                if stage is DecisionStage.INITIAL
-                else ConfirmationKind(kind_value)
-            )
+            probe_kind = {
+                DecisionStage.INITIAL: ProbeKind,
+                DecisionStage.CONFIRMATION: ConfirmationKind,
+                DecisionStage.TIME: TimeProbeKind,
+            }[stage](kind_value)
             condition_value = facts["condition"]
-            try:
-                condition = ProbeError(condition_value)
-            except ValueError:
-                condition = OperationalCondition(condition_value)
+            if stage is DecisionStage.TIME:
+                condition = TimeOperationalCondition(condition_value)
+            else:
+                try:
+                    condition = ProbeError(condition_value)
+                except ValueError:
+                    condition = OperationalCondition(condition_value)
             parsed = OperationalDecisionFacts(
                 reason_code=reason,
                 stage=stage,
@@ -285,6 +292,17 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
                     ProbeKind(value) for value in facts["cross_phase_mismatched_kinds"]
                 ),
             )
+        elif category == "timing_dynamics":
+            parsed = TimingDynamicsDecisionFacts(
+                reason_code=reason,
+                instability_causes=tuple(
+                    TimingInstabilityCause(value)
+                    for value in facts["instability_causes"]
+                ),
+                candidate_median_met=facts.get("candidate_median_met"),
+                candidate_margin_met=facts.get("candidate_margin_met"),
+                no_delay_condition_met=facts.get("no_delay_condition_met"),
+            )
         else:
             raise ValueError
     except (KeyError, TypeError, ValueError):
@@ -296,6 +314,41 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
         raise ValueError(
             "Decision facts contradict the final reason. Use facts produced by the "
             "same checks-layer decision."
+        )
+    if item.get("check_type") == "sqli.time" and isinstance(
+        parsed, OperationalDecisionFacts
+    ):
+        request_count = item.get("request_count")
+        if type(request_count) is not int:
+            raise ValueError(
+                "Time operational facts require the bounded report request count. "
+                "Regenerate the report with the current writer."
+            )
+        expected_sequence = (
+            request_count + 1 if reason == "incomplete_probes" else request_count
+        )
+        if (
+            parsed.stage is not DecisionStage.TIME
+            or parsed.sequence != expected_sequence
+            or parsed.probe_kind is not TIME_PROBE_ORDER[parsed.sequence - 1]
+        ):
+            raise ValueError(
+                "Time operational facts contradict the stopping plan position. Use "
+                "the fixed-plan sequence and probe kind emitted by the timing runner."
+            )
+    if item.get("check_type") == "sqli.time":
+        if not isinstance(
+            parsed, (OperationalDecisionFacts, TimingDynamicsDecisionFacts)
+        ):
+            raise ValueError(
+                "Time decision facts use an invalid category. Use operational or "
+                "timing-dynamics facts emitted by the timing check."
+            )
+        return
+    if isinstance(parsed, TimingDynamicsDecisionFacts):
+        raise TypeError(
+            "Timing-dynamics facts require a Time outcome. Use facts emitted by the "
+            "check that produced this outcome."
         )
     verification = item["verification"]
     matches = True
