@@ -65,9 +65,8 @@ CLASSIFICATIONS = {
     "sqli.time": ("tp", "fn", "fp", "tn", "non_decision"),
     "sqli.error": ("candidate", "fn", "fp", "tn", "non_decision"),
 }
-MEASUREMENT_SCHEMA_VERSION = 8
-LEGACY_MEASUREMENT_SCHEMA_VERSION = 4
-UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS = frozenset({5, 6, 7})
+MEASUREMENT_SCHEMA_VERSION = 9
+UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS = frozenset({5, 6, 7, 8})
 PROBE_MODES = {
     "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
     "sqli.time": {"time": "nine_probe"},
@@ -806,26 +805,38 @@ _NON_OBJECT_REPORT_MESSAGE = (
 )
 
 
-def _validate_measurement_report(report: object) -> dict[str, object]:
-    """Validate current output or the separately supported legacy v4 shape."""
+def _validate_measurement_report(
+    report: object,
+    *,
+    reviewed_schema_version: int | None = None,
+) -> dict[str, object]:
+    """Validate current output or one explicitly docs-bound reviewed fixture."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
     version = report.get("schema_version")
-    if type(version) is int and version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS:
+    reviewed_v8 = version == 8 and reviewed_schema_version == 8
+    if (
+        type(version) is int
+        and version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS
+        and not reviewed_v8
+    ):
         detail = (
-            "v7 lacks the required Boolean normalization_applied and normalized_echo_count evidence"
-            if version == 7
-            else "v5/v6 analytical facts were derived from wire bytes and are unreliable under HTTP content encoding"
+            "v8 used the previous confirmation reason rules and cannot be interpreted under the v9 predicate-pair stability precedence"
+            if version == 8
+            else (
+                "v7 lacks the required Boolean normalization_applied and normalized_echo_count evidence"
+                if version == 7
+                else "v5/v6 analytical facts were derived from wire bytes and are unreliable under HTTP content encoding"
+            )
         )
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema version {version}: {detail}. Re-run scripts/run_third_party_sqli_measurement.py on current main to produce schema version 8 with exact analyzer evidence."
+            f"Unsupported third-party measurement report schema version {version}: {detail}. Re-run scripts/run_third_party_sqli_measurement.py on current main to produce schema version 9 with the current confirmation reason contract."
         )
-    if type(version) is not int or version not in {
-        LEGACY_MEASUREMENT_SCHEMA_VERSION,
-        MEASUREMENT_SCHEMA_VERSION,
-    }:
+    if type(version) is not int or (
+        version != MEASUREMENT_SCHEMA_VERSION and not reviewed_v8
+    ):
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema_version: observed JSON type {_json_type(version)}. Expected an integer with allowed value 4 or 8; this reader supports legacy version 4 and current version 8. The report shape cannot be inferred from another version; re-run scripts/run_third_party_sqli_measurement.py on current main."
+            f"Unsupported third-party measurement report schema_version: observed JSON type {_json_type(version)}. Expected the integer 9. Older report reason rules and shapes cannot be reinterpreted; re-run scripts/run_third_party_sqli_measurement.py on current main."
         )
     if report.keys() != {"counts", "records", "schema_version", "targets"}:
         raise MeasurementError(
@@ -952,7 +963,7 @@ def _validate_measurement_report(report: object) -> dict[str, object]:
 
     recomputed_records: list[dict[str, object]] = []
     for record_index, record in enumerate(records):
-        if version in {7, MEASUREMENT_SCHEMA_VERSION} and record.keys() != {
+        if version in {7, 8, MEASUREMENT_SCHEMA_VERSION} and record.keys() != {
             "actual_verdict",
             "check_type",
             "classification",
@@ -1008,11 +1019,12 @@ def _validate_measurement_report(report: object) -> dict[str, object]:
             )
         if check_type == "sqli.error":
             _validate_error_detail(record, record_index)
-        if version in {7, MEASUREMENT_SCHEMA_VERSION}:
+        if version in {7, 8, MEASUREMENT_SCHEMA_VERSION}:
             _validate_probe_evidence(
                 record,
                 record_index,
-                require_normalization_evidence=version == MEASUREMENT_SCHEMA_VERSION,
+                require_normalization_evidence=version
+                in {8, MEASUREMENT_SCHEMA_VERSION},
             )
         elif "evidence" in record or "relations" in record:
             raise MeasurementError(
@@ -1039,7 +1051,7 @@ def _validate_measurement_report(report: object) -> dict[str, object]:
 
 
 def validate_measurement_report(report: object) -> dict[str, object]:
-    """Accept only current output and the separately supported legacy v4 shape."""
+    """Accept only current schema v9 output."""
     return _validate_measurement_report(report)
 
 
@@ -2463,7 +2475,6 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
     """Reject actual results that differ from the committed reviewed summary."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
-    validate_measurement_report(report)
     try:
         text = documentation.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -2477,6 +2488,10 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
         raise MeasurementError(
             f"The reviewed documentation is bound to report schema version {found}, but fixture schema_version has JSON type {_json_type(report_version)} outside the bound version. Expected the integer specified by the docs binding. After a real measurement, update the documented schema binding and fixture together; do not fabricate or silently upgrade evidence."
         )
+    _validate_measurement_report(
+        report,
+        reviewed_schema_version=int(reviewed_version.group(1)),
+    )
     expected = _render_summary(report)
     if expected not in text:
         raise MeasurementError(
@@ -2490,7 +2505,7 @@ def write_report(path: Path, report: dict[str, object]) -> None:
     validate_measurement_report(report)
     if report.get("schema_version") != MEASUREMENT_SCHEMA_VERSION:
         raise MeasurementError(
-            "New measurement output requires schema version 8 with required Boolean normalization evidence and wire provenance separated from exact analyzer observations. Re-run scripts/run_third_party_sqli_measurement.py on current main instead of writing a legacy v4, v5, v6, or v7 fixture."
+            "New measurement output requires schema version 9 with the current confirmation predicate-pair stability precedence and exact analyzer evidence. Re-run scripts/run_third_party_sqli_measurement.py on current main instead of writing a legacy v4 through v8 fixture."
         )
     resolved = path.resolve()
     if resolved == ROOT or ROOT in resolved.parents:
