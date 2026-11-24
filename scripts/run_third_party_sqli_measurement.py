@@ -17,7 +17,6 @@ import uuid
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
-from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -350,17 +349,10 @@ def _confirmation_remaining_relation_matches(
     )
 
 
-class _ConfirmationReasonRules(Enum):
-    REVIEWED_V8 = 8
-    CURRENT_V9 = 9
-
-
 def _validate_reason_evidence(
     record: dict[str, object],
     evidence: list[dict[str, object]],
     relations: dict[str, object],
-    *,
-    confirmation_rules: _ConfirmationReasonRules,
 ) -> None:
     endpoint = required_text(record, "endpoint_id", "report record")
     check_type = required_text(record, "check_type", "report record")
@@ -413,29 +405,6 @@ def _validate_reason_evidence(
         "candidate_confirmation_mismatch",
         "confirmation_unstable",
     }:
-        if confirmation_rules is _ConfirmationReasonRules.REVIEWED_V8:
-            if reason == "candidate_confirmation_mismatch" and not (
-                all_success
-                and stable
-                and relations.get("baseline_equals_true") is True
-                and relations.get("baseline_equals_false") is False
-                and relations.get("true_equals_false") is False
-                and not all(
-                    relations.get(name) is True
-                    for name in (
-                        "baseline_equals_control",
-                        "baseline_equals_true2",
-                        "false_equals_false2",
-                    )
-                )
-            ):
-                raise MeasurementError(
-                    f"Probe evidence for {endpoint!r} contradicts the reviewed v8 "
-                    "candidate_confirmation_mismatch rule. Restore the reviewed stable "
-                    "2xx evidence of an initial candidate and a mismatching confirmation "
-                    "relation, or remeasure with the current runner."
-                )
-            return
         initial_evidence = evidence[: len(BOOLEAN_PROBE_ORDER)]
         confirmation_evidence = evidence[len(BOOLEAN_PROBE_ORDER) :]
         initial_relations = derive_relations(initial_evidence)
@@ -602,9 +571,6 @@ def _validate_error_probe_evidence(
 def _validate_probe_evidence(
     record: dict[str, object],
     record_index: int,
-    *,
-    require_normalization_evidence: bool,
-    confirmation_rules: _ConfirmationReasonRules,
 ) -> None:
     """Validate strict wire provenance and analyzer observation evidence."""
     endpoint = required_text(record, "endpoint_id", "report record")
@@ -659,7 +625,7 @@ def _validate_probe_evidence(
         "normalization_applied",
         "normalized_echo_count",
     }
-    if record.get("check_type") == "sqli.boolean" and require_normalization_evidence:
+    if record.get("check_type") == "sqli.boolean":
         expected_fields.update(boolean_normalization_fields)
     for index, item in enumerate(evidence, start=1):
         if type(item) is not dict or item.keys() != expected_fields:
@@ -725,9 +691,7 @@ def _validate_probe_evidence(
         raise MeasurementError(
             f"{location} relations disagree with its body digests. Remeasure the target so relations are derived mechanically instead of hand-edited."
         )
-    _validate_reason_evidence(
-        record, evidence, relations, confirmation_rules=confirmation_rules
-    )
+    _validate_reason_evidence(record, evidence, relations)
     if record.get("check_type") == "sqli.error":
         _validate_error_probe_evidence(record, evidence, record_index)
 
@@ -839,21 +803,12 @@ _NON_OBJECT_REPORT_MESSAGE = (
 )
 
 
-def _validate_measurement_report(
-    report: object,
-    *,
-    reviewed_schema_version: int | None,
-) -> dict[str, object]:
-    """Validate current output or one explicitly docs-bound reviewed fixture."""
+def _validate_measurement_report(report: object) -> dict[str, object]:
+    """Validate current schema v9 output."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
     version = report.get("schema_version")
-    reviewed_v8 = version == 8 and reviewed_schema_version == 8
-    if (
-        type(version) is int
-        and version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS
-        and not reviewed_v8
-    ):
+    if type(version) is int and version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS:
         detail = (
             "v8 used the previous confirmation reason rules and cannot be interpreted under the v9 predicate-pair stability precedence"
             if version == 8
@@ -866,17 +821,10 @@ def _validate_measurement_report(
         raise MeasurementError(
             f"Unsupported third-party measurement report schema version {version}: {detail}. Re-run scripts/run_third_party_sqli_measurement.py on current main to produce schema version 9 with the current confirmation reason contract."
         )
-    if type(version) is not int or (
-        version != MEASUREMENT_SCHEMA_VERSION and not reviewed_v8
-    ):
+    if type(version) is not int or version != MEASUREMENT_SCHEMA_VERSION:
         raise MeasurementError(
             f"Unsupported third-party measurement report schema_version: observed JSON type {_json_type(version)}. Expected the integer 9. Older report reason rules and shapes cannot be reinterpreted; re-run scripts/run_third_party_sqli_measurement.py on current main."
         )
-    confirmation_rules = (
-        _ConfirmationReasonRules.REVIEWED_V8
-        if reviewed_v8
-        else _ConfirmationReasonRules.CURRENT_V9
-    )
     if report.keys() != {"counts", "records", "schema_version", "targets"}:
         raise MeasurementError(
             f"Invalid third-party measurement report v{version} top-level keys. Use targets, records, counts.overall, counts.by_target, and schema_version; rerun the current measurement instead of mixing report versions."
@@ -1058,18 +1006,7 @@ def _validate_measurement_report(
             )
         if check_type == "sqli.error":
             _validate_error_detail(record, record_index)
-        if version in {7, 8, MEASUREMENT_SCHEMA_VERSION}:
-            _validate_probe_evidence(
-                record,
-                record_index,
-                require_normalization_evidence=version
-                in {8, MEASUREMENT_SCHEMA_VERSION},
-                confirmation_rules=confirmation_rules,
-            )
-        elif "evidence" in record or "relations" in record:
-            raise MeasurementError(
-                f"Legacy v4 measurement record {key[1]!r} contains v6 probe evidence. Rerun the measurement instead of mixing report versions."
-            )
+        _validate_probe_evidence(record, record_index)
         recomputed_records.append({**record, "classification": classification})
 
     recomputed = counts(recomputed_records)
@@ -1092,7 +1029,7 @@ def _validate_measurement_report(
 
 def validate_measurement_report(report: object) -> dict[str, object]:
     """Accept only current schema v9 output."""
-    return _validate_measurement_report(report, reviewed_schema_version=None)
+    return _validate_measurement_report(report)
 
 
 class _ResponseRecorder:
@@ -2515,6 +2452,7 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
     """Reject actual results that differ from the committed reviewed summary."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
+    validate_measurement_report(report)
     try:
         text = documentation.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -2528,10 +2466,6 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
         raise MeasurementError(
             f"The reviewed documentation is bound to report schema version {found}, but fixture schema_version has JSON type {_json_type(report_version)} outside the bound version. Expected the integer specified by the docs binding. After a real measurement, update the documented schema binding and fixture together; do not fabricate or silently upgrade evidence."
         )
-    _validate_measurement_report(
-        report,
-        reviewed_schema_version=int(reviewed_version.group(1)),
-    )
     expected = _render_summary(report)
     if expected not in text:
         raise MeasurementError(

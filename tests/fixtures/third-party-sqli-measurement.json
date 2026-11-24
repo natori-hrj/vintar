@@ -3023,14 +3023,14 @@
       "target_id": "sqli-dojo"
     }
   ],
-  "schema_version": 8,
+  "schema_version": 9,
   "targets": {
     "dsvw": {
       "archive_sha256": "96690f62ac0fba8a4f0aeac22f2370853bc02b96fb3efd1b8fc3a39398bf302b",
       "commit": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
       "dbms": "sqlite",
       "image_ids": {
-        "app": "sha256:ad96156bc5fcfd4509d0c93ba46f200c13d4bed234047e2eb2f6e48c20ba998c"
+        "app": "sha256:eee885a24ff37658943aee3e416fcd00bb488a6626a66257411bb0dc00837ebd"
       },
       "license": "Unlicense",
       "name": "DSVW",
@@ -3043,7 +3043,7 @@
       "commit": "9cb62dd2e30b08a0ddc753247c62b54b90e933ed",
       "dbms": "postgresql",
       "image_ids": {
-        "app": "sha256:fda00ea163e2048dd10a64592d93670fc4f01bfb5d54e8da86942a24f33c164e"
+        "app": "sha256:3455f13470519d7c137a7db7799987f59af9926922490861af7ceec037307c3f"
       },
       "license": "MIT",
       "name": "OWASP Training Lab",
@@ -3058,7 +3058,7 @@
       "commit": "81f20037de323376d8a7651377e3a3971efdbae8",
       "dbms": "mysql",
       "image_ids": {
-        "app": "sha256:f8a59ac76c22cc8d3b12f953e427241c4e8feddb5ab6500b5b52c91cc4cbcca8"
+        "app": "sha256:7da3da63a41c982c6cd88a05a1f05151dbd2b5069329b0985345903c850797db"
       },
       "license": "GPL-3.0",
       "name": "sqli-dojo-docker",

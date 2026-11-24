@@ -74,16 +74,14 @@ normalized echo sites. Time provides
 `outcome`, and Error provides sorted `matches` containing only `dbms` and
 `signature_id`. Relations are derived from analyzer digests. Bodies, payloads,
 headers, cookies, matched text, and query values are never stored. The reviewed
-fixture at `tests/fixtures/third-party-sqli-measurement.json` remains a real
-reviewed v8 measurement until the next live run replaces it. The documentation
-drift checker is the only path that reads that fixture under its explicit v8
-binding. The writer emits only v9. Version 9 distinguishes unstable
+fixture at `tests/fixtures/third-party-sqli-measurement.json` is a real reviewed
+v9 measurement. The writer and every validator path accept only v9. Version 9 distinguishes unstable
 confirmation predicate pairs from stable relation mismatches; v8 used the
 previous confirmation reason rules and must be remeasured rather than
 reinterpreted.
 Versions 5 and 6 used unreliable wire-derived
-analytical facts, and v7 lacks required Boolean normalization evidence. They
-must be regenerated. Error candidates remain `candidate`,
+analytical facts, and v7 lacks required Boolean normalization evidence. Versions
+5 through 8 must be regenerated. Error candidates remain `candidate`,
 never `tp` or `vulnerable`.
 
 Docker absence, an unavailable loopback binding, a changed archive, a changed local
