@@ -1,5 +1,6 @@
 """Keep the offline third-party declaration and reviewed summary deterministic."""
 
+import copy
 import gzip
 import hashlib
 import importlib.util
@@ -721,10 +722,10 @@ def legacy_v4_report() -> dict[str, object]:
     }
 
 
-def v8_report_from_legacy_v4(runner):
-    """Construct deterministic v8 test evidence for the fixed v4 compatibility data."""
+def v9_report_from_legacy_v4(runner):
+    """Construct deterministic v9 test evidence for the fixed v4 compatibility data."""
     report = legacy_v4_report()
-    report["schema_version"] = 8
+    report["schema_version"] = 9
     raw_bodies = {
         "baseline": b"fixed-baseline-response-body",
         "true": b"fixed-true-response-body",
@@ -843,7 +844,7 @@ def v8_report_from_legacy_v4(runner):
 
 def legacy_v5_report(runner):
     """Build the superseded v5 shape that omitted Error analyzer facts."""
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["schema_version"] = 5
     for record in report["records"]:
         if record["check_type"] == "sqli.error":
@@ -1247,7 +1248,7 @@ def test_fixed_dojo_relation_rejects_filtered_preset_confirmation():
     result = _fixed_dojo_confirmation(old.true_payload, old.false_payload)
 
     assert result.status is ConfirmationStatus.INCONCLUSIVE
-    assert result.reason_code == "candidate_confirmation_mismatch"
+    assert result.reason_code == "confirmation_unstable"
     assert result.confirmation_requests == 12
     assert result.total_requests == 18
 
@@ -1650,9 +1651,9 @@ def test_error_classification_keeps_candidates_distinct_from_tp(
 
 def test_aggregation_separates_boolean_time_and_error_results():
     runner = load_runner()
-    records = v8_report_from_legacy_v4(runner)["records"]
+    records = v9_report_from_legacy_v4(runner)["records"]
 
-    assert runner.counts(records) == v8_report_from_legacy_v4(runner)["counts"]
+    assert runner.counts(records) == v9_report_from_legacy_v4(runner)["counts"]
     assert set(runner.counts(records)["overall"]) == {
         "sqli.boolean",
         "sqli.time",
@@ -1662,7 +1663,7 @@ def test_aggregation_separates_boolean_time_and_error_results():
 
 def test_error_acceptance_contract_keeps_candidate_distinct_from_vulnerability():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     records = {
         record["endpoint_id"]: record
         for record in report["records"]
@@ -1714,12 +1715,12 @@ REJECTED_INPUT_SENTINEL = "SENTINEL-SECRET-7f3a"
         (
             ("schema_version",),
             {"value": REJECTED_INPUT_SENTINEL},
-            r"schema_version.*JSON type object.*integer.*4 or 8",
+            r"schema_version.*JSON type object.*Expected the integer 9",
         ),
         (
             ("schema_version",),
             REJECTED_INPUT_SENTINEL,
-            r"schema_version.*JSON type string.*integer.*4 or 8",
+            r"schema_version.*JSON type string.*Expected the integer 9",
         ),
         (
             ("targets", REJECTED_INPUT_SENTINEL),
@@ -1775,7 +1776,7 @@ REJECTED_INPUT_SENTINEL = "SENTINEL-SECRET-7f3a"
 )
 def test_measurement_report_diagnostics_redact_rejected_input(path, value, diagnostic):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     container = report
     for part in path[:-1]:
         if part == "dsvw-error-id" and type(container) is list:
@@ -1791,7 +1792,7 @@ def test_measurement_report_diagnostics_redact_rejected_input(path, value, diagn
 
 def test_error_evidence_diagnostic_redacts_classifier_exception(monkeypatch):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
 
     def fail_classification(observations):
         raise ValueError(REJECTED_INPUT_SENTINEL)
@@ -1814,7 +1815,7 @@ def _report_record(report, endpoint_id):
 
 def test_error_candidate_without_detail_is_rejected_with_regeneration_guidance():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     _report_record(report, "dsvw-error-id")["detail"] = {}
 
     with pytest.raises(
@@ -1829,7 +1830,7 @@ def test_error_candidate_without_detail_is_rejected_with_regeneration_guidance()
 )
 def test_error_candidate_requires_every_contract_field(missing_field):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     del _report_record(report, "dsvw-error-id")["detail"][missing_field]
 
     with pytest.raises(
@@ -1841,7 +1842,7 @@ def test_error_candidate_requires_every_contract_field(missing_field):
 
 def test_error_candidate_rejects_unreviewed_dbms_signature_pair():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     _report_record(report, "dsvw-error-id")["detail"]["dbms"] = "mysql"
 
     with pytest.raises(
@@ -1861,7 +1862,7 @@ def test_error_candidate_rejects_unreviewed_dbms_signature_pair():
 )
 def test_error_candidate_values_follow_error_result_rules(field, value, message):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     _report_record(report, "dsvw-error-id")["detail"][field] = value
 
     with pytest.raises(
@@ -1874,7 +1875,7 @@ def test_error_candidate_values_follow_error_result_rules(field, value, message)
 @pytest.mark.parametrize("evidence_value", [None, "sqlite"])
 def test_error_non_candidate_rejects_forbidden_evidence_fields(evidence_value):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     detail = _report_record(report, "dsvw-error-version-query")["detail"]
     detail["dbms"] = evidence_value
     detail["signature_id"] = evidence_value
@@ -1930,7 +1931,7 @@ def test_reaggregated_counts_cannot_hide_classification_relabeling(
     endpoint_id, stored_classification, ground_truth, result, expected
 ):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     _report_record(report, endpoint_id)["classification"] = stored_classification
     report["counts"] = runner.counts(report["records"])
 
@@ -1952,7 +1953,7 @@ def test_expected_verdict_must_follow_declared_ground_truth(
     endpoint_id, replacement, ground_truth, expected
 ):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     _report_record(report, endpoint_id)["expected_verdict"] = replacement
 
     with pytest.raises(
@@ -1962,16 +1963,20 @@ def test_expected_verdict_must_follow_declared_ground_truth(
         runner.validate_measurement_report(report)
 
 
-def test_legacy_v4_report_shape_still_validates_unchanged():
+def test_legacy_v4_report_requires_current_remeasurement():
     runner = load_runner()
     report = legacy_v4_report()
 
-    assert runner.validate_measurement_report(report) is report
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"schema_version.*Expected the integer 9.*Older report reason rules and shapes cannot be reinterpreted.*re-run",
+    ):
+        runner.validate_measurement_report(report)
 
 
 def test_non_decisions_keep_the_manual_runner_exit_one(tmp_path, monkeypatch, capsys):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     monkeypatch.setattr(runner, "measure", lambda workspace, output: report)
     monkeypatch.setattr(
         runner.sys,
@@ -2097,7 +2102,7 @@ def test_preset_confirmation_revision_is_rejected(tmp_path, monkeypatch):
 
 def test_mysql_by_target_counts_are_recomputed_from_records():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     mysql_records = [
         record for record in report["records"] if record["target_id"] == "sqli-dojo"
     ]
@@ -2110,23 +2115,25 @@ def test_mysql_by_target_counts_are_recomputed_from_records():
 
 
 @pytest.mark.doc_drift
-def test_reviewed_fixture_uses_current_v8_contract():
+def test_reviewed_fixture_uses_docs_bound_v8_while_writer_uses_v9():
     runner = load_runner()
     report = expected_report()
 
-    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 8
+    assert report["schema_version"] == 8
+    assert runner.MEASUREMENT_SCHEMA_VERSION == 9
     runner.check_documented_summary(report)
-    assert runner.validate_measurement_report(report) is report
-    legacy = legacy_v4_report()
-    assert legacy["schema_version"] == runner.LEGACY_MEASUREMENT_SCHEMA_VERSION == 4
-    assert runner.validate_measurement_report(legacy) is legacy
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"schema version 8.*previous confirmation reason rules.*v9 predicate-pair stability precedence.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*version 9",
+    ):
+        runner.validate_measurement_report(report)
 
 
-def test_current_v8_report_round_trips_through_validator():
+def test_current_v9_report_round_trips_through_validator():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
 
-    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 8
+    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 9
     assert runner.validate_measurement_report(report) is report
 
 
@@ -2135,22 +2142,22 @@ def test_new_writer_rejects_legacy_v4_fixture(tmp_path):
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"requires schema version 8 with required Boolean normalization evidence.*legacy v4, v5, v6, or v7",
+        match=r"Expected the integer 9.*Older report reason rules and shapes cannot be reinterpreted.*re-run",
     ):
         runner.write_report(tmp_path / "report.json", legacy_v4_report())
 
 
-def test_v5_error_evidence_requires_remeasurement_for_v8():
+def test_v5_error_evidence_requires_remeasurement_for_v9():
     runner = load_runner()
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"schema version 5.*wire bytes.*unreliable under HTTP content encoding.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*schema version 8",
+        match=r"schema version 5.*wire bytes.*unreliable under HTTP content encoding.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*schema version 9",
     ):
         runner.validate_measurement_report(legacy_v5_report(runner))
 
 
-def test_v7_boolean_evidence_requires_remeasurement_for_v8():
+def test_v7_boolean_evidence_requires_remeasurement_for_v9():
     runner = load_runner()
     report = expected_report()
     report["schema_version"] = 7
@@ -2164,12 +2171,10 @@ def test_v7_boolean_evidence_requires_remeasurement_for_v8():
     message = (
         r"schema version 7.*lacks the required Boolean normalization_applied "
         r"and normalized_echo_count evidence.*Re-run "
-        r"scripts/run_third_party_sqli_measurement.py on current main.*version 8"
+        r"scripts/run_third_party_sqli_measurement.py on current main.*version 9"
     )
     with pytest.raises(runner.MeasurementError, match=message):
         runner.validate_measurement_report(report)
-    with pytest.raises(runner.MeasurementError, match=message):
-        runner.check_documented_summary(report)
 
 
 def test_new_writer_rejects_v5_fixture(tmp_path):
@@ -2177,17 +2182,18 @@ def test_new_writer_rejects_v5_fixture(tmp_path):
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"schema version 5.*wire bytes.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*version 8",
+        match=r"schema version 5.*wire bytes.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*version 9",
     ):
         runner.write_report(tmp_path / "report.json", legacy_v5_report(runner))
 
 
-def test_v8_renderer_matches_legacy_summary_without_using_evidence():
+def test_v9_renderer_uses_aggregate_records_without_evidence_values():
     runner = load_runner()
+    report = v9_report_from_legacy_v4(runner)
+    expected = runner.render_summary(report)
+    report["records"][0]["evidence"][0]["wire_body_sha256"] = "f" * 64
 
-    assert runner.render_summary(
-        v8_report_from_legacy_v4(runner)
-    ) == runner.render_summary(legacy_v4_report())
+    assert runner.render_summary(report) == expected
 
 
 @pytest.mark.parametrize("report", [[], "private report text", 42, None])
@@ -2213,9 +2219,9 @@ def test_documented_schema_binding_rejects_legacy_v4_fixture():
         runner.check_documented_summary(legacy_v4_report())
 
 
-def test_v8_serialization_excludes_payloads_and_response_bodies():
+def test_v9_serialization_excludes_payloads_and_response_bodies():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     serialized = json.dumps(report, sort_keys=True)
 
     for secret in (
@@ -2229,7 +2235,7 @@ def test_v8_serialization_excludes_payloads_and_response_bodies():
         " AND 7=7-- ",
     ):
         assert secret not in serialized, (
-            "v8 serialized a payload or response body; retain only role, status, "
+            "v9 serialized a payload or response body; retain only role, status, "
             "body size, digest, and mechanically derived relations instead."
         )
 
@@ -2237,7 +2243,7 @@ def test_v8_serialization_excludes_payloads_and_response_bodies():
 @pytest.mark.parametrize("chunked", [False, True])
 def test_gzip_error_wire_provenance_keeps_analyzer_signature_evidence(chunked):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "sqli-dojo-error-id")
     encoded = gzip.compress(b"wire bytes do not expose the decoded signature", mtime=1)
     if chunked:
@@ -2267,7 +2273,7 @@ def test_gzip_error_wire_provenance_keeps_analyzer_signature_evidence(chunked):
 
 def test_gzip_boolean_relations_use_decoded_analyzer_digests_not_wire_digests():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = next(
         item
         for item in report["records"]
@@ -2329,26 +2335,26 @@ def test_probe_evidence_rejects_observation_role_mismatch_actionably():
         )
 
 
-def test_v6_wire_derived_evidence_requires_remeasurement_for_v8():
+def test_v6_wire_derived_evidence_requires_remeasurement_for_v9():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["schema_version"] = 6
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"schema version 6.*wire bytes.*unreliable under HTTP content encoding.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*schema version 8",
+        match=r"schema version 6.*wire bytes.*unreliable under HTTP content encoding.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*schema version 9",
     ):
         runner.validate_measurement_report(report)
 
 
-def test_v8_strict_record_fields_reject_sensitive_values():
+def test_v9_strict_record_fields_reject_sensitive_values():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     _report_record(report, "dsvw-time-id")["payload"] = "sensitive-probe"
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"Invalid v8 fields.*dsvw-time-id.*remove payloads, bodies, headers, cookies, and URLs.*current runner",
+        match=r"Invalid v9 fields.*dsvw-time-id.*remove payloads, bodies, headers, cookies, and URLs.*current runner",
     ):
         runner.validate_measurement_report(report)
 
@@ -2373,11 +2379,11 @@ def test_v8_strict_record_fields_reject_sensitive_values():
         ),
     ],
 )
-def test_v8_missing_evidence_field_lists_exact_family_fields(
+def test_v9_missing_evidence_field_lists_exact_family_fields(
     endpoint, missing, expected_fields
 ):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, endpoint)
     del record["evidence"][0][missing]
 
@@ -2390,9 +2396,9 @@ def test_v8_missing_evidence_field_lists_exact_family_fields(
 
 
 @pytest.mark.parametrize("missing", ["normalization_applied", "normalized_echo_count"])
-def test_v8_boolean_evidence_requires_both_normalization_fields(missing):
+def test_v9_boolean_evidence_requires_both_normalization_fields(missing):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-blind-boolean-id")
     del record["evidence"][0][missing]
 
@@ -2411,9 +2417,9 @@ def test_v8_boolean_evidence_requires_both_normalization_fields(missing):
         ("normalized_echo_count", -1),
     ],
 )
-def test_v8_boolean_normalization_fields_use_strict_types(field, value):
+def test_v9_boolean_normalization_fields_use_strict_types(field, value):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-blind-boolean-id")
     record["evidence"][0][field] = value
 
@@ -2425,9 +2431,9 @@ def test_v8_boolean_normalization_fields_use_strict_types(field, value):
 
 
 @pytest.mark.parametrize(("applied", "count"), [(True, 0), (False, 1)])
-def test_v8_boolean_normalization_applied_must_match_count(applied, count):
+def test_v9_boolean_normalization_applied_must_match_count(applied, count):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-blind-boolean-id")
     record["evidence"][0]["normalization_applied"] = applied
     record["evidence"][0]["normalized_echo_count"] = count
@@ -2439,9 +2445,9 @@ def test_v8_boolean_normalization_applied_must_match_count(applied, count):
         runner.validate_measurement_report(report)
 
 
-def test_v8_request_count_must_equal_evidence_count():
+def test_v9_request_count_must_equal_evidence_count():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-time-id")
     record["evidence"].pop()
 
@@ -2463,9 +2469,9 @@ def test_v8_request_count_must_equal_evidence_count():
         (None, "null"),
     ],
 )
-def test_v8_time_outcome_rejects_non_enum_json_values(invalid_outcome, observed):
+def test_v9_time_outcome_rejects_non_enum_json_values(invalid_outcome, observed):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-time-id")
     record["evidence"][0]["outcome"] = invalid_outcome
     allowed = ", ".join(sorted(outcome.value for outcome in TimeProbeOutcome))
@@ -2484,9 +2490,9 @@ def test_v8_time_outcome_rejects_non_enum_json_values(invalid_outcome, observed)
 
 
 @pytest.mark.parametrize("outcome", list(TimeProbeOutcome))
-def test_v8_time_outcome_accepts_every_enum_value(outcome):
+def test_v9_time_outcome_accepts_every_enum_value(outcome):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-time-id")
     for item in record["evidence"]:
         item["outcome"] = outcome.value
@@ -2503,11 +2509,11 @@ def test_v8_time_outcome_accepts_every_enum_value(outcome):
         (0, REJECTED_INPUT_SENTINEL, 1, "string"),
     ],
 )
-def test_v8_sequence_rejects_invalid_json_values(
+def test_v9_sequence_rejects_invalid_json_values(
     evidence_index, value, expected, observed
 ):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-time-id")
     record["evidence"][evidence_index]["sequence"] = value
     message = (
@@ -2533,9 +2539,9 @@ def test_v8_sequence_rejects_invalid_json_values(
         "analyzer_body_size",
     ],
 )
-def test_v8_numeric_evidence_fields_reject_json_booleans(field):
+def test_v9_numeric_evidence_fields_reject_json_booleans(field):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     _report_record(report, "dsvw-blind-boolean-id")["evidence"][0][field] = True
 
     with pytest.raises(
@@ -2549,9 +2555,9 @@ def test_v8_numeric_evidence_fields_reject_json_booleans(field):
     ("value", "observed"),
     [(True, "boolean"), (-1, "number"), (REJECTED_INPUT_SENTINEL, "string")],
 )
-def test_v8_top_level_request_count_rejects_invalid_json_values(value, observed):
+def test_v9_top_level_request_count_rejects_invalid_json_values(value, observed):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     _report_record(report, "dsvw-time-id")["request_count"] = value
 
     with pytest.raises(
@@ -2562,9 +2568,9 @@ def test_v8_top_level_request_count_rejects_invalid_json_values(value, observed)
     assert REJECTED_INPUT_SENTINEL not in str(caught.value)
 
 
-def test_v8_error_detail_request_count_rejects_json_boolean():
+def test_v9_error_detail_request_count_rejects_json_boolean():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     _report_record(report, "dsvw-error-id")["detail"]["request_count"] = True
 
     with pytest.raises(
@@ -2574,9 +2580,9 @@ def test_v8_error_detail_request_count_rejects_json_boolean():
         runner.validate_measurement_report(report)
 
 
-def test_v8_count_tree_rejects_json_boolean_even_when_true_equals_one():
+def test_v9_count_tree_rejects_json_boolean_even_when_true_equals_one():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["counts"]["overall"]["sqli.error"]["error_probe"]["candidate"] = True
 
     with pytest.raises(
@@ -2588,7 +2594,7 @@ def test_v8_count_tree_rejects_json_boolean_even_when_true_equals_one():
 
 def test_v6_relations_are_recomputed_from_evidence():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-blind-boolean-id")
     record["relations"]["baseline_stable"] = False
 
@@ -2671,7 +2677,7 @@ def test_fixed_dsvw_request_order_derives_and_validates_boolean_candidate():
         "baseline_equals_false": False,
         "true_equals_false": False,
     }
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = next(
         row
         for row in report["records"]
@@ -2684,7 +2690,7 @@ def test_fixed_dsvw_request_order_derives_and_validates_boolean_candidate():
 
 def test_changed_repeated_true_digest_still_rejects_boolean_candidate():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = next(
         row
         for row in report["records"]
@@ -2701,9 +2707,91 @@ def test_changed_repeated_true_digest_still_rejects_boolean_candidate():
         runner.validate_measurement_report(report)
 
 
+def _set_confirmation_report_reason(runner, report, record, reason):
+    record["reason_code"] = reason
+    record["classification"] = "non_decision"
+    record["detail"] = {
+        "configured": True,
+        "reason_code": reason,
+        "request_count": 12,
+        "status": "inconclusive",
+    }
+    record["relations"] = runner.derive_relations(record["evidence"])
+    report["counts"] = runner.counts(report["records"])
+
+
+def _confirmation_report_record(report):
+    return next(
+        record
+        for record in report["records"]
+        if record["endpoint_id"] == "dsvw-blind-boolean-id"
+        and record["mode"] == "confirmation"
+    )
+
+
+def test_unreproduced_pair_uses_schema_specific_confirmation_precedence(tmp_path):
+    runner = load_runner()
+    unstable_report = v9_report_from_legacy_v4(runner)
+    unstable_record = _confirmation_report_record(unstable_report)
+    for item in unstable_record["evidence"]:
+        if item["role"] == "true2":
+            item["analyzer_body_sha256"] = "0" * 64
+    _set_confirmation_report_reason(
+        runner, unstable_report, unstable_record, "confirmation_unstable"
+    )
+
+    assert runner.validate_measurement_report(unstable_report) is unstable_report
+
+    mismatch_report = copy.deepcopy(unstable_report)
+    mismatch_record = _confirmation_report_record(mismatch_report)
+    _set_confirmation_report_reason(
+        runner,
+        mismatch_report,
+        mismatch_record,
+        "candidate_confirmation_mismatch",
+    )
+    previous_v8_report = copy.deepcopy(mismatch_report)
+    previous_v8_report["schema_version"] = 8
+    _confirmation_report_record(previous_v8_report)["detail"]["status"] = "mismatch"
+    documentation = tmp_path / "evaluation.md"
+    summary = runner._render_summary(previous_v8_report)
+    documentation.write_text(
+        f"Reviewed report schema version: `8`.\n\n{summary}\n", encoding="utf-8"
+    )
+    assert runner.check_documented_summary(previous_v8_report, documentation) == summary
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"schema version 8.*previous confirmation reason rules.*v9 predicate-pair stability precedence.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*version 9",
+    ):
+        runner.validate_measurement_report(previous_v8_report)
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-blind-boolean-id.*contradicts candidate_confirmation_mismatch.*both confirmation predicate pairs.*Remeasure",
+    ):
+        runner.validate_measurement_report(mismatch_report)
+
+
+def test_v9_stable_relation_mismatch_rejects_unstable_reason():
+    runner = load_runner()
+    report = v9_report_from_legacy_v4(runner)
+    record = _confirmation_report_record(report)
+    for item in record["evidence"]:
+        if item["role"] == "control":
+            item["analyzer_body_sha256"] = "1" * 64
+    _set_confirmation_report_reason(runner, report, record, "confirmation_unstable")
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-blind-boolean-id.*contradicts confirmation_unstable.*unreproduced TRUE/FALSE predicate pair.*Remeasure",
+    ):
+        runner.validate_measurement_report(report)
+
+
 def test_v6_unexpected_difference_requires_distinct_stable_2xx_pairs():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-version-query")
     baseline = next(item for item in record["evidence"] if item["role"] == "baseline")
     for item in record["evidence"]:
@@ -2721,7 +2809,7 @@ def test_v6_unexpected_difference_requires_distinct_stable_2xx_pairs():
 
 def test_v6_non_success_status_is_reclassified_by_shared_error_analyzer():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "owasp-lab-error-search")
     for item in record["evidence"]:
         if item["role"] == "error":
@@ -2814,7 +2902,7 @@ MYSQL_MATCH = ErrorMatch("mysql", "mysql_syntax_error_1064")
 
 def test_fixed_dsvw_500_disclosure_uses_shared_error_classifier():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-error-id")
     observations = _error_observations(
         probe_statuses=(500, 500),
@@ -2875,7 +2963,7 @@ def test_tampered_error_reason_is_rejected_by_shared_classifier(
     observations, expected_reason
 ):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-error-id")
     responses = tuple(
         runner.RecordedResponse(
@@ -2945,7 +3033,7 @@ def test_every_analytical_error_rule_round_trips_through_report_validator(
     observations,
 ):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     record = _report_record(report, "dsvw-error-id")
     _, reason, _ = _set_error_record_from_observations(
         runner, report, record, observations
@@ -3313,7 +3401,7 @@ def test_bridge_rejects_sequence_gaps_and_duplicates():
 
 def test_zeroed_counts_cannot_hide_recorded_non_decisions():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     for count_tree in (
         report["counts"]["overall"],
         report["counts"]["by_target"]["dsvw"],
@@ -3332,7 +3420,7 @@ def test_zeroed_counts_cannot_hide_recorded_non_decisions():
 
 def test_single_off_by_one_count_is_rejected():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["counts"]["overall"]["sqli.time"]["nine_probe"]["tn"] += 1
 
     with pytest.raises(
@@ -3345,7 +3433,7 @@ def test_single_off_by_one_count_is_rejected():
 @pytest.mark.parametrize("operation", ["extra", "missing"])
 def test_extra_or_missing_count_key_is_rejected(operation):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     counts = report["counts"]["overall"]["sqli.boolean"]["six_probe"]
     if operation == "extra":
         counts[REJECTED_INPUT_SENTINEL] = 0
@@ -3365,7 +3453,7 @@ def test_extra_or_missing_count_key_is_rejected(operation):
 @pytest.mark.parametrize("recompute_counts", [True, False])
 def test_removed_non_decisions_are_rejected_before_counts(recompute_counts):
     runner = load_runner()
-    saved = v8_report_from_legacy_v4(runner)
+    saved = v9_report_from_legacy_v4(runner)
     saved["records"] = [
         record
         for record in saved["records"]
@@ -3385,7 +3473,7 @@ def test_removed_non_decisions_are_rejected_before_counts(recompute_counts):
 
 def test_duplicate_record_is_rejected_with_occurrence_count():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["records"].append(report["records"][0].copy())
     report["counts"] = runner.counts(report["records"])
 
@@ -3402,7 +3490,7 @@ def test_duplicate_record_is_rejected_with_occurrence_count():
 )
 def test_undeclared_record_key_is_rejected(field, value):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["records"][0][field] = value
     report["counts"] = runner.counts(report["records"])
 
@@ -3438,7 +3526,7 @@ def test_report_keys_follow_reviewed_measurement_plan(monkeypatch, tmp_path):
         (tmp_path / config.name).write_bytes(config.read_bytes())
 
     planned = list(runner.plan_measurements(targets, records))
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     for record in report["records"]:
         if record["endpoint_id"] == old_id:
             record["endpoint_id"] = new_id
@@ -3459,7 +3547,7 @@ def test_report_keys_follow_reviewed_measurement_plan(monkeypatch, tmp_path):
 
 def test_consistent_counts_and_health_match_records():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     unhealthy_records = [
         record
         for record in report["records"]
@@ -3493,7 +3581,7 @@ def test_v4_preserves_v3_records_and_aggregate_counts():
 
 def test_unknown_target_id_is_rejected_before_counts():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["records"][0]["target_id"] = REJECTED_INPUT_SENTINEL
 
     with pytest.raises(
@@ -3505,9 +3593,9 @@ def test_unknown_target_id_is_rejected_before_counts():
 
 
 @pytest.mark.parametrize("tree", ["overall", "by_target"])
-def test_each_v4_count_tree_is_recomputed(tree):
+def test_each_v9_count_tree_is_recomputed(tree):
     runner = load_runner()
-    report = legacy_v4_report()
+    report = v9_report_from_legacy_v4(runner)
     count_tree = (
         report["counts"]["overall"]
         if tree == "overall"
@@ -3525,7 +3613,7 @@ def test_each_v4_count_tree_is_recomputed(tree):
 
 def test_report_target_metadata_must_match_declaration():
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["targets"]["dsvw"]["commit"] = "changed"
 
     with pytest.raises(
@@ -3587,29 +3675,29 @@ def test_tag_only_service_image_is_rejected(monkeypatch, tmp_path):
         runner.load_declarations()
 
 
-@pytest.mark.parametrize("old_version", [1, 2, 3])
+@pytest.mark.parametrize("old_version", [1, 2, 3, 4])
 def test_old_measurement_report_is_rejected_with_regeneration_guidance(old_version):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["schema_version"] = old_version
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"schema_version: observed JSON type number.*supports legacy version 4 and current version 8.*re-run scripts/run_third_party_sqli_measurement.py on current main",
+        match=r"schema_version: observed JSON type number.*Expected the integer 9.*Older report reason rules and shapes cannot be reinterpreted.*re-run scripts/run_third_party_sqli_measurement.py on current main",
     ):
         runner.render_summary(report)
 
 
-def test_v4_report_with_v3_shape_is_rejected():
+def test_v9_report_with_v3_shape_is_rejected():
     runner = load_runner()
-    report = legacy_v4_report()
+    report = v9_report_from_legacy_v4(runner)
     report["counts"] = report["counts"]["overall"]
     boolean_record = report["records"][0]
     boolean_record["confirmation"] = boolean_record.pop("detail")
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"v4 record.*sibling detail object.*rerun",
+        match=r"Invalid v9 fields.*Store only the reviewed result, sanitized evidence, and derived relations.*remeasuring",
     ):
         runner.validate_measurement_report(report)
 
@@ -3621,7 +3709,7 @@ def test_v3_version_with_v4_shape_is_rejected_before_shape_parsing():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"schema_version: observed JSON type number.*supports legacy version 4 and current version 8.*re-run scripts/run_third_party_sqli_measurement.py on current main",
+        match=r"schema_version: observed JSON type number.*Expected the integer 9.*Older report reason rules and shapes cannot be reinterpreted.*re-run scripts/run_third_party_sqli_measurement.py on current main",
     ):
         runner.unhealthy_count(report)
 
@@ -3799,7 +3887,7 @@ def test_pre_start_and_report_use_the_same_service_image_rule(
         call = call_pre_start
 
     else:
-        report = v8_report_from_legacy_v4(runner)
+        report = v9_report_from_legacy_v4(runner)
         report["targets"]["dsvw"]["service_images"] = mapping
 
         def call_report():
@@ -3833,7 +3921,7 @@ def test_pre_start_and_report_use_the_same_service_image_rule(
 )
 def test_report_rejects_bad_app_image_ids(bad_image_id):
     runner = load_runner()
-    report = v8_report_from_legacy_v4(runner)
+    report = v9_report_from_legacy_v4(runner)
     report["targets"]["dsvw"]["image_ids"]["app"] = bad_image_id
 
     with pytest.raises(

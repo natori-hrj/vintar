@@ -185,8 +185,10 @@ initial HTTP request is sent.
 
 The confirmation phase requires every response to be 2xx and not
 truncated. It compares status code, body size, and SHA-256 digest,
-requires both samples of every logical category to match, and then
-evaluates the expected relation.
+requires both samples of every logical category to match, and then requires
+TRUE_1 to reproduce TRUE_2 and FALSE_1 to reproduce FALSE_2. Failure at either
+stability layer produces `confirmation_unstable`. Only stable predicate pairs
+proceed to the remaining relation comparison.
 
 The expected candidate relation is:
 
@@ -196,11 +198,14 @@ The expected candidate relation is:
 
 A matching pattern is not evidence of actual SQL execution.
 
-A stable relation mismatch is blocking and remains INCONCLUSIVE. Confirmation never
-turns an eligible candidate into NOT_DETECTED or VULNERABLE. Exact-string branches
-such as `simple_branch` and `pagination-branch` are removed by the second predicate
-pair. Structural response mimics such as `full_mimic` and `waf-200` can reproduce the
-complete relation and remain documented known limitations.
+A stable predicate pair followed by a baseline, control, or truth-relation mismatch
+is blocking and remains INCONCLUSIVE with `candidate_confirmation_mismatch`.
+Unreproduced TRUE or FALSE predicate pairs instead produce
+`confirmation_unstable`. Confirmation never turns an eligible candidate into
+NOT_DETECTED or VULNERABLE. Exact-string branches such as `simple_branch` and
+`pagination-branch` are removed by the second predicate pair. Structural response
+mimics such as `full_mimic` and `waf-200` can reproduce the complete relation and
+remain documented known limitations.
 
 ## Cross-Phase Consistency
 
@@ -274,8 +279,9 @@ pattern.
 
 ### Candidate confirmation mismatch
 
-The additional confirmation completed with stable observations,
-but the required candidate relation was not satisfied.
+The additional confirmation completed with stable repeated observations, both
+TRUE and FALSE predicate pairs were reproduced, but the remaining baseline,
+control, or truth relation was not satisfied.
 
 Interpretation:
 

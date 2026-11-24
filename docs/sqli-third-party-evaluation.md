@@ -86,7 +86,8 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
-The current reviewed fixture uses schema version 8. Versions 2 and 3 introduced
+The current reviewed fixture uses schema version 8. New measurement runs write
+schema version 9. Versions 2 and 3 introduced
 per-technique records and Error evidence. Version 4 generalizes that contract to
 multiple independently prepared targets:
 
@@ -126,7 +127,12 @@ normalized echo sites. Time provides
 `outcome`, and Error provides sorted `matches` whose entries contain only
 `dbms` and `signature_id`. Equality and repeat-pair stability flags are derived
 from analyzer digests. The report never stores bodies, payloads, headers,
-cookies, matched text, or URLs with query values. The writer requires v8.
+cookies, matched text, or URLs with query values. The writer now requires v9.
+Version 9 applies the current confirmation precedence: per-kind stability,
+cross-predicate TRUE/FALSE pair reproduction, then the remaining relation.
+Version 8 used the previous confirmation reason rules, so it is accepted only
+through this document's explicit reviewed-fixture binding until a new live
+measurement replaces it; it cannot be interpreted as current output.
 Versions 5 and 6 used wire-derived analytical facts that are unreliable under
 content encoding, while v7 lacks required Boolean normalization evidence; all
 must be regenerated for new output. Versions 1 through 3 and mixed shapes are

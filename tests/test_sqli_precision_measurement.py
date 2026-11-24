@@ -347,7 +347,7 @@ def test_post_confirmation_negative_measurement():
         outcome for case, outcome in outcomes if case.name == "pagination-branch"
     )
     assert pagination.status is ConfirmationStatus.INCONCLUSIVE
-    assert pagination.reason_code == "candidate_confirmation_mismatch"
+    assert pagination.reason_code == "confirmation_unstable"
 
     waf = next(outcome for case, outcome in outcomes if case.name == "waf-200")
     assert waf.status is ConfirmationStatus.CANDIDATE
@@ -361,6 +361,6 @@ def test_synthetic_positive_demotions_are_not_real_false_negatives():
     assert len(outcomes) == 3
     assert all(
         outcome.status is ConfirmationStatus.INCONCLUSIVE
-        and outcome.reason_code == "candidate_confirmation_mismatch"
+        and outcome.reason_code == "confirmation_unstable"
         for outcome in outcomes
     )

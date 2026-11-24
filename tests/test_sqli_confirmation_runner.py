@@ -296,12 +296,68 @@ def test_simple_non_sql_branch_is_not_confirmed():
 
     assert result.initial.reason_code == "boolean_candidate"
     assert result.status is ConfirmationStatus.INCONCLUSIVE
-    assert result.reason_code == "candidate_confirmation_mismatch"
+    assert result.reason_code == "confirmation_unstable"
     assert result.total_requests == 18
     assert result.confirmation_requests == 12
-    assert result.evidence is not None
+    assert result.evidence is None
     assert len(received) == 18
     assert context.budget.used_requests == 18
+
+
+@pytest.mark.parametrize("unstable_pair", ["true", "false"])
+def test_cross_predicate_pair_instability_is_reported_before_mismatch(
+    unstable_pair,
+):
+    def handler(request):
+        category = request.url.params["category"]
+        if category == "Pets" + FALSE_1:
+            body = b"false"
+        elif category == "Pets" + FALSE_2:
+            body = b"false-two" if unstable_pair == "false" else b"false"
+        elif category == "Pets" + TRUE_2:
+            body = b"true-two" if unstable_pair == "true" else b"baseline"
+        else:
+            body = b"baseline"
+        return httpx.Response(200, content=body)
+
+    result, _ = run_check(handler)
+
+    assert result.initial.reason_code == "boolean_candidate"
+    assert result.status is ConfirmationStatus.INCONCLUSIVE
+    assert result.reason_code == "confirmation_unstable"
+    assert result.evidence is None
+    assert result.confirmation_requests == 12
+
+
+@pytest.mark.parametrize("stable_mismatch", ["control", "baseline_true"])
+def test_stable_predicate_pairs_can_report_relation_mismatch(stable_mismatch):
+    request_count = 0
+
+    def handler(request):
+        nonlocal request_count
+        request_count += 1
+        category = request.url.params["category"]
+        if category in {"Pets" + FALSE_1, "Pets" + FALSE_2}:
+            body = b"false"
+        elif category == "Pets" + BASELINE_PRESERVING_CONTROL:
+            body = b"control" if stable_mismatch == "control" else b"baseline"
+        elif (
+            stable_mismatch == "baseline_true"
+            and request_count > 6
+            and category in {"Pets" + TRUE_1, "Pets" + TRUE_2}
+        ):
+            body = b"confirmation-true"
+        else:
+            body = b"baseline"
+        return httpx.Response(200, content=body)
+
+    result, _ = run_check(handler)
+
+    assert result.initial.reason_code == "boolean_candidate"
+    assert result.status is ConfirmationStatus.INCONCLUSIVE
+    assert result.reason_code == "candidate_confirmation_mismatch"
+    assert result.evidence is not None
+    assert result.confirmation_requests == 12
 
 
 @pytest.mark.parametrize(

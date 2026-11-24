@@ -17,6 +17,7 @@ import uuid
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
+from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -65,9 +66,8 @@ CLASSIFICATIONS = {
     "sqli.time": ("tp", "fn", "fp", "tn", "non_decision"),
     "sqli.error": ("candidate", "fn", "fp", "tn", "non_decision"),
 }
-MEASUREMENT_SCHEMA_VERSION = 8
-LEGACY_MEASUREMENT_SCHEMA_VERSION = 4
-UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS = frozenset({5, 6, 7})
+MEASUREMENT_SCHEMA_VERSION = 9
+UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS = frozenset({5, 6, 7, 8})
 PROBE_MODES = {
     "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
     "sqli.time": {"time": "nine_probe"},
@@ -196,18 +196,7 @@ OBSERVATION_KIND_ORDERS = {
 
 def derive_relations(evidence: list[dict[str, object]]) -> dict[str, bool]:
     """Derive analyzer response relations from decoded observation evidence."""
-    signatures: dict[str, list[tuple[object, object, object]]] = {}
-    for item in evidence:
-        role = item.get("role")
-        digest = item.get("analyzer_body_sha256")
-        if type(role) is str and type(digest) is str:
-            signatures.setdefault(role, []).append(
-                (
-                    item.get("analyzer_status_code"),
-                    item.get("analyzer_body_size"),
-                    digest,
-                )
-            )
+    signatures = _boolean_role_signatures(evidence)
     relations = {
         f"{role}_stable": len(set(values)) == 1
         for role, values in sorted(signatures.items())
@@ -314,10 +303,64 @@ def _boolean_relation_is_stable(relations: dict[str, object]) -> bool:
     )
 
 
+def _boolean_role_signatures(
+    evidence: list[dict[str, object]],
+) -> dict[str, list[tuple[object, object, object]]]:
+    signatures: dict[str, list[tuple[object, object, object]]] = {}
+    for item in evidence:
+        role = item.get("role")
+        digest = item.get("analyzer_body_sha256")
+        if type(role) is str and type(digest) is str:
+            signatures.setdefault(role, []).append(
+                (
+                    item.get("analyzer_status_code"),
+                    item.get("analyzer_body_size"),
+                    digest,
+                )
+            )
+    return signatures
+
+
+def _confirmation_pair_state(
+    evidence: list[dict[str, object]],
+) -> tuple[bool, bool]:
+    """Return per-kind stability and cross-predicate reproduction."""
+    signatures = _boolean_role_signatures(evidence)
+    roles = ("baseline", "true", "false", "control", "true2", "false2")
+    per_kind_stable = all(
+        len(signatures.get(role, ())) == 2 and len(set(signatures[role])) == 1
+        for role in roles
+    )
+    pairs_reproduced = (
+        per_kind_stable
+        and signatures["true"][0] == signatures["true2"][0]
+        and signatures["false"][0] == signatures["false2"][0]
+    )
+    return per_kind_stable, pairs_reproduced
+
+
+def _confirmation_remaining_relation_matches(
+    evidence: list[dict[str, object]],
+) -> bool:
+    signatures = _boolean_role_signatures(evidence)
+    return (
+        signatures["baseline"][0] == signatures["true"][0]
+        and signatures["baseline"][0] == signatures["control"][0]
+        and signatures["baseline"][0] != signatures["false"][0]
+    )
+
+
+class _ConfirmationReasonRules(Enum):
+    REVIEWED_V8 = 8
+    CURRENT_V9 = 9
+
+
 def _validate_reason_evidence(
     record: dict[str, object],
     evidence: list[dict[str, object]],
     relations: dict[str, object],
+    *,
+    confirmation_rules: _ConfirmationReasonRules,
 ) -> None:
     endpoint = required_text(record, "endpoint_id", "report record")
     check_type = required_text(record, "check_type", "report record")
@@ -366,23 +409,69 @@ def _validate_reason_evidence(
                 raise MeasurementError(
                     f"Probe evidence for {endpoint!r} contradicts confirmation_pattern_matched. Remeasure the target so both confirmation pairs and the baseline-preserving control reproduce the declared relation."
                 )
-    if check_type == "sqli.boolean" and reason == "candidate_confirmation_mismatch":
+    if check_type == "sqli.boolean" and reason in {
+        "candidate_confirmation_mismatch",
+        "confirmation_unstable",
+    }:
+        if confirmation_rules is _ConfirmationReasonRules.REVIEWED_V8:
+            if reason == "candidate_confirmation_mismatch" and not (
+                all_success
+                and stable
+                and relations.get("baseline_equals_true") is True
+                and relations.get("baseline_equals_false") is False
+                and relations.get("true_equals_false") is False
+                and not all(
+                    relations.get(name) is True
+                    for name in (
+                        "baseline_equals_control",
+                        "baseline_equals_true2",
+                        "false_equals_false2",
+                    )
+                )
+            ):
+                raise MeasurementError(
+                    f"Probe evidence for {endpoint!r} contradicts the reviewed v8 "
+                    "candidate_confirmation_mismatch rule. Restore the reviewed stable "
+                    "2xx evidence of an initial candidate and a mismatching confirmation "
+                    "relation, or remeasure with the current runner."
+                )
+            return
+        initial_evidence = evidence[: len(BOOLEAN_PROBE_ORDER)]
+        confirmation_evidence = evidence[len(BOOLEAN_PROBE_ORDER) :]
+        initial_relations = derive_relations(initial_evidence)
         initial_candidate = (
-            relations.get("baseline_equals_true") is True
-            and relations.get("baseline_equals_false") is False
-            and relations.get("true_equals_false") is False
+            len(initial_evidence) == len(BOOLEAN_PROBE_ORDER)
+            and _boolean_relation_is_stable(initial_relations)
+            and initial_relations.get("baseline_equals_true") is True
+            and initial_relations.get("baseline_equals_false") is False
+            and initial_relations.get("true_equals_false") is False
         )
-        matched = all(
-            relations.get(name) is True
-            for name in (
-                "baseline_equals_control",
-                "baseline_equals_true2",
-                "false_equals_false2",
-            )
+        complete_confirmation = len(confirmation_evidence) == len(CONFIRMATION_ORDER)
+        per_kind_stable, pairs_reproduced = _confirmation_pair_state(
+            confirmation_evidence
         )
-        if not all_success or not stable or not initial_candidate or matched:
+        remaining_relation_matches = (
+            per_kind_stable
+            and _confirmation_remaining_relation_matches(confirmation_evidence)
+        )
+        if reason == "candidate_confirmation_mismatch" and not (
+            all_success
+            and initial_candidate
+            and complete_confirmation
+            and pairs_reproduced
+            and not remaining_relation_matches
+        ):
             raise MeasurementError(
-                f"Probe evidence for {endpoint!r} contradicts candidate_confirmation_mismatch. Remeasure the target so stable 2xx evidence shows an eligible initial candidate and a mismatching confirmation relation."
+                f"Probe evidence for {endpoint!r} contradicts candidate_confirmation_mismatch: both confirmation predicate pairs must be stable and reproduced before the remaining relation can mismatch. Remeasure the target with the current runner instead of hand-editing the reason."
+            )
+        if reason == "confirmation_unstable" and not (
+            all_success
+            and initial_candidate
+            and complete_confirmation
+            and (not per_kind_stable or not pairs_reproduced)
+        ):
+            raise MeasurementError(
+                f"Probe evidence for {endpoint!r} contradicts confirmation_unstable: an eligible initial candidate must complete all confirmation requests and show an unstable repeated kind or unreproduced TRUE/FALSE predicate pair. Remeasure the target with the current runner instead of hand-editing the reason."
             )
     if (
         check_type == "sqli.boolean"
@@ -515,6 +604,7 @@ def _validate_probe_evidence(
     record_index: int,
     *,
     require_normalization_evidence: bool,
+    confirmation_rules: _ConfirmationReasonRules,
 ) -> None:
     """Validate strict wire provenance and analyzer observation evidence."""
     endpoint = required_text(record, "endpoint_id", "report record")
@@ -635,7 +725,9 @@ def _validate_probe_evidence(
         raise MeasurementError(
             f"{location} relations disagree with its body digests. Remeasure the target so relations are derived mechanically instead of hand-edited."
         )
-    _validate_reason_evidence(record, evidence, relations)
+    _validate_reason_evidence(
+        record, evidence, relations, confirmation_rules=confirmation_rules
+    )
     if record.get("check_type") == "sqli.error":
         _validate_error_probe_evidence(record, evidence, record_index)
 
@@ -747,27 +839,44 @@ _NON_OBJECT_REPORT_MESSAGE = (
 )
 
 
-def _validate_measurement_report(report: object) -> dict[str, object]:
-    """Validate current output or the separately supported legacy v4 shape."""
+def _validate_measurement_report(
+    report: object,
+    *,
+    reviewed_schema_version: int | None,
+) -> dict[str, object]:
+    """Validate current output or one explicitly docs-bound reviewed fixture."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
     version = report.get("schema_version")
-    if type(version) is int and version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS:
+    reviewed_v8 = version == 8 and reviewed_schema_version == 8
+    if (
+        type(version) is int
+        and version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS
+        and not reviewed_v8
+    ):
         detail = (
-            "v7 lacks the required Boolean normalization_applied and normalized_echo_count evidence"
-            if version == 7
-            else "v5/v6 analytical facts were derived from wire bytes and are unreliable under HTTP content encoding"
+            "v8 used the previous confirmation reason rules and cannot be interpreted under the v9 predicate-pair stability precedence"
+            if version == 8
+            else (
+                "v7 lacks the required Boolean normalization_applied and normalized_echo_count evidence"
+                if version == 7
+                else "v5/v6 analytical facts were derived from wire bytes and are unreliable under HTTP content encoding"
+            )
         )
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema version {version}: {detail}. Re-run scripts/run_third_party_sqli_measurement.py on current main to produce schema version 8 with exact analyzer evidence."
+            f"Unsupported third-party measurement report schema version {version}: {detail}. Re-run scripts/run_third_party_sqli_measurement.py on current main to produce schema version 9 with the current confirmation reason contract."
         )
-    if type(version) is not int or version not in {
-        LEGACY_MEASUREMENT_SCHEMA_VERSION,
-        MEASUREMENT_SCHEMA_VERSION,
-    }:
+    if type(version) is not int or (
+        version != MEASUREMENT_SCHEMA_VERSION and not reviewed_v8
+    ):
         raise MeasurementError(
-            f"Unsupported third-party measurement report schema_version: observed JSON type {_json_type(version)}. Expected an integer with allowed value 4 or 8; this reader supports legacy version 4 and current version 8. The report shape cannot be inferred from another version; re-run scripts/run_third_party_sqli_measurement.py on current main."
+            f"Unsupported third-party measurement report schema_version: observed JSON type {_json_type(version)}. Expected the integer 9. Older report reason rules and shapes cannot be reinterpreted; re-run scripts/run_third_party_sqli_measurement.py on current main."
         )
+    confirmation_rules = (
+        _ConfirmationReasonRules.REVIEWED_V8
+        if reviewed_v8
+        else _ConfirmationReasonRules.CURRENT_V9
+    )
     if report.keys() != {"counts", "records", "schema_version", "targets"}:
         raise MeasurementError(
             f"Invalid third-party measurement report v{version} top-level keys. Use targets, records, counts.overall, counts.by_target, and schema_version; rerun the current measurement instead of mixing report versions."
@@ -893,7 +1002,7 @@ def _validate_measurement_report(report: object) -> dict[str, object]:
 
     recomputed_records: list[dict[str, object]] = []
     for record_index, record in enumerate(records):
-        if version in {7, MEASUREMENT_SCHEMA_VERSION} and record.keys() != {
+        if version in {7, 8, MEASUREMENT_SCHEMA_VERSION} and record.keys() != {
             "actual_verdict",
             "check_type",
             "classification",
@@ -949,11 +1058,13 @@ def _validate_measurement_report(report: object) -> dict[str, object]:
             )
         if check_type == "sqli.error":
             _validate_error_detail(record, record_index)
-        if version in {7, MEASUREMENT_SCHEMA_VERSION}:
+        if version in {7, 8, MEASUREMENT_SCHEMA_VERSION}:
             _validate_probe_evidence(
                 record,
                 record_index,
-                require_normalization_evidence=version == MEASUREMENT_SCHEMA_VERSION,
+                require_normalization_evidence=version
+                in {8, MEASUREMENT_SCHEMA_VERSION},
+                confirmation_rules=confirmation_rules,
             )
         elif "evidence" in record or "relations" in record:
             raise MeasurementError(
@@ -980,8 +1091,8 @@ def _validate_measurement_report(report: object) -> dict[str, object]:
 
 
 def validate_measurement_report(report: object) -> dict[str, object]:
-    """Accept only current output and the separately supported legacy v4 shape."""
-    return _validate_measurement_report(report)
+    """Accept only current schema v9 output."""
+    return _validate_measurement_report(report, reviewed_schema_version=None)
 
 
 class _ResponseRecorder:
@@ -2404,7 +2515,6 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
     """Reject actual results that differ from the committed reviewed summary."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
-    validate_measurement_report(report)
     try:
         text = documentation.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -2418,6 +2528,10 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
         raise MeasurementError(
             f"The reviewed documentation is bound to report schema version {found}, but fixture schema_version has JSON type {_json_type(report_version)} outside the bound version. Expected the integer specified by the docs binding. After a real measurement, update the documented schema binding and fixture together; do not fabricate or silently upgrade evidence."
         )
+    _validate_measurement_report(
+        report,
+        reviewed_schema_version=int(reviewed_version.group(1)),
+    )
     expected = _render_summary(report)
     if expected not in text:
         raise MeasurementError(
@@ -2431,7 +2545,7 @@ def write_report(path: Path, report: dict[str, object]) -> None:
     validate_measurement_report(report)
     if report.get("schema_version") != MEASUREMENT_SCHEMA_VERSION:
         raise MeasurementError(
-            "New measurement output requires schema version 8 with required Boolean normalization evidence and wire provenance separated from exact analyzer observations. Re-run scripts/run_third_party_sqli_measurement.py on current main instead of writing a legacy v4, v5, v6, or v7 fixture."
+            "New measurement output requires schema version 9 with the current confirmation predicate-pair stability precedence and exact analyzer evidence. Re-run scripts/run_third_party_sqli_measurement.py on current main instead of writing a legacy v4 through v8 fixture."
         )
     resolved = path.resolve()
     if resolved == ROOT or ROOT in resolved.parents:

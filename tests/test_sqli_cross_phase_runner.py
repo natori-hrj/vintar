@@ -127,7 +127,7 @@ def run_case(
         (
             "not_confirmed",
             ConfirmationStatus.INCONCLUSIVE,
-            "candidate_confirmation_mismatch",
+            "confirmation_unstable",
             18,
         ),
         (
@@ -171,8 +171,11 @@ def test_runner_cross_phase_contract(
         assert outcome.confirmation_requests == 12
         assert outcome.evidence is None
 
-    if mode in ("stable", "not_confirmed"):
+    if mode == "stable":
         assert outcome.evidence is not None
+
+    if mode == "not_confirmed":
+        assert outcome.evidence is None
 
 
 def test_mismatch_outcome_rejects_invalid_direct_construction():

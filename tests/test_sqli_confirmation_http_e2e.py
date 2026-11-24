@@ -448,8 +448,8 @@ def test_confirmation_over_real_http(
 
     if expected is ConfirmationStatus.INCONCLUSIVE:
         if mode == "simple":
-            assert outcome.evidence is not None
-            assert outcome.reason_code == "candidate_confirmation_mismatch"
+            assert outcome.evidence is None
+            assert outcome.reason_code == "confirmation_unstable"
         else:
             assert outcome.evidence is None
             assert outcome.reason_code == (

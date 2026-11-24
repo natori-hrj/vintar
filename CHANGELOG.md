@@ -13,10 +13,18 @@
 
 **Changed**
 
+- Report `confirmation_unstable` when independently reviewed Boolean TRUE or FALSE
+  predicate pairs do not reproduce each other; reserve
+  `candidate_confirmation_mismatch` for stable pairs whose remaining relation
+  differs. Manual third-party measurement reports now use schema version 9 so
+  reports written under the previous v8 confirmation precedence must be
+  remeasured rather than reinterpreted. The docs-bound reviewed fixture retains
+  v8 precedence until a real v9 report replaces it, at which point the v8
+  compatibility path can be removed.
 - Normalize only context-bound echoes of complete Boolean SQLi probe values
   before response comparison, preserving status codes and unrelated response
   differences while reducing reflection-only non-decisions. Manual third-party
-  measurement reports now use schema version 8 and require per-probe Boolean
+  measurement reports require per-probe Boolean
   normalization status and echo counts.
 - Replace the reviewed third-party SQLi evaluation fixture with a real schema
   version 8 measurement containing request-ordered wire and analyzer evidence,
