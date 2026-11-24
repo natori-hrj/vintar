@@ -13,6 +13,11 @@
 
 **Changed**
 
+- Normalize only context-bound echoes of complete Boolean SQLi probe values
+  before response comparison, preserving status codes and unrelated response
+  differences while reducing reflection-only non-decisions. Manual third-party
+  measurement reports now use schema version 8 and require per-probe Boolean
+  normalization status and echo counts.
 - Replace the reviewed third-party SQLi evaluation fixture with a real schema
   version 7 measurement containing request-ordered wire and analyzer evidence.
 - Retain request-ordered wire provenance separately from exact analyzer

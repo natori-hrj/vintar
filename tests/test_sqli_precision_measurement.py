@@ -102,8 +102,8 @@ CASES = (
         "input-echo",
         "negative",
         "The application safely echoes the literal parameter value.",
-        Verdict.INCONCLUSIVE,
-        "unexpected_difference",
+        Verdict.NOT_DETECTED,
+        "no_boolean_difference",
     ),
     PrecisionCase(
         "synthetic-positive-small-diff",
@@ -318,10 +318,10 @@ def test_precision_confusion_table():
 
     assert {key: counts[key] for key in ("tp", "tn", "fp", "fn", "non_decision")} == {
         "tp": 3,
-        "tn": 2,
+        "tn": 3,
         "fp": 2,
         "fn": 0,
-        "non_decision": 4,
+        "non_decision": 3,
     }
 
 
@@ -338,9 +338,9 @@ def test_post_confirmation_negative_measurement():
             counts["non_decision"] += 1
 
     assert {key: counts[key] for key in ("tn", "fp", "non_decision")} == {
-        "tn": 2,
+        "tn": 3,
         "fp": 1,
-        "non_decision": 5,
+        "non_decision": 4,
     }
 
     pagination = next(

@@ -1,6 +1,12 @@
 import hashlib
+from dataclasses import replace
 
 from vintar.checks.sqli.dynamic import detect_dynamic_region
+from vintar.checks.sqli.echo_normalization import (
+    EchoInput,
+    NormalizedEcho,
+    normalize_context_bound_echoes,
+)
 from vintar.checks.sqli.models import (
     BooleanEvidence,
     Observation,
@@ -40,6 +46,7 @@ def _stable(responses: ResponsePair) -> bool:
 def _observation(
     kind: ProbeKind,
     response: HttpResult,
+    normalization: NormalizedEcho,
 ) -> Observation:
     return Observation(
         kind=kind,
@@ -48,7 +55,49 @@ def _observation(
         elapsed=response.elapsed,
         body_digest=hashlib.sha256(response.body).hexdigest(),
         truncated=response.truncated,
+        normalization_applied=normalization.applied,
+        normalized_echo_count=normalization.echo_count,
     )
+
+
+def _normalize_response_groups(
+    groups: tuple[tuple[ProbeKind, ResponsePair], ...],
+    echo_values: tuple[str, str, str] | None,
+) -> tuple[
+    tuple[tuple[ProbeKind, ResponsePair], ...],
+    tuple[NormalizedEcho, ...],
+]:
+    flattened = tuple(response for _, responses in groups for response in responses)
+    if echo_values is None:
+        normalized = tuple(NormalizedEcho(item.body, False, 0) for item in flattened)
+    else:
+        if (
+            type(echo_values) is not tuple
+            or len(echo_values) != 3
+            or any(type(value) is not str for value in echo_values)
+        ):
+            raise TypeError(
+                "echo_values must contain the complete baseline, TRUE, and FALSE "
+                "parameter values; pass the values used to build the requests."
+            )
+        values = tuple(value for value in echo_values for _ in range(2))
+        normalized = normalize_context_bound_echoes(
+            tuple(
+                EchoInput(response.body, value)
+                for response, value in zip(flattened, values, strict=True)
+            )
+        )
+    normalized_responses = tuple(
+        replace(response, body=item.body)
+        for response, item in zip(flattened, normalized, strict=True)
+    )
+    rebuilt: list[tuple[ProbeKind, ResponsePair]] = []
+    for index, (kind, _) in enumerate(groups):
+        offset = index * 2
+        rebuilt.append(
+            (kind, (normalized_responses[offset], normalized_responses[offset + 1]))
+        )
+    return tuple(rebuilt), normalized
 
 
 def analyze_boolean_responses(
@@ -56,6 +105,8 @@ def analyze_boolean_responses(
     baseline: ResponsePair,
     true_responses: ResponsePair,
     false_responses: ResponsePair,
+    *,
+    echo_values: tuple[str, str, str] | None = None,
 ) -> VerificationResult:
     """Analyze six completed, authorized Boolean SQLi probes.
 
@@ -66,16 +117,24 @@ def analyze_boolean_responses(
     true_responses = _validate_response_pair("true_responses", true_responses)
     false_responses = _validate_response_pair("false_responses", false_responses)
 
-    groups = (
+    groups: tuple[tuple[ProbeKind, ResponsePair], ...] = (
         (ProbeKind.BASELINE, baseline),
         (ProbeKind.TRUE, true_responses),
         (ProbeKind.FALSE, false_responses),
     )
+    groups, normalizations = _normalize_response_groups(groups, echo_values)
+    baseline = groups[0][1]
+    true_responses = groups[1][1]
+    false_responses = groups[2][1]
 
     observations = tuple(
-        _observation(kind, response)
-        for kind, responses in groups
-        for response in responses
+        _observation(kind, response, normalization)
+        for (kind, responses), group_normalizations in zip(
+            groups,
+            (normalizations[0:2], normalizations[2:4], normalizations[4:6]),
+            strict=True,
+        )
+        for response, normalization in zip(responses, group_normalizations, strict=True)
     )
 
     def result(

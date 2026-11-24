@@ -61,6 +61,43 @@ def _probe_error(exc: httpx.RequestError) -> ProbeError:
     return ProbeError.UNKNOWN
 
 
+def query_value_at_point(template: RequestTemplate, point: InjectionPoint) -> str:
+    occurrence = 0
+    for name, value in template.params:
+        if name != point.name:
+            continue
+        if occurrence == point.occurrence:
+            return value
+        occurrence += 1
+    raise ValueError(
+        "The Boolean injection target disappeared after preflight. Check the "
+        "request template and injection occurrence instead of executing probes."
+    )
+
+
+def _emit_in_request_order(
+    sink: SqliObservationSink | None,
+    plan: tuple[tuple[ProbeKind, RequestTemplate], ...],
+    observations: tuple[Observation, ...],
+) -> None:
+    by_kind = {
+        kind: [item for item in observations if item.kind is kind] for kind in ProbeKind
+    }
+    offsets = {kind: 0 for kind in ProbeKind}
+    for sequence, (kind, _) in enumerate(plan, start=1):
+        index = offsets[kind]
+        if index >= len(by_kind[kind]):
+            break
+        emit_observation(
+            sink,
+            family="boolean",
+            sequence=sequence,
+            kind=kind.value,
+            observation=by_kind[kind][index],
+        )
+        offsets[kind] += 1
+
+
 def verify_boolean_sqli(
     *,
     check_id: str,
@@ -173,16 +210,10 @@ def verify_boolean_sqli(
 
         observation = _observation(kind, response)
         observations.append(observation)
-        emit_observation(
-            observation_sink,
-            family="boolean",
-            sequence=len(observations),
-            kind=kind.value,
-            observation=observation,
-        )
         responses[kind].append(response)
 
         if response.status_code == 429:
+            _emit_in_request_order(observation_sink, plan, tuple(observations))
             return VerificationResult(
                 check_id=check_id,
                 verdict=Verdict.INCONCLUSIVE,
@@ -196,6 +227,7 @@ def verify_boolean_sqli(
             )
 
     if failures:
+        _emit_in_request_order(observation_sink, plan, tuple(observations))
         return VerificationResult(
             check_id=check_id,
             verdict=Verdict.INCONCLUSIVE,
@@ -206,9 +238,16 @@ def verify_boolean_sqli(
             reason="A probe failed before verification completed.",
         )
 
-    return analyze_boolean_responses(
+    result = analyze_boolean_responses(
         check_id=check_id,
         baseline=(responses[ProbeKind.BASELINE][0], responses[ProbeKind.BASELINE][1]),
         true_responses=(responses[ProbeKind.TRUE][0], responses[ProbeKind.TRUE][1]),
         false_responses=(responses[ProbeKind.FALSE][0], responses[ProbeKind.FALSE][1]),
+        echo_values=(
+            query_value_at_point(template, point),
+            query_value_at_point(true_template, point),
+            query_value_at_point(false_template, point),
+        ),
     )
+    _emit_in_request_order(observation_sink, plan, result.observations)
+    return result

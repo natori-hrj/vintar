@@ -113,19 +113,25 @@ Version 4 moves the former `target` object to target-id-keyed `targets`, adds
 `target_id` to every record, moves the former counts tree to `counts.overall`, and
 adds the same complete tree for each target under `counts.by_target`.
 
-The reviewed fixture and new runs use version 7. Each record adds
+The reviewed fixture remains the real version 7 measurement. New runs use
+version 8. Each record adds
 request-ordered wire provenance with
 `sequence`, `role`, `wire_status_code`, `wire_body_size`, and
 `wire_body_sha256`. Exact production observations provide
 `analyzer_status_code` and `truncated`; Boolean, confirmation, and Error also
-provide `analyzer_body_size` and `analyzer_body_sha256`, Time provides
+provide `analyzer_body_size` and `analyzer_body_sha256`. Every Boolean and
+confirmation entry in v8 requires `normalization_applied` and
+`normalized_echo_count`: the boolean says whether context-bound complete-value
+echo normalization changed the analyzer body, and the integer counts the
+normalized echo sites. Time provides
 `outcome`, and Error provides sorted `matches` whose entries contain only
 `dbms` and `signature_id`. Equality and repeat-pair stability flags are derived
 from analyzer digests. The report never stores bodies, payloads, headers,
-cookies, matched text, or URLs with query values. The writer requires v7.
-Versions 5 and 6 used wire-derived analytical facts
-that are unreliable under content encoding and must be regenerated. Versions 1
-through 3 and mixed shapes are rejected rather than inferred or upgraded.
+cookies, matched text, or URLs with query values. The writer requires v8.
+Versions 5 and 6 used wire-derived analytical facts that are unreliable under
+content encoding, while v7 lacks required Boolean normalization evidence; all
+must be regenerated for new output. Versions 1 through 3 and mixed shapes are
+rejected rather than inferred or upgraded.
 
 Reviewed report schema version: `7`.
 
