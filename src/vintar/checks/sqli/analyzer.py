@@ -9,7 +9,7 @@ from vintar.checks.sqli.decision_facts import (
     PairLocalization,
     ResponseDynamicsDecisionFacts,
     UnstablePairFacts,
-    response_operational_condition,
+    select_initial_response_stop,
 )
 from vintar.checks.sqli.dynamic import detect_dynamic_region
 from vintar.checks.sqli.echo_normalization import (
@@ -175,51 +175,30 @@ def analyze_boolean_responses(
     for kind in BOOLEAN_PROBE_ORDER:
         ordered.append(observations_by_kind[kind][offsets[kind]])
         offsets[kind] += 1
-    ordered_observations = tuple(ordered)
-
-    for condition, reason, explanation in (
-        (
-            OperationalCondition.RATE_LIMITED,
-            "rate_limited",
-            "A probe returned HTTP 429.",
-        ),
-        (
-            OperationalCondition.TRUNCATED,
-            "truncated_response",
-            "At least one response was truncated.",
-        ),
-        (
-            OperationalCondition.NON_SUCCESS_STATUS,
-            "non_success_status",
-            "At least one probe returned a non-2xx HTTP status.",
-        ),
-    ):
-        trigger = next(
-            (
-                (index, item)
-                for index, item in enumerate(ordered_observations, start=1)
-                if response_operational_condition(
-                    item.status_code, truncated=item.truncated
-                )
-                is condition
+    stop = select_initial_response_stop(
+        (item.status_code, item.truncated) for item in ordered
+    )
+    if stop is not None:
+        sequence, condition, reason = stop
+        item = ordered[sequence - 1]
+        explanation = {
+            OperationalCondition.RATE_LIMITED: "A probe returned HTTP 429.",
+            OperationalCondition.TRUNCATED: "At least one response was truncated.",
+            OperationalCondition.NON_SUCCESS_STATUS: "At least one probe returned a non-2xx HTTP status.",
+        }[condition]
+        return result(
+            Verdict.INCONCLUSIVE,
+            reason,
+            explanation,
+            decision_facts=OperationalDecisionFacts(
+                reason_code=reason,
+                stage=DecisionStage.INITIAL,
+                sequence=sequence,
+                probe_kind=item.kind,
+                condition=condition,
+                status_code=item.status_code,
             ),
-            None,
         )
-        if trigger is not None:
-            sequence, item = trigger
-            return result(
-                Verdict.INCONCLUSIVE,
-                reason,
-                explanation,
-                decision_facts=OperationalDecisionFacts(
-                    reason_code=reason,
-                    stage=DecisionStage.INITIAL,
-                    sequence=sequence,
-                    probe_kind=item.kind,
-                    condition=condition,
-                    status_code=item.status_code,
-                ),
-            )
 
     unstable_pairs = [
         (kind, responses, detect_dynamic_region(responses[0], responses[1]))

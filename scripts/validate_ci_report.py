@@ -33,7 +33,7 @@ from vintar.checks.sqli.decision_facts import (
     TimingDynamicsDecisionFacts,
     TimingInstabilityCause,
     UnstablePairFacts,
-    response_operational_condition,
+    select_initial_response_stop,
 )
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
@@ -89,14 +89,6 @@ class _ContradictoryDecisionFacts(ValueError):
     """Decision facts disagree with the recorded verification evidence."""
 
 
-def _matches_response_condition(
-    condition: OperationalCondition, observation: dict[str, object]
-) -> bool:
-    return condition is response_operational_condition(
-        observation["status_code"], truncated=observation["truncated"]
-    )
-
-
 def _initial_operational_facts_match(
     facts: OperationalDecisionFacts, verification: dict[str, object]
 ) -> bool:
@@ -134,25 +126,23 @@ def _initial_operational_facts_match(
             ]
         else:
             return False
-        first_match = next(
-            (
-                index
-                for index, entry in enumerate(ordered, start=1)
-                if _matches_response_condition(condition, entry)
-            ),
-            None,
-        )
-        if sequence != first_match:
-            return False
-        observation = ordered[sequence - 1]
+        offset = 0
     else:
-        if sequence != len(observations):
-            return False
-        observation = observations[sequence - 1]
+        ordered = observations[-1:]
+        offset = len(observations) - 1
+    stop = select_initial_response_stop(
+        (entry["status_code"], entry["truncated"]) for entry in ordered
+    )
+    if stop is None:
+        return False
+    expected_sequence, expected_condition, expected_reason = stop
+    observation = ordered[expected_sequence - 1]
     return (
-        facts.probe_kind == observation["kind"]
+        sequence == expected_sequence + offset
+        and condition is expected_condition
+        and facts.reason_code == expected_reason
+        and facts.probe_kind == observation["kind"]
         and facts.status_code == observation["status_code"]
-        and _matches_response_condition(condition, observation)
     )
 
 
@@ -368,9 +358,15 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
     elif isinstance(parsed, ResponseDynamicsDecisionFacts):
         matches = _dynamics_facts_match(parsed, verification)
     if not matches:
+        precedence_guidance = (
+            " The initial reason and position must follow analyzer precedence."
+            if isinstance(parsed, OperationalDecisionFacts)
+            and parsed.stage is DecisionStage.INITIAL
+            else ""
+        )
         raise _ContradictoryDecisionFacts(
-            "Decision facts contradict recorded observations or request accounting. "
-            "Regenerate the report with Vintar."
+            "Decision facts contradict recorded observations or request accounting."
+            f"{precedence_guidance} Regenerate the report with Vintar."
         )
 
 

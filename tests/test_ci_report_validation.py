@@ -232,6 +232,67 @@ def test_completed_boolean_rate_limit_facts_must_match_first_429(
         _validate(write_report(tmp_path, report), 3)
 
 
+@pytest.mark.parametrize(
+    ("earlier", "later"),
+    [
+        ("non_success_status", "rate_limited"),
+        ("truncated_response", "rate_limited"),
+        ("non_success_status", "truncated_response"),
+    ],
+)
+def test_completed_boolean_facts_must_use_highest_precedence_reason(
+    tmp_path, earlier, later
+):
+    responses = {
+        "non_success_status": _response(status_code=503),
+        "truncated_response": _response(truncated=True),
+        "rate_limited": _response(status_code=429, truncated=True),
+    }
+    normal = _response()
+    verification = analyze_boolean_responses(
+        "case-one",
+        baseline=(responses[earlier], normal),
+        true_responses=(normal, normal),
+        false_responses=(responses[later], normal),
+    )
+    report = _report_for_verification(verification)
+    outcome = report["outcomes"][0]
+    facts = outcome["decision_facts"]
+    assert outcome["actual_reason_code"] == later
+    assert facts["sequence"] == 3
+    _validate(write_report(tmp_path, report), 3)
+
+    outcome["actual_reason_code"] = outcome["verification"]["reason_code"] = earlier
+    facts.update(
+        sequence=1,
+        probe_kind="baseline",
+        condition="truncated" if earlier == "truncated_response" else earlier,
+        status_code=responses[earlier].status_code,
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"reason and position must follow analyzer precedence.*Regenerate",
+    ):
+        _validate(write_report(tmp_path, report), 3)
+
+
+def test_early_stopped_boolean_facts_must_match_last_response_condition(tmp_path):
+    path = Path("tests/golden/cli/verify/partial-inconclusive.json")
+    report = json.loads(path.read_text(encoding="utf-8"))["stdout_json"]
+    outcome = report["outcomes"][0]
+    outcome["verification"]["observations"][0].update(status_code=503, truncated=True)
+    outcome["actual_reason_code"] = outcome["verification"]["reason_code"] = (
+        "non_success_status"
+    )
+    outcome["decision_facts"].update(condition="non_success_status", status_code=503)
+
+    with pytest.raises(
+        ValueError,
+        match=r"reason and position must follow analyzer precedence.*Regenerate",
+    ):
+        _validate(write_report(tmp_path, report), 3)
+
+
 @pytest.mark.parametrize(("body", "status"), [(b"different", 200), (b"response", 201)])
 def test_response_dynamics_facts_reject_a_stable_pair(tmp_path, body, status):
     response = _response()

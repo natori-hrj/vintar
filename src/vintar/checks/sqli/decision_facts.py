@@ -1,5 +1,6 @@
 """Bounded, non-sensitive facts explaining SQLi non-decisions."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -44,6 +45,25 @@ def response_operational_condition(
         return OperationalCondition.TRUNCATED
     if not 200 <= status_code < 300:
         return OperationalCondition.NON_SUCCESS_STATUS
+    return None
+
+
+def select_initial_response_stop(
+    responses: Iterable[tuple[int, bool]],
+) -> tuple[int, OperationalCondition, str] | None:
+    """Return the first request in the highest-priority response condition."""
+    first_by_condition: dict[OperationalCondition, int] = {}
+    for sequence, (status_code, truncated) in enumerate(responses, start=1):
+        condition = response_operational_condition(status_code, truncated=truncated)
+        if condition is not None:
+            first_by_condition.setdefault(condition, sequence)
+    for condition, reason in (
+        (OperationalCondition.RATE_LIMITED, "rate_limited"),
+        (OperationalCondition.TRUNCATED, "truncated_response"),
+        (OperationalCondition.NON_SUCCESS_STATUS, "non_success_status"),
+    ):
+        if condition in first_by_condition:
+            return first_by_condition[condition], condition, reason
     return None
 
 
