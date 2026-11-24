@@ -13,12 +13,14 @@
 
 **Changed**
 
+- Replace the reviewed third-party SQLi evaluation fixture with a real schema
+  version 7 measurement containing request-ordered wire and analyzer evidence.
 - Retain request-ordered wire provenance separately from exact analyzer
   observations, truncation, and reviewed Error signature-match evidence in
   version 7 of the manual third-party SQLi measurement report.
 - Use sqli-dojo confirmation payloads that avoid characters filtered by the fixture target.
 - Render a cross-target DBMS and technique matrix with observed non-decisions
-  from the validated v4 report. Select documentation drift tests with `-m doc_drift`.
+  from the validated report. Select documentation drift tests with `-m doc_drift`.
 
 - Generalize the manual third-party SQLi evaluation harness to declaration
   version 2 and report version 4, with target-bound provenance and both overall
