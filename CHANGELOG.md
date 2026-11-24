@@ -19,7 +19,8 @@
   measurement reports now use schema version 8 and require per-probe Boolean
   normalization status and echo counts.
 - Replace the reviewed third-party SQLi evaluation fixture with a real schema
-  version 7 measurement containing request-ordered wire and analyzer evidence.
+  version 8 measurement containing request-ordered wire and analyzer evidence,
+  including the observed Boolean echo-normalization results.
 - Retain request-ordered wire provenance separately from exact analyzer
   observations, truncation, and reviewed Error signature-match evidence in
   version 7 of the manual third-party SQLi measurement report.
