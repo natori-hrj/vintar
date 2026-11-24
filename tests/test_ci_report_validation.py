@@ -200,6 +200,38 @@ def test_initial_analysis_facts_use_request_order_for_completed_plan(
         _validate(write_report(tmp_path, report), 3)
 
 
+@pytest.mark.parametrize("last_is_also_rate_limited", [False, True])
+def test_completed_boolean_rate_limit_facts_must_match_first_429(
+    tmp_path, last_is_also_rate_limited
+):
+    normal = _response()
+    rate_limited = _response(status_code=429, truncated=True)
+    verification = analyze_boolean_responses(
+        "case-one",
+        baseline=(_response(status_code=503), normal),
+        true_responses=(
+            _response(truncated=True),
+            rate_limited if last_is_also_rate_limited else normal,
+        ),
+        false_responses=(rate_limited, normal),
+    )
+    report = _report_for_verification(verification)
+    facts = report["outcomes"][0]["decision_facts"]
+    assert facts == {
+        "category": "operational",
+        "stage": "initial",
+        "sequence": 3,
+        "probe_kind": "false",
+        "condition": "rate_limited",
+        "status_code": 429,
+    }
+    _validate(write_report(tmp_path, report), 3)
+
+    facts.update(sequence=6, probe_kind="true")
+    with pytest.raises(ValueError, match=_OBSERVATION_CONTRADICTION):
+        _validate(write_report(tmp_path, report), 3)
+
+
 @pytest.mark.parametrize(("body", "status"), [(b"different", 200), (b"response", 201)])
 def test_response_dynamics_facts_reject_a_stable_pair(tmp_path, body, status):
     response = _response()

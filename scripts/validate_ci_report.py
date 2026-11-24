@@ -120,24 +120,29 @@ def _initial_operational_facts_match(
         )
     if failures or sequence > len(observations):
         return False
-    if (
-        condition is not OperationalCondition.RATE_LIMITED
-        and len(observations) == len(BOOLEAN_PROBE_ORDER)
-        and tuple(entry["kind"] for entry in observations)
-        == tuple(kind for kind in ProbeKind for _ in range(2))
-    ):
-        # The analyzer records completed responses grouped by kind, but reports
-        # the first triggering response in the original request order.
-        by_kind = iter(observations)
-        pairs = {kind: (next(by_kind), next(by_kind)) for kind in ProbeKind}
-        ordered = [
-            pairs[kind][BOOLEAN_PROBE_ORDER[:index].count(kind)]
-            for index, kind in enumerate(BOOLEAN_PROBE_ORDER)
-        ]
-        if any(
-            _matches_response_condition(condition, entry)
-            for entry in ordered[: sequence - 1]
-        ):
+    if len(observations) == len(BOOLEAN_PROBE_ORDER):
+        kinds = tuple(entry["kind"] for entry in observations)
+        if kinds == BOOLEAN_PROBE_ORDER:
+            ordered = observations
+        elif kinds == tuple(kind for kind in ProbeKind for _ in range(2)):
+            # Completed analyzer observations are grouped by kind.
+            by_kind = iter(observations)
+            pairs = {kind: (next(by_kind), next(by_kind)) for kind in ProbeKind}
+            ordered = [
+                pairs[kind][BOOLEAN_PROBE_ORDER[:index].count(kind)]
+                for index, kind in enumerate(BOOLEAN_PROBE_ORDER)
+            ]
+        else:
+            return False
+        first_match = next(
+            (
+                index
+                for index, entry in enumerate(ordered, start=1)
+                if _matches_response_condition(condition, entry)
+            ),
+            None,
+        )
+        if sequence != first_match:
             return False
         observation = ordered[sequence - 1]
     else:
