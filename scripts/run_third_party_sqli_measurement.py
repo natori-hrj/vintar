@@ -2452,6 +2452,7 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
     """Reject actual results that differ from the committed reviewed summary."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
+    validate_measurement_report(report)
     try:
         text = documentation.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -2465,7 +2466,6 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
         raise MeasurementError(
             f"The reviewed documentation is bound to report schema version {found}, but fixture schema_version has JSON type {_json_type(report_version)} outside the bound version. Expected the integer specified by the docs binding. After a real measurement, update the documented schema binding and fixture together; do not fabricate or silently upgrade evidence."
         )
-    validate_measurement_report(report)
     expected = _render_summary(report)
     if expected not in text:
         raise MeasurementError(

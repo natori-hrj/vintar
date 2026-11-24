@@ -2203,15 +2203,35 @@ def test_documented_summary_rejects_non_object_reports(report, tmp_path):
         runner.check_documented_summary(report, tmp_path / "missing.md")
 
 
-@pytest.mark.doc_drift
-def test_documented_schema_binding_rejects_legacy_v4_fixture():
+@pytest.mark.parametrize("version", [5, 6, 7, 8])
+def test_documented_summary_rejects_outdated_report_before_binding(version, tmp_path):
     runner = load_runner()
+    report = {"schema_version": version}
+    documentation = tmp_path / "evaluation.md"
+    documentation.write_text("Reviewed report schema version: `9`.\n", encoding="utf-8")
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"bound to report schema version 9.*update.*binding and fixture together",
+        match=r"Re-run scripts/run_third_party_sqli_measurement.py.*schema version 9",
+    ) as public_error:
+        runner.validate_measurement_report(report)
+    with pytest.raises(runner.MeasurementError) as docs_error:
+        runner.check_documented_summary(report, documentation)
+    assert str(docs_error.value) == str(public_error.value)
+
+
+def test_documented_schema_binding_rejects_valid_report_at_wrong_version(tmp_path):
+    runner = load_runner()
+    report = v9_report_from_legacy_v4(runner)
+    documentation = tmp_path / "evaluation.md"
+    documentation.write_text("Reviewed report schema version: `8`.\n", encoding="utf-8")
+
+    assert runner.validate_measurement_report(report) is report
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"bound to report schema version 8.*update.*binding and fixture together",
     ):
-        runner.check_documented_summary(legacy_v4_report())
+        runner.check_documented_summary(report, documentation)
 
 
 def test_v9_serialization_excludes_payloads_and_response_bodies():
