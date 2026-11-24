@@ -5,12 +5,16 @@ import hashlib
 import importlib.util
 import json
 import re
+import socketserver
 import sys
 import tarfile
 import threading
 import tomllib
+import traceback
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -34,7 +38,7 @@ from vintar.checks.sqli.error_analyzer import (
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES, ErrorAnalysisStatus
 from vintar.checks.sqli.models import Observation, ProbeKind, Verdict
 from vintar.checks.sqli.observation_sink import RecordedSqliObservation
-from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
+from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER, verify_boolean_sqli
 from vintar.checks.sqli.presets import get_boolean_confirmation_preset
 from vintar.checks.sqli.time_analyzer import TimeObservation, TimeProbeOutcome
 from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER, TimeProbeKind
@@ -2894,6 +2898,265 @@ def test_v6_http_response_recorder_retains_only_sanitized_facts():
     assert content_length == runner.RecordedResponse(200, 4, expected_digest)
     assert chunked == runner.RecordedResponse(500, 4, expected_digest)
     assert not hasattr(content_length, "body")
+
+
+def test_bridge_rejects_extra_content_length_and_chunked_frames():
+    runner = load_runner()
+    message = r"records one HTTP response per TCP connection.*keep-alive client.*measurement_http_transport\(\).*keep-alive disabled"
+
+    with pytest.raises(runner.MeasurementError, match=message):
+        runner._parse_http_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nextra"
+        )
+    with pytest.raises(runner.MeasurementError, match=message):
+        runner._parse_http_response(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+            b"4\r\nbody\r\n0\r\n\r\n"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nextra"
+        )
+
+
+def test_bridge_skips_one_or_more_interim_responses_before_final_response():
+    runner = load_runner()
+    expected_digest = hashlib.sha256(b"body").hexdigest()
+
+    one_interim = runner._parse_http_response(
+        b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n"
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
+    )
+    multiple_interim = runner._parse_http_response(
+        b"HTTP/1.1 100 Continue\r\n\r\n"
+        b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n"
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
+    )
+
+    expected = runner.RecordedResponse(200, 4, expected_digest)
+    assert one_interim == expected
+    assert multiple_interim == expected
+
+
+def test_bridge_rejects_extra_frame_after_interim_and_final_response():
+    runner = load_runner()
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"records one HTTP response per TCP connection.*keep-alive client.*measurement_http_transport",
+    ):
+        runner._parse_http_response(
+            b"HTTP/1.1 103 Early Hints\r\n\r\n"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nextra"
+        )
+
+
+def test_bridge_rejects_protocol_upgrade_and_truncated_interim_headers():
+    runner = load_runner()
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"does not support HTTP 101 protocol upgrades.*non-upgrade response",
+    ):
+        runner._parse_http_response(
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"
+        )
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"complete HTTP response header.*target transport.*rerun",
+    ):
+        runner._parse_http_response(
+            b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload"
+        )
+
+
+@pytest.mark.parametrize("status_code", [204, 304])
+def test_bridge_records_no_body_final_statuses(status_code):
+    runner = load_runner()
+
+    response = runner._parse_http_response(
+        f"HTTP/1.1 {status_code} No Body\r\nContent-Length: 0\r\n\r\n".encode()
+    )
+
+    assert response == runner.RecordedResponse(
+        status_code,
+        0,
+        hashlib.sha256(b"").hexdigest(),
+    )
+
+
+class _KeepAliveUpstream(socketserver.ThreadingTCPServer):
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def __init__(self) -> None:
+        self.requests: list[str] = []
+        self.requests_lock = threading.Lock()
+        super().__init__(("127.0.0.1", 0), _KeepAliveHandler)
+
+
+class _KeepAliveHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        value = parse_qs(urlsplit(self.path).query)["id"][0]
+        body = b"false" if "1=2" in value else b"baseline-or-true"
+        server = self.server
+        if not isinstance(server, _KeepAliveUpstream):
+            raise TypeError("Unexpected keep-alive test server.")
+        with server.requests_lock:
+            server.requests.append(value)
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def _run_six_probes_through_bridge(runner, transport):
+    upstream = _KeepAliveUpstream()
+    started = threading.Event()
+
+    def serve() -> None:
+        started.set()
+        upstream.serve_forever(poll_interval=0.01)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    assert started.wait(timeout=5), (
+        "The keep-alive upstream did not start; check Event synchronization instead of adding a sleep."
+    )
+    target = SimpleNamespace(
+        target_id="fixed-keep-alive",
+        service_port=upstream.server_address[1],
+    )
+    collector = runner.ObservationCollector()
+    try:
+        with runner.loopback_bridge("127.0.0.1", target) as (origin, bridge):
+            context = ExecutionContext(
+                scope=ScopePolicy(
+                    allowed_origins=frozenset(
+                        {
+                            AllowedOrigin(
+                                "http", "127.0.0.1", int(origin.rsplit(":", 1)[1])
+                            )
+                        }
+                    )
+                ),
+                budget=RequestBudget(6),
+                rate_limiter=RateLimiter(requests_per_second=100),
+            )
+            result = verify_boolean_sqli(
+                check_id="fixed-keep-alive-six-probe",
+                template=RequestTemplate(
+                    method="GET",
+                    url=origin + "/lookup",
+                    params=(("id", "2"),),
+                ),
+                point=InjectionPoint(
+                    location=InjectionLocation.QUERY,
+                    name="id",
+                    mode=InjectionMode.APPEND,
+                ),
+                true_payload=" AND 1=1-- ",
+                false_payload=" AND 1=2-- ",
+                context=context,
+                transport=transport,
+                observation_sink=collector,
+            )
+            responses = bridge.recorded_responses(6)
+            observations = collector.ordered(6)
+            return result, bridge, responses, observations, tuple(upstream.requests)
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive(), (
+            "The keep-alive upstream did not stop; check handler lifecycle instead of adding a sleep."
+        )
+
+
+def test_measurement_transport_records_one_connection_per_probe():
+    runner = load_runner()
+
+    with runner.measurement_http_transport() as transport:
+        result, bridge, responses, observations, requests = (
+            _run_six_probes_through_bridge(runner, transport)
+        )
+
+    assert result.request_count == 6
+    assert bridge.recorder.next_sequence == 6
+    assert tuple(sorted(bridge.recorder.responses)) == tuple(range(6))
+    assert len(responses) == len(observations) == len(requests) == 6
+    assert all(
+        response.status_code == recorded.observation.status_code
+        and response.body_size == recorded.observation.body_size
+        and response.body_sha256 == recorded.observation.body_digest
+        for response, recorded in zip(responses, observations, strict=True)
+    )
+    assert tuple(recorded.kind for recorded in observations) == tuple(
+        kind.value for kind in BOOLEAN_PROBE_ORDER
+    )
+
+
+def test_keep_alive_transport_fails_closed_on_second_exchange():
+    runner = load_runner()
+
+    with (
+        pytest.raises(
+            runner.MeasurementError,
+            match=r"records one HTTP response per TCP connection.*pooled or keep-alive client.*measurement_http_transport\(\).*keep-alive disabled",
+        ),
+        httpx.HTTPTransport() as transport,
+    ):
+        _run_six_probes_through_bridge(runner, transport)
+
+
+def test_measurement_transport_factory_disables_keep_alive(monkeypatch):
+    runner = load_runner()
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_transport(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(runner.httpx, "HTTPTransport", fake_transport)
+
+    assert runner.measurement_http_transport() is sentinel
+    limits = captured["limits"]
+    assert isinstance(limits, httpx.Limits)
+    assert limits.max_keepalive_connections == 0
+
+
+def test_bridge_handler_parse_failure_preserves_redacted_cause_and_sequence():
+    runner = load_runner()
+    target = SimpleNamespace(target_id="fixed-diagnostic", service_port=1)
+    sentinel = "SENTINEL-SECRET-7f3a"
+    malformed = (
+        b"HTTP/1.1 200 OK\r\nContent-Length: " + sentinel.encode() + b"\r\n\r\nbody"
+    )
+
+    with (
+        pytest.raises(
+            runner.MeasurementError,
+            match=r"handler failed at sequence 0 with MeasurementError.*rejected invalid HTTP framing or request sequencing.*Accepted sequences: \[0\]; completed sequences: \[\]",
+        ) as caught,
+        runner.loopback_bridge("127.0.0.1", target) as (_, bridge),
+    ):
+        request = object()
+        sequence = bridge.recorder.accept()
+        bridge.accepted_sequences[id(request)] = sequence
+        try:
+            runner._parse_http_response(malformed)
+        except runner.MeasurementError:
+            bridge.handle_error(request, ("127.0.0.1", 1))
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    assert sentinel not in str(caught.value)
+    assert sentinel not in "".join(traceback.format_exception(caught.value))
 
 
 def test_bridge_records_responses_by_acceptance_sequence_not_completion_order():
