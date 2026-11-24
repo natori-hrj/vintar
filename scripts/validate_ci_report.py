@@ -9,10 +9,22 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
-from vintar.checks.sqli.confirmation import confirmation_eligible
+from vintar.checks.sqli.confirmation import ConfirmationKind, confirmation_eligible
 from vintar.checks.sqli.confirmation_runner import (
     CONFIRMATION_RESULT_RULES,
     ConfirmationStatus,
+)
+from vintar.checks.sqli.decision_facts import (
+    DECISION_FACT_CATEGORY_REASONS,
+    ConfirmationRelation,
+    ConfirmationRelationDecisionFacts,
+    DecisionStage,
+    OperationalCondition,
+    OperationalDecisionFacts,
+    PairLocalization,
+    PredicatePair,
+    ResponseDynamicsDecisionFacts,
+    UnstablePairFacts,
 )
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
@@ -59,6 +71,95 @@ _OPERATIONAL_CONFIRMATION_REASONS = frozenset(
     if rule.status is ConfirmationStatus.INCONCLUSIVE
     and reason != "candidate_confirmation_mismatch"
 )
+_DECISION_FACT_CATEGORY_REASONS = DECISION_FACT_CATEGORY_REASONS
+
+
+def _validate_decision_facts(item: dict[str, object]) -> None:
+    facts = item.get("decision_facts")
+    if facts is None:
+        return
+    if not isinstance(facts, dict):
+        raise TypeError("Invalid decision facts. Supply one bounded facts object.")
+    reason = item.get("actual_reason_code")
+    category = facts.get("category")
+    if (
+        type(category) is not str
+        or type(reason) is not str
+        or reason not in _DECISION_FACT_CATEGORY_REASONS.get(category, ())
+    ):
+        raise ValueError(
+            "Decision fact category contradicts the final reason. Use the category "
+            "produced by the same checks-layer decision."
+        )
+    try:
+        if category == "operational":
+            stage = DecisionStage(facts["stage"])
+            kind_value = facts["probe_kind"]
+            probe_kind = (
+                ProbeKind(kind_value)
+                if stage is DecisionStage.INITIAL
+                else ConfirmationKind(kind_value)
+            )
+            condition_value = facts["condition"]
+            try:
+                condition = ProbeError(condition_value)
+            except ValueError:
+                condition = OperationalCondition(condition_value)
+            parsed = OperationalDecisionFacts(
+                reason_code=reason,
+                stage=stage,
+                sequence=facts["sequence"],
+                probe_kind=probe_kind,
+                condition=condition,
+                status_code=facts.get("status_code"),
+            )
+        elif category == "response_dynamics":
+            parsed = ResponseDynamicsDecisionFacts(
+                reason_code=reason,
+                normalization_applied=facts["normalization_applied"],
+                normalized_echo_count=facts["normalized_echo_count"],
+                unstable_pairs=tuple(
+                    UnstablePairFacts(
+                        probe_kind=ProbeKind(pair["probe_kind"]),
+                        localization=PairLocalization(pair["localization"]),
+                        prefix_size=pair.get("prefix_size"),
+                        suffix_size=pair.get("suffix_size"),
+                        first_changed_size=pair.get("first_changed_size"),
+                        second_changed_size=pair.get("second_changed_size"),
+                    )
+                    for pair in facts["unstable_pairs"]
+                ),
+            )
+        elif category == "confirmation_relation":
+            parsed = ConfirmationRelationDecisionFacts(
+                reason_code=reason,
+                unstable_repeat_kinds=tuple(
+                    ConfirmationKind(value) for value in facts["unstable_repeat_kinds"]
+                ),
+                unreproduced_predicate_pairs=tuple(
+                    PredicatePair(value)
+                    for value in facts["unreproduced_predicate_pairs"]
+                ),
+                mismatched_relations=tuple(
+                    ConfirmationRelation(value)
+                    for value in facts["mismatched_relations"]
+                ),
+                cross_phase_mismatched_kinds=tuple(
+                    ProbeKind(value) for value in facts["cross_phase_mismatched_kinds"]
+                ),
+            )
+        else:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(
+            "Invalid decision facts for the final reason. Use the bounded facts "
+            "produced by the same checks-layer decision."
+        ) from None
+    if parsed.reason_code != reason:
+        raise ValueError(
+            "Decision facts contradict the final reason. Use facts produced by the "
+            "same checks-layer decision."
+        )
 
 
 def _read_report(path: Path) -> bytes:
@@ -334,6 +435,7 @@ def _validate(
     for item in outcomes:
         verdict = item["actual_verdict"]
         matched = item["expectation_match"]
+        _validate_decision_facts(item)
         if item.get("check_type") == "sqli.time":
             timing = item["timing"]
             reason = timing["reason_code"]

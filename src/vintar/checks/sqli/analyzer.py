@@ -1,6 +1,15 @@
 import hashlib
 from dataclasses import replace
 
+from vintar.checks.sqli.decision_facts import (
+    BooleanDecisionFacts,
+    DecisionStage,
+    OperationalCondition,
+    OperationalDecisionFacts,
+    PairLocalization,
+    ResponseDynamicsDecisionFacts,
+    UnstablePairFacts,
+)
 from vintar.checks.sqli.dynamic import detect_dynamic_region
 from vintar.checks.sqli.echo_normalization import (
     EchoInput,
@@ -8,6 +17,7 @@ from vintar.checks.sqli.echo_normalization import (
     normalize_context_bound_echoes,
 )
 from vintar.checks.sqli.models import (
+    BOOLEAN_PROBE_ORDER,
     BooleanEvidence,
     Observation,
     ProbeKind,
@@ -142,6 +152,7 @@ def analyze_boolean_responses(
         reason_code: str,
         reason: str,
         evidence: BooleanEvidence | None = None,
+        decision_facts: BooleanDecisionFacts | None = None,
     ) -> VerificationResult:
         return VerificationResult(
             check_id=check_id,
@@ -151,28 +162,97 @@ def analyze_boolean_responses(
             reason_code=reason_code,
             reason=reason,
             evidence=evidence,
+            decision_facts=decision_facts,
         )
 
+    observations_by_kind = {
+        kind: tuple(item for item in observations if item.kind is kind)
+        for kind in ProbeKind
+    }
+    offsets = {kind: 0 for kind in ProbeKind}
+    ordered: list[Observation] = []
+    for kind in BOOLEAN_PROBE_ORDER:
+        ordered.append(observations_by_kind[kind][offsets[kind]])
+        offsets[kind] += 1
+    ordered_observations = tuple(ordered)
+
     if any(item.truncated for item in observations):
+        sequence, item = next(
+            (index, item)
+            for index, item in enumerate(ordered_observations, start=1)
+            if item.truncated
+        )
         return result(
             Verdict.INCONCLUSIVE,
             "truncated_response",
             "At least one response was truncated.",
+            decision_facts=OperationalDecisionFacts(
+                reason_code="truncated_response",
+                stage=DecisionStage.INITIAL,
+                sequence=sequence,
+                probe_kind=item.kind,
+                condition=OperationalCondition.TRUNCATED,
+                status_code=item.status_code,
+            ),
         )
 
     if any(not 200 <= item.status_code < 300 for item in observations):
+        sequence, item = next(
+            (index, item)
+            for index, item in enumerate(ordered_observations, start=1)
+            if not 200 <= item.status_code < 300
+        )
         return result(
             Verdict.INCONCLUSIVE,
             "non_success_status",
             "At least one probe returned a non-2xx HTTP status.",
+            decision_facts=OperationalDecisionFacts(
+                reason_code="non_success_status",
+                stage=DecisionStage.INITIAL,
+                sequence=sequence,
+                probe_kind=item.kind,
+                condition=OperationalCondition.NON_SUCCESS_STATUS,
+                status_code=item.status_code,
+            ),
         )
 
-    unstable_pairs = [responses for _, responses in groups if not _stable(responses)]
+    unstable_pairs = [
+        (kind, responses, detect_dynamic_region(responses[0], responses[1]))
+        for kind, responses in groups
+        if not _stable(responses)
+    ]
 
     if unstable_pairs:
-        possible_dynamic = all(
-            detect_dynamic_region(responses[0], responses[1]) is not None
-            for responses in unstable_pairs
+        possible_dynamic = all(region is not None for _, _, region in unstable_pairs)
+        pair_facts = tuple(
+            UnstablePairFacts(
+                probe_kind=kind,
+                localization=(
+                    PairLocalization.LOCALIZED
+                    if region is not None
+                    else PairLocalization.UNLOCALIZED
+                ),
+                prefix_size=None if region is None else region.prefix_size,
+                suffix_size=None if region is None else region.suffix_size,
+                first_changed_size=None
+                if region is None
+                else region.first_changed_size,
+                second_changed_size=None
+                if region is None
+                else region.second_changed_size,
+            )
+            for kind, _, region in unstable_pairs
+        )
+        normalization_applied = any(item.applied for item in normalizations)
+        normalized_echo_count = sum(item.echo_count for item in normalizations)
+        dynamics_reason = (
+            "possible_dynamic_response" if possible_dynamic else "unstable_response"
+        )
+        dynamics_facts = ResponseDynamicsDecisionFacts(
+            reason_code=dynamics_reason,
+            normalization_applied=normalization_applied,
+            normalized_echo_count=normalized_echo_count,
+            unstable_pairs=pair_facts,
         )
 
         if possible_dynamic:
@@ -181,12 +261,14 @@ def analyze_boolean_responses(
                 "possible_dynamic_response",
                 "Repeated probes contain small localized "
                 "differences; no Boolean conclusion was made.",
+                decision_facts=dynamics_facts,
             )
 
         return result(
             Verdict.INCONCLUSIVE,
             "unstable_response",
             "Repeated probes produced different responses.",
+            decision_facts=dynamics_facts,
         )
 
     baseline_response = baseline[0]

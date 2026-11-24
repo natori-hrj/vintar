@@ -8,6 +8,12 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from vintar.checks.sqli import confirmation_runner
+from vintar.checks.sqli.decision_facts import (
+    DECISION_FACT_CATEGORY_REASONS,
+    DecisionStage,
+    OperationalCondition,
+    OperationalDecisionFacts,
+)
 from vintar.checks.sqli.models import (
     BooleanEvidence,
     Observation,
@@ -56,6 +62,78 @@ def test_confirmation_reason_schema_matches_runner_contract():
     )
 
 
+def test_decision_fact_reason_sets_match_schema_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    category_rules = [
+        rule
+        for rule in schema["$defs"]["outcome"]["allOf"]
+        if "decision_facts" in rule.get("if", {}).get("properties", {})
+    ]
+    actual = {
+        rule["if"]["properties"]["decision_facts"]["properties"]["category"][
+            "const"
+        ]: frozenset(rule["then"]["properties"]["actual_reason_code"]["enum"])
+        for rule in category_rules
+    }
+    assert actual == DECISION_FACT_CATEGORY_REASONS
+
+
+def test_writer_emits_bounded_decision_facts_without_sensitive_values():
+    sentinel = "SENTINEL-PAYLOAD-DO-NOT-REPORT"
+    verification = VerificationResult(
+        check_id="facts-case",
+        verdict=Verdict.INCONCLUSIVE,
+        observations=(),
+        request_count=0,
+        reason_code="budget_unavailable",
+        reason=sentinel,
+        decision_facts=OperationalDecisionFacts(
+            reason_code="budget_unavailable",
+            stage=DecisionStage.INITIAL,
+            sequence=1,
+            probe_kind=ProbeKind.BASELINE,
+            condition=OperationalCondition.BUDGET_UNAVAILABLE,
+        ),
+    )
+    outcome = RegressionOutcome(
+        case_id="facts-case",
+        expected_verdict=Verdict.INCONCLUSIVE,
+        verification=verification,
+        expectation_match=True,
+        status=RegressionStatus.INCONCLUSIVE,
+    )
+    serialized = regression_batch_report_json(make_batch(outcome))
+    report = json.loads(serialized)
+
+    assert sentinel not in serialized
+    assert report["outcomes"][0]["decision_facts"] == {
+        "category": "operational",
+        "stage": "initial",
+        "sequence": 1,
+        "probe_kind": "baseline",
+        "condition": "budget_unavailable",
+    }
+
+
+def test_result_rejects_decision_facts_for_another_reason():
+    with pytest.raises(ValueError, match="contradict"):
+        VerificationResult(
+            check_id="facts-case",
+            verdict=Verdict.INCONCLUSIVE,
+            observations=(),
+            request_count=0,
+            reason_code="probe_failed",
+            reason="Bounded diagnostic.",
+            decision_facts=OperationalDecisionFacts(
+                reason_code="budget_unavailable",
+                stage=DecisionStage.INITIAL,
+                sequence=1,
+                probe_kind=ProbeKind.BASELINE,
+                condition=OperationalCondition.BUDGET_UNAVAILABLE,
+            ),
+        )
+
+
 def make_verification(
     case_id: str,
     verdict: Verdict,
@@ -64,13 +142,25 @@ def make_verification(
     reason: str = "Internal diagnostic message.",
 ) -> VerificationResult:
     if verdict is Verdict.INCONCLUSIVE:
+        actual_reason = reason_code or "budget_unavailable"
         return VerificationResult(
             check_id=case_id,
             verdict=verdict,
             observations=(),
             request_count=0,
-            reason_code=reason_code or "budget_unavailable",
+            reason_code=actual_reason,
             reason=reason,
+            decision_facts=(
+                OperationalDecisionFacts(
+                    reason_code="budget_unavailable",
+                    stage=DecisionStage.INITIAL,
+                    sequence=1,
+                    probe_kind=ProbeKind.BASELINE,
+                    condition=OperationalCondition.BUDGET_UNAVAILABLE,
+                )
+                if actual_reason == "budget_unavailable"
+                else None
+            ),
         )
 
     observations = tuple(

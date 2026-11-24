@@ -167,6 +167,14 @@ count, and a sibling `error` object. A matched signal adds only the reviewed
 DBMS family and signature ID. Response bodies, matched text, payloads, and
 target URLs are never included.
 
+Boolean outcomes may include an additive `decision_facts` sibling for a
+non-decision. Its category is `operational`, `response_dynamics`, or
+`confirmation_relation`, and it contains only fixed enums, sequences, status
+codes, booleans, counts, and byte offsets or lengths. Legacy schema-v1 reports
+may omit it; the current writer emits it for the corresponding Boolean and
+confirmation reasons. JSON Schema and Python validation require its category
+and fields to agree with the final reason code.
+
 Access to artifacts must be restricted appropriately.
 Anyone with read access to the repository can normally download its
 Actions artifacts. Public-repository artifacts should be treated as

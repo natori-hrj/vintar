@@ -4,6 +4,13 @@ import json
 from enum import IntEnum
 
 from vintar.checks.sqli.confirmation_runner import ConfirmationStatus
+from vintar.checks.sqli.decision_facts import (
+    DECISION_FACT_REASONS,
+    ConfirmationRelationDecisionFacts,
+    OperationalDecisionFacts,
+    PairLocalization,
+    ResponseDynamicsDecisionFacts,
+)
 from vintar.checks.sqli.error_contract import error_product_result
 from vintar.checks.sqli.models import VerificationResult
 from vintar.checks.sqli.report import verification_report_dict
@@ -36,6 +43,59 @@ _CONFIRMATION_REASON_CODES = frozenset(
         "confirmation_cross_phase_mismatch",
     }
 )
+
+
+def _decision_facts_dict(facts: object) -> dict[str, object]:
+    """Serialize only bounded decision facts selected by checks-layer analysis."""
+    if isinstance(facts, OperationalDecisionFacts):
+        result: dict[str, object] = {
+            "category": "operational",
+            "stage": facts.stage.value,
+            "sequence": facts.sequence,
+            "probe_kind": facts.probe_kind.value,
+            "condition": facts.condition.value,
+        }
+        if facts.status_code is not None:
+            result["status_code"] = facts.status_code
+        return result
+    if isinstance(facts, ResponseDynamicsDecisionFacts):
+        return {
+            "category": "response_dynamics",
+            "normalization_applied": facts.normalization_applied,
+            "normalized_echo_count": facts.normalized_echo_count,
+            "unstable_pairs": [
+                {
+                    "probe_kind": item.probe_kind.value,
+                    "localization": item.localization.value,
+                    **(
+                        {
+                            "prefix_size": item.prefix_size,
+                            "suffix_size": item.suffix_size,
+                            "first_changed_size": item.first_changed_size,
+                            "second_changed_size": item.second_changed_size,
+                        }
+                        if item.localization is PairLocalization.LOCALIZED
+                        else {}
+                    ),
+                }
+                for item in facts.unstable_pairs
+            ],
+        }
+    if isinstance(facts, ConfirmationRelationDecisionFacts):
+        return {
+            "category": "confirmation_relation",
+            "unstable_repeat_kinds": [
+                item.value for item in facts.unstable_repeat_kinds
+            ],
+            "unreproduced_predicate_pairs": [
+                item.value for item in facts.unreproduced_predicate_pairs
+            ],
+            "mismatched_relations": [item.value for item in facts.mismatched_relations],
+            "cross_phase_mismatched_kinds": [
+                item.value for item in facts.cross_phase_mismatched_kinds
+            ],
+        }
+    raise TypeError("Unsupported decision facts. Serialize checks-layer facts instead.")
 
 
 class CIExitCode(IntEnum):
@@ -182,19 +242,33 @@ def regression_batch_report_dict(
                 "reason_code": confirmation.reason_code,
                 "request_count": confirmation.confirmation_requests,
             }
-        outcomes.append(
-            {
-                "case_id": outcome.case_id,
-                "expected_verdict": outcome.expected_verdict.value,
-                "actual_verdict": outcome.final_verdict.value,
-                "actual_reason_code": outcome.final_reason_code,
-                "request_count": outcome.request_count,
-                "expectation_match": outcome.expectation_match,
-                "status": outcome.status.value,
-                "verification": verification_report_dict(verification),
-                "confirmation": confirmation_report,
-            }
+        boolean_report: dict[str, object] = {
+            "case_id": outcome.case_id,
+            "expected_verdict": outcome.expected_verdict.value,
+            "actual_verdict": outcome.final_verdict.value,
+            "actual_reason_code": outcome.final_reason_code,
+            "request_count": outcome.request_count,
+            "expectation_match": outcome.expectation_match,
+            "status": outcome.status.value,
+            "verification": verification_report_dict(verification),
+            "confirmation": confirmation_report,
+        }
+        decision_facts = (
+            confirmation.decision_facts
+            if confirmation is not None and confirmation.decision_facts is not None
+            else verification.decision_facts
         )
+        if (
+            outcome.final_reason_code in DECISION_FACT_REASONS
+            and decision_facts is None
+        ):
+            raise ValueError(
+                "Boolean non-decision facts are missing. Use the checks-layer result "
+                "produced by the current runner instead of constructing report fields."
+            )
+        if decision_facts is not None:
+            boolean_report["decision_facts"] = _decision_facts_dict(decision_facts)
+        outcomes.append(boolean_report)
 
     return {
         "schema_version": BATCH_REPORT_SCHEMA_VERSION,

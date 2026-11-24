@@ -12,12 +12,18 @@ from jsonschema import Draft202012Validator, ValidationError
 from workflow_actions import collect_workflow_uses
 
 from vintar.checks.sqli import confirmation_runner
+from vintar.checks.sqli.decision_facts import (
+    DECISION_FACT_CATEGORY_REASONS,
+    DecisionStage,
+    OperationalCondition,
+    OperationalDecisionFacts,
+)
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import (
     ERROR_SIGNATURES,
     ErrorSignature,
 )
-from vintar.checks.sqli.models import Verdict, VerificationResult
+from vintar.checks.sqli.models import ProbeKind, Verdict, VerificationResult
 from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
 from vintar.regression.batch import RegressionBatchResult
 from vintar.regression.report import regression_batch_report_dict
@@ -29,6 +35,12 @@ _validate = _VALIDATOR_MODULE["_validate"]
 SCHEMA_PATH = Path("schemas/regression-batch-report-v1.schema.json")
 
 
+def test_decision_fact_reason_table_matches_python_validator():
+    assert _VALIDATOR_MODULE["_DECISION_FACT_CATEGORY_REASONS"] == (
+        DECISION_FACT_CATEGORY_REASONS
+    )
+
+
 def make_report():
     verification = VerificationResult(
         check_id="case-one",
@@ -37,6 +49,13 @@ def make_report():
         request_count=0,
         reason_code="budget_unavailable",
         reason="Internal diagnostic not for publication.",
+        decision_facts=OperationalDecisionFacts(
+            reason_code="budget_unavailable",
+            stage=DecisionStage.INITIAL,
+            sequence=1,
+            probe_kind=ProbeKind.BASELINE,
+            condition=OperationalCondition.BUDGET_UNAVAILABLE,
+        ),
     )
 
     outcome = RegressionOutcome(
@@ -57,9 +76,41 @@ def make_report():
     return regression_batch_report_dict(batch)
 
 
+def test_decision_facts_schema_and_validator_reject_reason_mislabel(tmp_path):
+    report = make_report()
+    outcome = report["outcomes"][0]
+    outcome["decision_facts"] = {
+        "category": "response_dynamics",
+        "normalization_applied": False,
+        "normalized_echo_count": 0,
+        "unstable_pairs": [{"probe_kind": "baseline", "localization": "unlocalized"}],
+    }
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(report)
+    with pytest.raises(ValidationError):
+        _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+def test_python_validator_rejects_operational_fact_condition_mislabel(tmp_path):
+    report = make_report()
+    report["outcomes"][0]["decision_facts"] = {
+        "category": "operational",
+        "stage": "initial",
+        "sequence": 1,
+        "probe_kind": "baseline",
+        "condition": "timeout",
+    }
+
+    with pytest.raises(ValueError, match="same checks-layer decision"):
+        _validate(write_report(tmp_path, report), report["exit_code"])
+
+
 def make_eligible_report():
     report = make_report()
     outcome = report["outcomes"][0]
+    outcome.pop("decision_facts", None)
     digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     outcome["verification"].update(
         verdict="inconclusive",
@@ -1020,6 +1071,7 @@ def test_conclusive_verification_requires_observations_and_evidence(tmp_path):
         reason_code="no_boolean_difference",
     )
     outcome["actual_reason_code"] = "no_boolean_difference"
+    outcome.pop("decision_facts", None)
     path = write_report(tmp_path, report)
 
     with pytest.raises(ValueError, match="lacks observations"):

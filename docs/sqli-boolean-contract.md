@@ -90,6 +90,14 @@ The initial verifier uses the following result reasons:
 | NOT_DETECTED | `no_boolean_difference` | BASELINE, TRUE, and FALSE all matched. |
 | NOT_DETECTED | `no_boolean_difference_literal_input` | Stable TRUE and FALSE responses matched each other while both differed from BASELINE. |
 
+For Boolean non-decisions, the checks layer also produces bounded
+`decision_facts`. Response-dynamics facts identify only unstable probe kinds,
+localization, and localized byte offsets and lengths. They include exact-echo
+normalization status and count, but never response fragments or parameter
+values. Operational facts identify the stage, request sequence, probe kind,
+fixed condition, and an HTTP status only when a response exists. A dynamic
+region is computed once and drives both the reason and these facts.
+
 `probe_failed` records the structured probe error separately; its
 reason code does not distinguish the individual transport failure.
 
@@ -206,6 +214,11 @@ NOT_DETECTED or VULNERABLE. Exact-string branches such as `simple_branch` and
 `pagination-branch` are removed by the second predicate pair. Structural response
 mimics such as `full_mimic` and `waf-200` can reproduce the complete relation and
 remain documented known limitations.
+
+Confirmation-relation `decision_facts` distinguish unstable repeated kinds,
+unreproduced TRUE/FALSE predicate pairs, stable relation mismatches, and
+cross-phase mismatched probe kinds. These are fixed enums in deterministic
+order and contain no bodies, payloads, URLs, headers, or exception text.
 
 ## Cross-Phase Consistency
 

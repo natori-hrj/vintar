@@ -9,6 +9,7 @@ from vintar.checks.sqli.confirmation_runner import (
     ConfirmationStatus,
     verify_boolean_sqli_with_confirmation,
 )
+from vintar.checks.sqli.decision_facts import ConfirmationRelationDecisionFacts
 from vintar.checks.sqli.models import Verdict
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
@@ -163,6 +164,9 @@ def test_runner_cross_phase_contract(
     assert outcome.total_requests == requests
     assert outcome.request_count == requests
     assert context.budget.used_requests == requests
+    if reason == "confirmation_cross_phase_mismatch":
+        assert isinstance(outcome.decision_facts, ConfirmationRelationDecisionFacts)
+        assert outcome.decision_facts.cross_phase_mismatched_kinds
     assert len(received) == requests
     assert outcome.initial.verdict is not Verdict.VULNERABLE
 
@@ -201,7 +205,7 @@ def test_mismatch_outcome_rejects_invalid_direct_construction():
 
     with pytest.raises(
         ValueError,
-        match="Inconsistent inconclusive",
+        match="decision facts contradict",
     ):
         replace(
             mismatch,

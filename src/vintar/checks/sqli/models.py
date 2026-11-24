@@ -1,8 +1,14 @@
+from __future__ import annotations
+
 import math
 import re
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vintar.checks.sqli.decision_facts import BooleanDecisionFacts
 
 JSON_SAFE_INTEGER_MAX = (1 << 53) - 1
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -35,6 +41,16 @@ class ProbeError(StrEnum):
     RATE_LIMIT = "rate_limit"
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
+
+
+BOOLEAN_PROBE_ORDER = (
+    ProbeKind.BASELINE,
+    ProbeKind.TRUE,
+    ProbeKind.FALSE,
+    ProbeKind.BASELINE,
+    ProbeKind.FALSE,
+    ProbeKind.TRUE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +174,7 @@ class VerificationResult:
     failures: tuple[ProbeFailure, ...] = ()
     evidence: BooleanEvidence | None = None
     confidence: float | None = None
+    decision_facts: BooleanDecisionFacts | None = None
 
     def __post_init__(self) -> None:
         if type(self.check_id) is not str:
@@ -207,6 +224,23 @@ class VerificationResult:
 
         if self.evidence is not None and not isinstance(self.evidence, BooleanEvidence):
             raise TypeError("evidence must be BooleanEvidence or None.")
+
+        if self.decision_facts is not None:
+            from vintar.checks.sqli.decision_facts import (
+                OperationalDecisionFacts,
+                ResponseDynamicsDecisionFacts,
+            )
+
+            if not isinstance(
+                self.decision_facts,
+                (OperationalDecisionFacts, ResponseDynamicsDecisionFacts),
+            ):
+                raise TypeError("decision_facts must contain Boolean decision facts.")
+            if self.decision_facts.reason_code != self.reason_code:
+                raise ValueError(
+                    "Decision facts contradict the result reason. Use facts produced "
+                    "by the same Boolean decision."
+                )
 
         observations_by_kind = {
             observation.kind: observation for observation in self.observations
