@@ -86,7 +86,7 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
-The current reviewed fixture uses schema version 4. Versions 2 and 3 introduced
+The current reviewed fixture uses schema version 7. Versions 2 and 3 introduced
 per-technique records and Error evidence. Version 4 generalizes that contract to
 multiple independently prepared targets:
 
@@ -113,7 +113,8 @@ Version 4 moves the former `target` object to target-id-keyed `targets`, adds
 `target_id` to every record, moves the former counts tree to `counts.overall`, and
 adds the same complete tree for each target under `counts.by_target`.
 
-New runs emit version 7. Each record adds request-ordered wire provenance with
+The reviewed fixture and new runs use version 7. Each record adds
+request-ordered wire provenance with
 `sequence`, `role`, `wire_status_code`, `wire_body_size`, and
 `wire_body_sha256`. Exact production observations provide
 `analyzer_status_code` and `truncated`; Boolean, confirmation, and Error also
@@ -121,18 +122,22 @@ provide `analyzer_body_size` and `analyzer_body_sha256`, Time provides
 `outcome`, and Error provides sorted `matches` whose entries contain only
 `dbms` and `signature_id`. Equality and repeat-pair stability flags are derived
 from analyzer digests. The report never stores bodies, payloads, headers,
-cookies, matched text, or URLs with query values. The writer requires v7; a
-narrow legacy reader keeps this reviewed v4 fixture usable until a real v7
-measurement replaces it. Versions 5 and 6 used wire-derived analytical facts
+cookies, matched text, or URLs with query values. The writer requires v7.
+Versions 5 and 6 used wire-derived analytical facts
 that are unreliable under content encoding and must be regenerated. Versions 1
 through 3 and mixed shapes are rejected rather than inferred or upgraded.
 
-Reviewed report schema version: `4`.
+Reviewed report schema version: `7`.
 
-Each v4 or v6 target metadata object records the prepared app image ID and the resolved
+Each v7 target metadata object records the prepared app image ID and the resolved
 digest-pinned auxiliary `service_images` map. The runner compares that map with
 the declaration before starting Compose, so the report identifies every image
 that participated in the measurement.
+
+Across all three targets, Boolean six-probe and confirmation modes each record
+TP 2, TN 1, and non-decision 3. Time records TP 3, TN 3, and no
+non-decisions. Error records candidate 2, TN 3, and non-decision 1. The seven
+non-decision records remain listed below rather than being relabeled.
 
 <!-- third-party-measurement:start -->
 | Target | Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |
@@ -218,7 +223,7 @@ suppressed to make the measurement pass.
 On sqli-dojo-docker, both Boolean modes reported
 `INCONCLUSIVE / boolean_candidate` for the positive record. The confirmation
 detail was `matched / confirmation_pattern_matched` after eighteen total
-requests. The MySQL Time positive produced
+requests, so the reviewed Boolean confirmation record is now a TP. The MySQL Time positive produced
 `timing_pattern_matched`, and the Error positive disclosed the reviewed
 `mysql_syntax_error_1064` signature. All three `source` negatives were true
 negatives.

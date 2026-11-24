@@ -1,0 +1,2718 @@
+{
+  "counts": {
+    "by_target": {
+      "dsvw": {
+        "sqli.boolean": {
+          "confirmation": {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 1,
+            "tn": 0,
+            "tp": 1
+          },
+          "six_probe": {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 1,
+            "tn": 0,
+            "tp": 1
+          }
+        },
+        "sqli.error": {
+          "error_probe": {
+            "candidate": 1,
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 0,
+            "tn": 1
+          }
+        },
+        "sqli.time": {
+          "nine_probe": {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 0,
+            "tn": 1,
+            "tp": 1
+          }
+        }
+      },
+      "owasp-lab": {
+        "sqli.boolean": {
+          "confirmation": {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 2,
+            "tn": 0,
+            "tp": 0
+          },
+          "six_probe": {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 2,
+            "tn": 0,
+            "tp": 0
+          }
+        },
+        "sqli.error": {
+          "error_probe": {
+            "candidate": 0,
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 1,
+            "tn": 1
+          }
+        },
+        "sqli.time": {
+          "nine_probe": {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 0,
+            "tn": 1,
+            "tp": 1
+          }
+        }
+      },
+      "sqli-dojo": {
+        "sqli.boolean": {
+          "confirmation": {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 0,
+            "tn": 1,
+            "tp": 1
+          },
+          "six_probe": {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 0,
+            "tn": 1,
+            "tp": 1
+          }
+        },
+        "sqli.error": {
+          "error_probe": {
+            "candidate": 1,
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 0,
+            "tn": 1
+          }
+        },
+        "sqli.time": {
+          "nine_probe": {
+            "fn": 0,
+            "fp": 0,
+            "non_decision": 0,
+            "tn": 1,
+            "tp": 1
+          }
+        }
+      }
+    },
+    "overall": {
+      "sqli.boolean": {
+        "confirmation": {
+          "fn": 0,
+          "fp": 0,
+          "non_decision": 3,
+          "tn": 1,
+          "tp": 2
+        },
+        "six_probe": {
+          "fn": 0,
+          "fp": 0,
+          "non_decision": 3,
+          "tn": 1,
+          "tp": 2
+        }
+      },
+      "sqli.error": {
+        "error_probe": {
+          "candidate": 2,
+          "fn": 0,
+          "fp": 0,
+          "non_decision": 1,
+          "tn": 3
+        }
+      },
+      "sqli.time": {
+        "nine_probe": {
+          "fn": 0,
+          "fp": 0,
+          "non_decision": 0,
+          "tn": 3,
+          "tp": 3
+        }
+      }
+    }
+  },
+  "records": [
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "tp",
+      "detail": {
+        "configured": true,
+        "reason_code": "confirmation_pattern_matched",
+        "request_count": 12,
+        "status": "matched"
+      },
+      "endpoint_id": "dsvw-blind-boolean-id",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "analyzer_body_size": 1333,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "analyzer_body_size": 1333,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 7,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 8,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "analyzer_body_size": 1333,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 9,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "control",
+          "sequence": 10,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "true2",
+          "sequence": 11,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "analyzer_body_size": 1333,
+          "analyzer_status_code": 200,
+          "role": "false2",
+          "sequence": 12,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 13,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "analyzer_body_size": 1333,
+          "analyzer_status_code": 200,
+          "role": "false2",
+          "sequence": 14,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "true2",
+          "sequence": 15,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "control",
+          "sequence": 16,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "analyzer_body_size": 1333,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 17,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 18,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "confirmation",
+      "reason_code": "boolean_candidate",
+      "relations": {
+        "baseline_equals_control": true,
+        "baseline_equals_false": false,
+        "baseline_equals_true": true,
+        "baseline_equals_true2": true,
+        "baseline_stable": true,
+        "control_stable": true,
+        "false2_stable": true,
+        "false_equals_false2": true,
+        "false_stable": true,
+        "true2_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 18,
+      "target_id": "dsvw"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "tp",
+      "detail": {
+        "configured": false,
+        "reason_code": null,
+        "request_count": 0,
+        "status": "not_configured"
+      },
+      "endpoint_id": "dsvw-blind-boolean-id",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "analyzer_body_size": 1333,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "analyzer_body_size": 1333,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "six_probe",
+      "reason_code": "boolean_candidate",
+      "relations": {
+        "baseline_equals_false": false,
+        "baseline_equals_true": true,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "dsvw"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.error",
+      "classification": "candidate",
+      "detail": {
+        "dbms": "sqlite",
+        "reason_code": "dbms_error_disclosed",
+        "request_count": 4,
+        "signature_id": "sqlite_operational_syntax",
+        "status": "matched"
+      },
+      "endpoint_id": "dsvw-error-id",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "5dbaf69d8b0b81658313d140ef45bc41a9e051eafe29bb1c9ab569a90c0868fd",
+          "analyzer_body_size": 215,
+          "analyzer_status_code": 500,
+          "matches": [
+            {
+              "dbms": "sqlite",
+              "signature_id": "sqlite_operational_syntax"
+            }
+          ],
+          "role": "error",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "5dbaf69d8b0b81658313d140ef45bc41a9e051eafe29bb1c9ab569a90c0868fd",
+          "wire_body_size": 215,
+          "wire_status_code": 500
+        },
+        {
+          "analyzer_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "analyzer_body_size": 1394,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "5dbaf69d8b0b81658313d140ef45bc41a9e051eafe29bb1c9ab569a90c0868fd",
+          "analyzer_body_size": 215,
+          "analyzer_status_code": 500,
+          "matches": [
+            {
+              "dbms": "sqlite",
+              "signature_id": "sqlite_operational_syntax"
+            }
+          ],
+          "role": "error",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "5dbaf69d8b0b81658313d140ef45bc41a9e051eafe29bb1c9ab569a90c0868fd",
+          "wire_body_size": 215,
+          "wire_status_code": 500
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "error_probe",
+      "reason_code": "dbms_error_disclosed",
+      "relations": {
+        "baseline_equals_error": false,
+        "baseline_stable": true,
+        "error_stable": true
+      },
+      "request_count": 4,
+      "target_id": "dsvw"
+    },
+    {
+      "actual_verdict": "not_detected",
+      "check_type": "sqli.error",
+      "classification": "tn",
+      "detail": {
+        "reason_code": "dbms_error_not_observed",
+        "request_count": 4,
+        "status": "not_matched"
+      },
+      "endpoint_id": "dsvw-error-version-query",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "analyzer_body_size": 1203,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "wire_body_size": 1203,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "af3a4dd97186271223a00bfd6e8cd236c12e17116d2ebf1977d6b95c692236f3",
+          "analyzer_body_size": 1204,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "error",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "af3a4dd97186271223a00bfd6e8cd236c12e17116d2ebf1977d6b95c692236f3",
+          "wire_body_size": 1204,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "analyzer_body_size": 1203,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "wire_body_size": 1203,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "af3a4dd97186271223a00bfd6e8cd236c12e17116d2ebf1977d6b95c692236f3",
+          "analyzer_body_size": 1204,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "error",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "af3a4dd97186271223a00bfd6e8cd236c12e17116d2ebf1977d6b95c692236f3",
+          "wire_body_size": 1204,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "error_probe",
+      "reason_code": "dbms_error_not_observed",
+      "relations": {
+        "baseline_equals_error": false,
+        "baseline_stable": true,
+        "error_stable": true
+      },
+      "request_count": 4,
+      "target_id": "dsvw"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.time",
+      "classification": "tp",
+      "detail": {
+        "reason_code": "timing_pattern_matched",
+        "request_count": 9,
+        "status": "candidate"
+      },
+      "endpoint_id": "dsvw-time-id",
+      "evidence": [
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 7,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 8,
+          "truncated": false,
+          "wire_body_sha256": "48a9bb527b8bc836db3453342f289233821860d6983f3affd1b6139bd8638ced",
+          "wire_body_size": 1394,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 9,
+          "truncated": false,
+          "wire_body_sha256": "bf6217f624638920193320b7540ac6ffda1d408e35c8595accb41c261fe9fab1",
+          "wire_body_size": 1333,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "nine_probe",
+      "reason_code": "timing_pattern_matched",
+      "relations": {},
+      "request_count": 9,
+      "target_id": "dsvw"
+    },
+    {
+      "actual_verdict": "not_detected",
+      "check_type": "sqli.time",
+      "classification": "tn",
+      "detail": {
+        "reason_code": "timing_pattern_not_matched",
+        "request_count": 9,
+        "status": "not_confirmed"
+      },
+      "endpoint_id": "dsvw-time-version-query",
+      "evidence": [
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "wire_body_size": 1203,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "f587c3ff81aff3439cd10729d6971448e0f2be1e838fd58caacde6ae7d8df24e",
+          "wire_body_size": 1354,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "9f44a16010a0007b4189b55fb84c90c16a5bb9300173c39cb89ee683b59ca4f7",
+          "wire_body_size": 1354,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "f587c3ff81aff3439cd10729d6971448e0f2be1e838fd58caacde6ae7d8df24e",
+          "wire_body_size": 1354,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "9f44a16010a0007b4189b55fb84c90c16a5bb9300173c39cb89ee683b59ca4f7",
+          "wire_body_size": 1354,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "wire_body_size": 1203,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 7,
+          "truncated": false,
+          "wire_body_sha256": "9f44a16010a0007b4189b55fb84c90c16a5bb9300173c39cb89ee683b59ca4f7",
+          "wire_body_size": 1354,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 8,
+          "truncated": false,
+          "wire_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "wire_body_size": 1203,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 9,
+          "truncated": false,
+          "wire_body_sha256": "f587c3ff81aff3439cd10729d6971448e0f2be1e838fd58caacde6ae7d8df24e",
+          "wire_body_size": 1354,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "nine_probe",
+      "reason_code": "timing_pattern_not_matched",
+      "relations": {},
+      "request_count": 9,
+      "target_id": "dsvw"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "non_decision",
+      "detail": {
+        "configured": true,
+        "reason_code": "initial_not_eligible",
+        "request_count": 0,
+        "status": "not_eligible"
+      },
+      "endpoint_id": "dsvw-version-query",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "analyzer_body_size": 1203,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "wire_body_size": 1203,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "c94dac4245fac44c888a600500a5636090fa5e5e44b00292662cd4fd6403e358",
+          "analyzer_body_size": 1214,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "c94dac4245fac44c888a600500a5636090fa5e5e44b00292662cd4fd6403e358",
+          "wire_body_size": 1214,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "a25c23df8eb656dc56b0915c9f6a800f54224bd18a71fc25ec90ad85639129a9",
+          "analyzer_body_size": 1214,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "a25c23df8eb656dc56b0915c9f6a800f54224bd18a71fc25ec90ad85639129a9",
+          "wire_body_size": 1214,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "analyzer_body_size": 1203,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "wire_body_size": 1203,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "a25c23df8eb656dc56b0915c9f6a800f54224bd18a71fc25ec90ad85639129a9",
+          "analyzer_body_size": 1214,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "a25c23df8eb656dc56b0915c9f6a800f54224bd18a71fc25ec90ad85639129a9",
+          "wire_body_size": 1214,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "c94dac4245fac44c888a600500a5636090fa5e5e44b00292662cd4fd6403e358",
+          "analyzer_body_size": 1214,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "c94dac4245fac44c888a600500a5636090fa5e5e44b00292662cd4fd6403e358",
+          "wire_body_size": 1214,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "confirmation",
+      "reason_code": "unexpected_difference",
+      "relations": {
+        "baseline_equals_false": false,
+        "baseline_equals_true": false,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "dsvw"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "non_decision",
+      "detail": {
+        "configured": false,
+        "reason_code": null,
+        "request_count": 0,
+        "status": "not_configured"
+      },
+      "endpoint_id": "dsvw-version-query",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "analyzer_body_size": 1203,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "wire_body_size": 1203,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "c94dac4245fac44c888a600500a5636090fa5e5e44b00292662cd4fd6403e358",
+          "analyzer_body_size": 1214,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "c94dac4245fac44c888a600500a5636090fa5e5e44b00292662cd4fd6403e358",
+          "wire_body_size": 1214,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "a25c23df8eb656dc56b0915c9f6a800f54224bd18a71fc25ec90ad85639129a9",
+          "analyzer_body_size": 1214,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "a25c23df8eb656dc56b0915c9f6a800f54224bd18a71fc25ec90ad85639129a9",
+          "wire_body_size": 1214,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "analyzer_body_size": 1203,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "924754c289d8eb5773910139a46921dfa6592e3533ca201f0f9db3167d98c272",
+          "wire_body_size": 1203,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "a25c23df8eb656dc56b0915c9f6a800f54224bd18a71fc25ec90ad85639129a9",
+          "analyzer_body_size": 1214,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "a25c23df8eb656dc56b0915c9f6a800f54224bd18a71fc25ec90ad85639129a9",
+          "wire_body_size": 1214,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "c94dac4245fac44c888a600500a5636090fa5e5e44b00292662cd4fd6403e358",
+          "analyzer_body_size": 1214,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "c94dac4245fac44c888a600500a5636090fa5e5e44b00292662cd4fd6403e358",
+          "wire_body_size": 1214,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "six_probe",
+      "reason_code": "unexpected_difference",
+      "relations": {
+        "baseline_equals_false": false,
+        "baseline_equals_true": false,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "dsvw"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "non_decision",
+      "detail": {
+        "configured": true,
+        "reason_code": "initial_not_eligible",
+        "request_count": 0,
+        "status": "not_eligible"
+      },
+      "endpoint_id": "owasp-lab-boolean-greet",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "6547da0049f9041242574006dbb507d2f64d32a4b5266514deaea627bb3c4210",
+          "analyzer_body_size": 20958,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "6547da0049f9041242574006dbb507d2f64d32a4b5266514deaea627bb3c4210",
+          "wire_body_size": 20958,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "9d3e710cc140ef2b418949b1a3c2025236c486fe9899ec03e3b016e60cb10347",
+          "analyzer_body_size": 20958,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "9d3e710cc140ef2b418949b1a3c2025236c486fe9899ec03e3b016e60cb10347",
+          "wire_body_size": 20958,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "9d3e710cc140ef2b418949b1a3c2025236c486fe9899ec03e3b016e60cb10347",
+          "analyzer_body_size": 20958,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "9d3e710cc140ef2b418949b1a3c2025236c486fe9899ec03e3b016e60cb10347",
+          "wire_body_size": 20958,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "6547da0049f9041242574006dbb507d2f64d32a4b5266514deaea627bb3c4210",
+          "analyzer_body_size": 20958,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "6547da0049f9041242574006dbb507d2f64d32a4b5266514deaea627bb3c4210",
+          "wire_body_size": 20958,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "confirmation",
+      "reason_code": "unexpected_difference",
+      "relations": {
+        "baseline_equals_false": false,
+        "baseline_equals_true": false,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "owasp-lab"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "non_decision",
+      "detail": {
+        "configured": false,
+        "reason_code": null,
+        "request_count": 0,
+        "status": "not_configured"
+      },
+      "endpoint_id": "owasp-lab-boolean-greet",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "6547da0049f9041242574006dbb507d2f64d32a4b5266514deaea627bb3c4210",
+          "analyzer_body_size": 20958,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "6547da0049f9041242574006dbb507d2f64d32a4b5266514deaea627bb3c4210",
+          "wire_body_size": 20958,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "9d3e710cc140ef2b418949b1a3c2025236c486fe9899ec03e3b016e60cb10347",
+          "analyzer_body_size": 20958,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "9d3e710cc140ef2b418949b1a3c2025236c486fe9899ec03e3b016e60cb10347",
+          "wire_body_size": 20958,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "9d3e710cc140ef2b418949b1a3c2025236c486fe9899ec03e3b016e60cb10347",
+          "analyzer_body_size": 20958,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "9d3e710cc140ef2b418949b1a3c2025236c486fe9899ec03e3b016e60cb10347",
+          "wire_body_size": 20958,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "6547da0049f9041242574006dbb507d2f64d32a4b5266514deaea627bb3c4210",
+          "analyzer_body_size": 20958,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "6547da0049f9041242574006dbb507d2f64d32a4b5266514deaea627bb3c4210",
+          "wire_body_size": 20958,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "six_probe",
+      "reason_code": "unexpected_difference",
+      "relations": {
+        "baseline_equals_false": false,
+        "baseline_equals_true": false,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "owasp-lab"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "non_decision",
+      "detail": {
+        "configured": true,
+        "reason_code": "initial_not_eligible",
+        "request_count": 0,
+        "status": "not_eligible"
+      },
+      "endpoint_id": "owasp-lab-boolean-search",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "analyzer_body_size": 21071,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "wire_body_size": 21071,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "7958fe4789b3c54d4455e1ce3c057d3d471167f15475e1118214e0f8929e8b7c",
+          "analyzer_body_size": 21088,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "7958fe4789b3c54d4455e1ce3c057d3d471167f15475e1118214e0f8929e8b7c",
+          "wire_body_size": 21088,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "edb13c59cd55613bfa7b9b17ac2025d982eddb2c3028c8dd716c19b6335b531b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "edb13c59cd55613bfa7b9b17ac2025d982eddb2c3028c8dd716c19b6335b531b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "analyzer_body_size": 21071,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "wire_body_size": 21071,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "edb13c59cd55613bfa7b9b17ac2025d982eddb2c3028c8dd716c19b6335b531b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "edb13c59cd55613bfa7b9b17ac2025d982eddb2c3028c8dd716c19b6335b531b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "7958fe4789b3c54d4455e1ce3c057d3d471167f15475e1118214e0f8929e8b7c",
+          "analyzer_body_size": 21088,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "7958fe4789b3c54d4455e1ce3c057d3d471167f15475e1118214e0f8929e8b7c",
+          "wire_body_size": 21088,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "confirmation",
+      "reason_code": "unexpected_difference",
+      "relations": {
+        "baseline_equals_false": false,
+        "baseline_equals_true": false,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "owasp-lab"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "non_decision",
+      "detail": {
+        "configured": false,
+        "reason_code": null,
+        "request_count": 0,
+        "status": "not_configured"
+      },
+      "endpoint_id": "owasp-lab-boolean-search",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "analyzer_body_size": 21071,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "wire_body_size": 21071,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "7958fe4789b3c54d4455e1ce3c057d3d471167f15475e1118214e0f8929e8b7c",
+          "analyzer_body_size": 21088,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "7958fe4789b3c54d4455e1ce3c057d3d471167f15475e1118214e0f8929e8b7c",
+          "wire_body_size": 21088,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "edb13c59cd55613bfa7b9b17ac2025d982eddb2c3028c8dd716c19b6335b531b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "edb13c59cd55613bfa7b9b17ac2025d982eddb2c3028c8dd716c19b6335b531b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "analyzer_body_size": 21071,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "wire_body_size": 21071,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "edb13c59cd55613bfa7b9b17ac2025d982eddb2c3028c8dd716c19b6335b531b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "edb13c59cd55613bfa7b9b17ac2025d982eddb2c3028c8dd716c19b6335b531b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "7958fe4789b3c54d4455e1ce3c057d3d471167f15475e1118214e0f8929e8b7c",
+          "analyzer_body_size": 21088,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "7958fe4789b3c54d4455e1ce3c057d3d471167f15475e1118214e0f8929e8b7c",
+          "wire_body_size": 21088,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "six_probe",
+      "reason_code": "unexpected_difference",
+      "relations": {
+        "baseline_equals_false": false,
+        "baseline_equals_true": false,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "owasp-lab"
+    },
+    {
+      "actual_verdict": "not_detected",
+      "check_type": "sqli.error",
+      "classification": "tn",
+      "detail": {
+        "reason_code": "dbms_error_not_observed",
+        "request_count": 4,
+        "status": "not_matched"
+      },
+      "endpoint_id": "owasp-lab-error-greet",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "39475ef2d03e9f5a7beb215e7a52a1b2fccdd3be1a66e43763db9839fe24f2bc",
+          "analyzer_body_size": 20934,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "error",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "39475ef2d03e9f5a7beb215e7a52a1b2fccdd3be1a66e43763db9839fe24f2bc",
+          "wire_body_size": 20934,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "analyzer_body_size": 20928,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "39475ef2d03e9f5a7beb215e7a52a1b2fccdd3be1a66e43763db9839fe24f2bc",
+          "analyzer_body_size": 20934,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "error",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "39475ef2d03e9f5a7beb215e7a52a1b2fccdd3be1a66e43763db9839fe24f2bc",
+          "wire_body_size": 20934,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "error_probe",
+      "reason_code": "dbms_error_not_observed",
+      "relations": {
+        "baseline_equals_error": false,
+        "baseline_stable": true,
+        "error_stable": true
+      },
+      "request_count": 4,
+      "target_id": "owasp-lab"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.error",
+      "classification": "non_decision",
+      "detail": {
+        "reason_code": "non_success_status",
+        "request_count": 4,
+        "status": "inconclusive"
+      },
+      "endpoint_id": "owasp-lab-error-search",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "analyzer_body_size": 21071,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "wire_body_size": 21071,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "ae5163256b944013e27cbef0d2bcd33a6dacbb92463509f91d5f3df782142910",
+          "analyzer_body_size": 265,
+          "analyzer_status_code": 500,
+          "matches": [],
+          "role": "error",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "ae5163256b944013e27cbef0d2bcd33a6dacbb92463509f91d5f3df782142910",
+          "wire_body_size": 265,
+          "wire_status_code": 500
+        },
+        {
+          "analyzer_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "analyzer_body_size": 21071,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "62f28979c934df37d1b9a40cb6c657638142f0b5d3707074130ae8ba023bcb23",
+          "wire_body_size": 21071,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "ae5163256b944013e27cbef0d2bcd33a6dacbb92463509f91d5f3df782142910",
+          "analyzer_body_size": 265,
+          "analyzer_status_code": 500,
+          "matches": [],
+          "role": "error",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "ae5163256b944013e27cbef0d2bcd33a6dacbb92463509f91d5f3df782142910",
+          "wire_body_size": 265,
+          "wire_status_code": 500
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "error_probe",
+      "reason_code": "non_success_status",
+      "relations": {
+        "baseline_equals_error": false,
+        "baseline_stable": true,
+        "error_stable": true
+      },
+      "request_count": 4,
+      "target_id": "owasp-lab"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.time",
+      "classification": "tp",
+      "detail": {
+        "reason_code": "timing_pattern_matched",
+        "request_count": 9,
+        "status": "candidate"
+      },
+      "endpoint_id": "owasp-lab-time-check-username",
+      "evidence": [
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "8465f916480cfa472c359d0e2c5e3d2ab55b596bb8123cab50f0f914ebd96511",
+          "wire_body_size": 20993,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "6e135ab2df858dc259cc2be66005f4e752d327797bb1a95b7c5b19e66f0cc32f",
+          "wire_body_size": 21034,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "24c20f248a8648bc8364d7d4722bff72c85f6e33859c1bb681afb583d29653d9",
+          "wire_body_size": 21036,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "6e135ab2df858dc259cc2be66005f4e752d327797bb1a95b7c5b19e66f0cc32f",
+          "wire_body_size": 21034,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "24c20f248a8648bc8364d7d4722bff72c85f6e33859c1bb681afb583d29653d9",
+          "wire_body_size": 21036,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "8465f916480cfa472c359d0e2c5e3d2ab55b596bb8123cab50f0f914ebd96511",
+          "wire_body_size": 20993,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 7,
+          "truncated": false,
+          "wire_body_sha256": "24c20f248a8648bc8364d7d4722bff72c85f6e33859c1bb681afb583d29653d9",
+          "wire_body_size": 21036,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 8,
+          "truncated": false,
+          "wire_body_sha256": "8465f916480cfa472c359d0e2c5e3d2ab55b596bb8123cab50f0f914ebd96511",
+          "wire_body_size": 20993,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 9,
+          "truncated": false,
+          "wire_body_sha256": "6e135ab2df858dc259cc2be66005f4e752d327797bb1a95b7c5b19e66f0cc32f",
+          "wire_body_size": 21034,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "nine_probe",
+      "reason_code": "timing_pattern_matched",
+      "relations": {},
+      "request_count": 9,
+      "target_id": "owasp-lab"
+    },
+    {
+      "actual_verdict": "not_detected",
+      "check_type": "sqli.time",
+      "classification": "tn",
+      "detail": {
+        "reason_code": "timing_pattern_not_matched",
+        "request_count": 9,
+        "status": "not_confirmed"
+      },
+      "endpoint_id": "owasp-lab-time-greet",
+      "evidence": [
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "7b941094633325ee60d47af4565026deebe8fcf614b5ab90084763a3be56b460",
+          "wire_body_size": 21006,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "71cc8c0e7059a5be857ea074a4eb6077fada7a25a19a9d86d9137681e1caffc1",
+          "wire_body_size": 21010,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "7b941094633325ee60d47af4565026deebe8fcf614b5ab90084763a3be56b460",
+          "wire_body_size": 21006,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "71cc8c0e7059a5be857ea074a4eb6077fada7a25a19a9d86d9137681e1caffc1",
+          "wire_body_size": 21010,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 7,
+          "truncated": false,
+          "wire_body_sha256": "71cc8c0e7059a5be857ea074a4eb6077fada7a25a19a9d86d9137681e1caffc1",
+          "wire_body_size": 21010,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 8,
+          "truncated": false,
+          "wire_body_sha256": "66a131239d552409462daa664e3410cdc4f73935a40395cab79e80d1882a581b",
+          "wire_body_size": 20928,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 9,
+          "truncated": false,
+          "wire_body_sha256": "7b941094633325ee60d47af4565026deebe8fcf614b5ab90084763a3be56b460",
+          "wire_body_size": 21006,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "nine_probe",
+      "reason_code": "timing_pattern_not_matched",
+      "relations": {},
+      "request_count": 9,
+      "target_id": "owasp-lab"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "tp",
+      "detail": {
+        "configured": true,
+        "reason_code": "confirmation_pattern_matched",
+        "request_count": 12,
+        "status": "matched"
+      },
+      "endpoint_id": "sqli-dojo-boolean-id",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "40b7c6bae38ece65610313feff4905e33262d6d1a004d285c00d42efe8c1822a",
+          "analyzer_body_size": 8366,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "40b7c6bae38ece65610313feff4905e33262d6d1a004d285c00d42efe8c1822a",
+          "analyzer_body_size": 8366,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 7,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 8,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "40b7c6bae38ece65610313feff4905e33262d6d1a004d285c00d42efe8c1822a",
+          "analyzer_body_size": 8366,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 9,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "control",
+          "sequence": 10,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "true2",
+          "sequence": 11,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "40b7c6bae38ece65610313feff4905e33262d6d1a004d285c00d42efe8c1822a",
+          "analyzer_body_size": 8366,
+          "analyzer_status_code": 200,
+          "role": "false2",
+          "sequence": 12,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 13,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "40b7c6bae38ece65610313feff4905e33262d6d1a004d285c00d42efe8c1822a",
+          "analyzer_body_size": 8366,
+          "analyzer_status_code": 200,
+          "role": "false2",
+          "sequence": 14,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "true2",
+          "sequence": 15,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "control",
+          "sequence": 16,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "40b7c6bae38ece65610313feff4905e33262d6d1a004d285c00d42efe8c1822a",
+          "analyzer_body_size": 8366,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 17,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 18,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "confirmation",
+      "reason_code": "boolean_candidate",
+      "relations": {
+        "baseline_equals_control": true,
+        "baseline_equals_false": false,
+        "baseline_equals_true": true,
+        "baseline_equals_true2": true,
+        "baseline_stable": true,
+        "control_stable": true,
+        "false2_stable": true,
+        "false_equals_false2": true,
+        "false_stable": true,
+        "true2_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 18,
+      "target_id": "sqli-dojo"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.boolean",
+      "classification": "tp",
+      "detail": {
+        "configured": false,
+        "reason_code": null,
+        "request_count": 0,
+        "status": "not_configured"
+      },
+      "endpoint_id": "sqli-dojo-boolean-id",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "40b7c6bae38ece65610313feff4905e33262d6d1a004d285c00d42efe8c1822a",
+          "analyzer_body_size": 8366,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "40b7c6bae38ece65610313feff4905e33262d6d1a004d285c00d42efe8c1822a",
+          "analyzer_body_size": 8366,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "six_probe",
+      "reason_code": "boolean_candidate",
+      "relations": {
+        "baseline_equals_false": false,
+        "baseline_equals_true": true,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": false,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "sqli-dojo"
+    },
+    {
+      "actual_verdict": "not_detected",
+      "check_type": "sqli.boolean",
+      "classification": "tn",
+      "detail": {
+        "configured": true,
+        "reason_code": "initial_not_eligible",
+        "request_count": 0,
+        "status": "not_eligible"
+      },
+      "endpoint_id": "sqli-dojo-boolean-source",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "confirmation",
+      "reason_code": "no_boolean_difference",
+      "relations": {
+        "baseline_equals_false": true,
+        "baseline_equals_true": true,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": true,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "sqli-dojo"
+    },
+    {
+      "actual_verdict": "not_detected",
+      "check_type": "sqli.boolean",
+      "classification": "tn",
+      "detail": {
+        "configured": false,
+        "reason_code": null,
+        "request_count": 0,
+        "status": "not_configured"
+      },
+      "endpoint_id": "sqli-dojo-boolean-source",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "baseline",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "false",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "role": "true",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "six_probe",
+      "reason_code": "no_boolean_difference",
+      "relations": {
+        "baseline_equals_false": true,
+        "baseline_equals_true": true,
+        "baseline_stable": true,
+        "false_stable": true,
+        "true_equals_false": true,
+        "true_stable": true
+      },
+      "request_count": 6,
+      "target_id": "sqli-dojo"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.error",
+      "classification": "candidate",
+      "detail": {
+        "dbms": "mysql",
+        "reason_code": "dbms_error_disclosed",
+        "request_count": 4,
+        "signature_id": "mysql_syntax_error_1064",
+        "status": "matched"
+      },
+      "endpoint_id": "sqli-dojo-error-id",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "060d940a8c862375e10b320d1ddef521b90f9ec2efc297a62e2a8326db03c726",
+          "analyzer_body_size": 8370,
+          "analyzer_status_code": 200,
+          "matches": [
+            {
+              "dbms": "mysql",
+              "signature_id": "mysql_syntax_error_1064"
+            }
+          ],
+          "role": "error",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "7cf79b8a462dcf26e2e0048867df9727ed8a9a964344bb6699a87f3fd2ed7d5d",
+          "wire_body_size": 2352,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "192a66d078b2875ea79c7169242794ee7b47bb7c2757b1e560867cf8bd6a1ad7",
+          "analyzer_body_size": 8408,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "060d940a8c862375e10b320d1ddef521b90f9ec2efc297a62e2a8326db03c726",
+          "analyzer_body_size": 8370,
+          "analyzer_status_code": 200,
+          "matches": [
+            {
+              "dbms": "mysql",
+              "signature_id": "mysql_syntax_error_1064"
+            }
+          ],
+          "role": "error",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "7cf79b8a462dcf26e2e0048867df9727ed8a9a964344bb6699a87f3fd2ed7d5d",
+          "wire_body_size": 2352,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "error_probe",
+      "reason_code": "dbms_error_disclosed",
+      "relations": {
+        "baseline_equals_error": false,
+        "baseline_stable": true,
+        "error_stable": true
+      },
+      "request_count": 4,
+      "target_id": "sqli-dojo"
+    },
+    {
+      "actual_verdict": "not_detected",
+      "check_type": "sqli.error",
+      "classification": "tn",
+      "detail": {
+        "reason_code": "dbms_error_not_observed",
+        "request_count": 4,
+        "status": "not_matched"
+      },
+      "endpoint_id": "sqli-dojo-error-source",
+      "evidence": [
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "error",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "baseline",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_body_sha256": "1b056a8fc5010a0211c4c5a586b626cca463e225bc2aac6f5695f59461e7c237",
+          "analyzer_body_size": 5026,
+          "analyzer_status_code": 200,
+          "matches": [],
+          "role": "error",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "error_probe",
+      "reason_code": "dbms_error_not_observed",
+      "relations": {
+        "baseline_equals_error": true,
+        "baseline_stable": true,
+        "error_stable": true
+      },
+      "request_count": 4,
+      "target_id": "sqli-dojo"
+    },
+    {
+      "actual_verdict": "inconclusive",
+      "check_type": "sqli.time",
+      "classification": "tp",
+      "detail": {
+        "reason_code": "timing_pattern_matched",
+        "request_count": 9,
+        "status": "candidate"
+      },
+      "endpoint_id": "sqli-dojo-time-id",
+      "evidence": [
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 7,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 8,
+          "truncated": false,
+          "wire_body_sha256": "3e86c14e72f92ed69792f6b7d0cca85242c2bd5c732ab9298e4ff3e81c5feaf4",
+          "wire_body_size": 2347,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 9,
+          "truncated": false,
+          "wire_body_sha256": "bc2a9f105295fd7a209a6ae33266ed19378e68e270ecb3b15caddf2149f9b472",
+          "wire_body_size": 2325,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "positive",
+      "expected_verdict": "inconclusive",
+      "mode": "nine_probe",
+      "reason_code": "timing_pattern_matched",
+      "relations": {},
+      "request_count": 9,
+      "target_id": "sqli-dojo"
+    },
+    {
+      "actual_verdict": "not_detected",
+      "check_type": "sqli.time",
+      "classification": "tn",
+      "detail": {
+        "reason_code": "timing_pattern_not_matched",
+        "request_count": 9,
+        "status": "not_confirmed"
+      },
+      "endpoint_id": "sqli-dojo-time-source",
+      "evidence": [
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 1,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 2,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 3,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 4,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 5,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 6,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "delay",
+          "sequence": 7,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "baseline",
+          "sequence": 8,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        },
+        {
+          "analyzer_status_code": 200,
+          "outcome": "completed",
+          "role": "control",
+          "sequence": 9,
+          "truncated": false,
+          "wire_body_sha256": "d1d5251cdfcd4cb1cb3a25c95648c3faee19baee09aaf003230c9668e0f0c3cb",
+          "wire_body_size": 1829,
+          "wire_status_code": 200
+        }
+      ],
+      "expected_label": "negative",
+      "expected_verdict": "not_detected",
+      "mode": "nine_probe",
+      "reason_code": "timing_pattern_not_matched",
+      "relations": {},
+      "request_count": 9,
+      "target_id": "sqli-dojo"
+    }
+  ],
+  "schema_version": 7,
+  "targets": {
+    "dsvw": {
+      "archive_sha256": "96690f62ac0fba8a4f0aeac22f2370853bc02b96fb3efd1b8fc3a39398bf302b",
+      "commit": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "dbms": "sqlite",
+      "image_ids": {
+        "app": "sha256:f9ecd3e33fe0717a4e48a55cda7aefd44f28e60b49ccd641c04807d27f924fcf"
+      },
+      "license": "Unlicense",
+      "name": "DSVW",
+      "repository": "https://github.com/stamparm/DSVW",
+      "service_images": {},
+      "source_manifest_sha256": "dd8e307cc1c350f5e2010b0f739ef7e3f92ab2205be7743dc5822802cee28bef"
+    },
+    "owasp-lab": {
+      "archive_sha256": "5d0c805d86cd6a3ec8d95afdb2fdae99cab5dc765842dac4e6d122c171737db4",
+      "commit": "9cb62dd2e30b08a0ddc753247c62b54b90e933ed",
+      "dbms": "postgresql",
+      "image_ids": {
+        "app": "sha256:1b43013df62e401a8df4be14103d916ab8f0d10c4e2e558df2908cc02239fdf4"
+      },
+      "license": "MIT",
+      "name": "OWASP Training Lab",
+      "repository": "https://github.com/jozeta/owasp-lab",
+      "service_images": {
+        "postgres": "postgres:16-alpine@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d"
+      },
+      "source_manifest_sha256": "107dc85a50f94193df257e7ca9890f297c169964376cee35f88b643ee8c51ea9"
+    },
+    "sqli-dojo": {
+      "archive_sha256": "6c0218fef749fddec28560af883865eb4178ed998d5cc927a5e3592add50b88f",
+      "commit": "81f20037de323376d8a7651377e3a3971efdbae8",
+      "dbms": "mysql",
+      "image_ids": {
+        "app": "sha256:0e1a859a4ac91e59016d602137c02f80f61c2fdb4a5aaf7391fb2a55b64e9f91"
+      },
+      "license": "GPL-3.0",
+      "name": "sqli-dojo-docker",
+      "repository": "https://github.com/h1pmnh/sqli-dojo-docker",
+      "service_images": {
+        "mysql": "mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+      },
+      "source_manifest_sha256": "bff7a572b1f3c3bd1482c8f75ef0f703900f59f9e7f0bb89214edd32eb348416"
+    }
+  }
+}

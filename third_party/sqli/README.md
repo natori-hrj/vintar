@@ -70,8 +70,8 @@ provide `analyzer_body_size` and `analyzer_body_sha256`, Time provides
 `outcome`, and Error provides sorted `matches` containing only `dbms` and
 `signature_id`. Relations are derived from analyzer digests. Bodies, payloads,
 headers, cookies, matched text, and query values are never stored. The reviewed
-v4 fixture remains readable until a real v7 measurement replaces it; the writer
-cannot emit v4, v5, or v6. Versions 5 and 6 used unreliable wire-derived
+fixture at `tests/fixtures/third-party-sqli-measurement.json` and the writer use
+v7; the writer cannot emit v4, v5, or v6. Versions 5 and 6 used unreliable wire-derived
 analytical facts and must be regenerated. Error candidates remain `candidate`,
 never `tp` or `vulnerable`.
 

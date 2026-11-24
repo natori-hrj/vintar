@@ -69,6 +69,7 @@ OWASP_CONFIGS = THIRD_PARTY / "owasp-lab" / "configs"
 RUNNER = ROOT / "scripts" / "run_third_party_sqli_measurement.py"
 PREPARER = ROOT / "scripts" / "prepare_third_party_sqli.py"
 IMAGE_CONTRACT = ROOT / "scripts" / "third_party_sqli_contract.py"
+REVIEWED_REPORT = ROOT / "tests" / "fixtures" / "third-party-sqli-measurement.json"
 
 
 def load_script(path: Path, name: str) -> ModuleType:
@@ -104,6 +105,14 @@ def declarations() -> dict[str, object]:
 
 
 def expected_report() -> dict[str, object]:
+    """Load the byte-for-byte reviewed live measurement fixture."""
+    value = json.loads(REVIEWED_REPORT.read_text(encoding="utf-8"))
+    assert type(value) is dict
+    return value
+
+
+def legacy_v4_report() -> dict[str, object]:
+    """Retain the former reviewed shape only for compatibility tests."""
     records = [
         {
             "actual_verdict": "inconclusive",
@@ -1658,7 +1667,11 @@ def test_error_acceptance_contract_keeps_candidate_distinct_from_vulnerability()
         for record in report["records"]
         if record["check_type"] == "sqli.error"
     }
-    assert records["dsvw-error-id"] == {
+    assert {
+        key: value
+        for key, value in records["dsvw-error-id"].items()
+        if key not in {"evidence", "relations"}
+    } == {
         "actual_verdict": "inconclusive",
         "classification": "candidate",
         "check_type": "sqli.error",
@@ -1948,9 +1961,9 @@ def test_expected_verdict_must_follow_declared_ground_truth(
         runner.validate_measurement_report(report)
 
 
-def test_stored_v4_report_fixture_still_validates_unchanged():
+def test_legacy_v4_report_shape_still_validates_unchanged():
     runner = load_runner()
-    report = expected_report()
+    report = legacy_v4_report()
 
     assert runner.validate_measurement_report(report) is report
 
@@ -1993,12 +2006,12 @@ def test_reviewed_documentation_matches_the_report_contract():
     assert "| sqli-dojo (mysql) |" in rendered
     documentation = runner.DOCS.read_text(encoding="utf-8")
     readme = (THIRD_PARTY / "README.md").read_text(encoding="utf-8")
-    error_record = _report_record(fixed_v7_report(runner), "dsvw-error-id")
+    error_record = _report_record(report, "dsvw-error-id")
     evidence_fields = error_record["evidence"][0].keys()
     for field in evidence_fields:
         assert f"`{field}`" in documentation
         assert f"`{field}`" in readme
-    assert "Reviewed report schema version: `4`." in documentation
+    assert "Reviewed report schema version: `7`." in documentation
 
 
 @pytest.mark.doc_drift
@@ -2096,16 +2109,15 @@ def test_mysql_by_target_counts_are_recomputed_from_records():
     assert runner.validate_measurement_report(report) is report
 
 
-def test_new_output_uses_v7_while_committed_v4_fixture_remains_readable():
+def test_reviewed_fixture_uses_v7_while_legacy_v4_remains_readable():
     runner = load_runner()
     report = expected_report()
 
-    assert report["schema_version"] == runner.LEGACY_MEASUREMENT_SCHEMA_VERSION == 4
-    assert runner.MEASUREMENT_SCHEMA_VERSION == 7
+    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 7
     assert runner.validate_measurement_report(report) is report
-    current = fixed_v7_report(runner)
-    assert current["schema_version"] == 7
-    assert runner.validate_measurement_report(current) is current
+    legacy = legacy_v4_report()
+    assert legacy["schema_version"] == runner.LEGACY_MEASUREMENT_SCHEMA_VERSION == 4
+    assert runner.validate_measurement_report(legacy) is legacy
 
 
 def test_new_writer_rejects_legacy_v4_fixture(tmp_path):
@@ -2115,7 +2127,7 @@ def test_new_writer_rejects_legacy_v4_fixture(tmp_path):
         runner.MeasurementError,
         match=r"requires schema version 7 with wire provenance separated from exact analyzer observations.*legacy v4, v5, or v6",
     ):
-        runner.write_report(tmp_path / "report.json", expected_report())
+        runner.write_report(tmp_path / "report.json", legacy_v4_report())
 
 
 def test_v5_error_evidence_requires_remeasurement_for_v7():
@@ -2142,28 +2154,19 @@ def test_v7_renderer_matches_legacy_summary_without_using_evidence():
     runner = load_runner()
 
     assert runner.render_summary(fixed_v7_report(runner)) == runner.render_summary(
-        expected_report()
+        legacy_v4_report()
     )
 
 
 @pytest.mark.doc_drift
-def test_documented_schema_binding_makes_fixture_transition_mechanical(tmp_path):
+def test_documented_schema_binding_rejects_legacy_v4_fixture():
     runner = load_runner()
-    documentation = tmp_path / "evaluation.md"
-    source = runner.DOCS.read_text(encoding="utf-8")
-    documentation.write_text(
-        source.replace(
-            "Reviewed report schema version: `4`.",
-            "Reviewed report schema version: `7`.",
-        ),
-        encoding="utf-8",
-    )
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"bound to report schema version 7.*fixture schema_version has JSON type number outside the bound version.*update.*binding and fixture together.*do not fabricate",
+        match=r"bound to report schema version 7.*update.*binding and fixture together",
     ):
-        runner.check_documented_summary(expected_report(), documentation)
+        runner.check_documented_summary(legacy_v4_report())
 
 
 def test_v7_serialization_excludes_payloads_and_response_bodies():
@@ -3505,7 +3508,7 @@ def test_old_measurement_report_is_rejected_with_regeneration_guidance(old_versi
 
 def test_v4_report_with_v3_shape_is_rejected():
     runner = load_runner()
-    report = expected_report()
+    report = legacy_v4_report()
     report["counts"] = report["counts"]["overall"]
     boolean_record = report["records"][0]
     boolean_record["confirmation"] = boolean_record.pop("detail")
