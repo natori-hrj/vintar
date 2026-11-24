@@ -12,6 +12,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from workflow_actions import collect_workflow_uses
 
 from vintar.checks.sqli import confirmation_runner
+from vintar.checks.sqli.analyzer import analyze_boolean_responses
 from vintar.checks.sqli.decision_facts import (
     DECISION_FACT_CATEGORY_REASONS,
     DecisionStage,
@@ -23,8 +24,15 @@ from vintar.checks.sqli.error_signatures import (
     ERROR_SIGNATURES,
     ErrorSignature,
 )
-from vintar.checks.sqli.models import ProbeKind, Verdict, VerificationResult
+from vintar.checks.sqli.models import (
+    ProbeError,
+    ProbeFailure,
+    ProbeKind,
+    Verdict,
+    VerificationResult,
+)
 from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
+from vintar.core.models import HttpResult
 from vintar.regression.batch import RegressionBatchResult
 from vintar.regression.report import regression_batch_report_dict
 from vintar.regression.runner import RegressionOutcome, RegressionStatus
@@ -58,8 +66,12 @@ def make_report():
         ),
     )
 
+    return _report_for_verification(verification)
+
+
+def _report_for_verification(verification):
     outcome = RegressionOutcome(
-        case_id="case-one",
+        case_id=verification.check_id,
         expected_verdict=Verdict.INCONCLUSIVE,
         verification=verification,
         expectation_match=True,
@@ -67,10 +79,10 @@ def make_report():
     )
 
     batch = RegressionBatchResult(
-        planned_case_ids=("case-one", "case-two"),
+        planned_case_ids=(verification.check_id, "case-two"),
         outcomes=(outcome,),
         status=RegressionStatus.INCONCLUSIVE,
-        requests_used=0,
+        requests_used=verification.request_count,
     )
 
     return regression_batch_report_dict(batch)
@@ -105,6 +117,104 @@ def test_python_validator_rejects_operational_fact_condition_mislabel(tmp_path):
 
     with pytest.raises(ValueError, match="same checks-layer decision"):
         _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+_OBSERVATION_CONTRADICTION = r"Decision facts contradict recorded observations.*Regenerate the report with Vintar"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["reviewer", "wrong_kind", "wrong_status", "non_last", "nonexistent"],
+)
+def test_initial_rate_limited_facts_must_match_stopping_observation(tmp_path, mutation):
+    path = Path("tests/golden/cli/verify/partial-inconclusive.json")
+    report = json.loads(path.read_text(encoding="utf-8"))["stdout_json"]
+    _validate(write_report(tmp_path, report), 3)
+    outcome = report["outcomes"][0]
+    facts = outcome["decision_facts"]
+    observations = outcome["verification"]["observations"]
+    if mutation == "reviewer":
+        facts.update(sequence=18, probe_kind="false")
+    elif mutation == "wrong_kind":
+        facts["probe_kind"] = "false"
+    elif mutation == "wrong_status":
+        observations[0]["status_code"] = 503
+    elif mutation == "non_last":
+        observations.append({**observations[0], "kind": "true", "status_code": 200})
+        outcome["verification"]["request_count"] = 2
+        outcome["request_count"] = report["requests_used"] = 2
+    else:
+        facts["sequence"] = 2
+
+    with pytest.raises(ValueError, match=_OBSERVATION_CONTRADICTION):
+        _validate(write_report(tmp_path, report), 3)
+
+
+def test_initial_failure_facts_match_recorded_failure(tmp_path):
+    verification = VerificationResult(
+        check_id="case-one",
+        verdict=Verdict.INCONCLUSIVE,
+        observations=(),
+        failures=(ProbeFailure(kind=ProbeKind.BASELINE, error=ProbeError.TIMEOUT),),
+        request_count=1,
+        reason_code="probe_failed",
+        reason="Test verification.",
+        decision_facts=OperationalDecisionFacts(
+            reason_code="probe_failed",
+            stage=DecisionStage.INITIAL,
+            sequence=1,
+            probe_kind=ProbeKind.BASELINE,
+            condition=ProbeError.TIMEOUT,
+        ),
+    )
+    report = _report_for_verification(verification)
+    _validate(write_report(tmp_path, report), 3)
+    report["outcomes"][0]["decision_facts"]["condition"] = "connection"
+    with pytest.raises(ValueError, match=_OBSERVATION_CONTRADICTION):
+        _validate(write_report(tmp_path, report), 3)
+
+
+def _response(body=b"response", *, status_code=200, truncated=False):
+    return HttpResult(
+        status_code=status_code, elapsed=0.1, body=body, headers={}, truncated=truncated
+    )
+
+
+@pytest.mark.parametrize(("status", "truncated"), [(503, False), (200, True)])
+def test_initial_analysis_facts_use_request_order_for_completed_plan(
+    tmp_path, status, truncated
+):
+    response = _response()
+    verification = analyze_boolean_responses(
+        "case-one",
+        baseline=(response, _response(status_code=status, truncated=truncated)),
+        true_responses=(response, response),
+        false_responses=(response, response),
+    )
+    report = _report_for_verification(verification)
+    facts = report["outcomes"][0]["decision_facts"]
+    assert facts["sequence"] == 4
+    _validate(write_report(tmp_path, report), 3)
+    facts["status_code"] = 502
+    with pytest.raises(ValueError, match=_OBSERVATION_CONTRADICTION):
+        _validate(write_report(tmp_path, report), 3)
+
+
+@pytest.mark.parametrize(("body", "status"), [(b"different", 200), (b"response", 201)])
+def test_response_dynamics_facts_reject_a_stable_pair(tmp_path, body, status):
+    response = _response()
+    verification = analyze_boolean_responses(
+        "case-one",
+        baseline=(response, _response(body, status_code=status)),
+        true_responses=(response, response),
+        false_responses=(response, response),
+    )
+    report = _report_for_verification(verification)
+    _validate(write_report(tmp_path, report), 3)
+    outcome = report["outcomes"][0]
+    outcome["decision_facts"]["unstable_pairs"][0]["probe_kind"] = "true"
+    with pytest.raises(ValueError, match=_OBSERVATION_CONTRADICTION):
+        _validate(write_report(tmp_path, report), 3)
 
 
 def make_eligible_report():
@@ -152,6 +262,36 @@ def make_matched_report():
     }
     report["requests_used"] = 18
     return report
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"), [("sequence", 8), ("probe_kind", "true_1")]
+)
+def test_confirmation_operational_facts_match_count_and_plan(
+    tmp_path, field, replacement
+):
+    report = make_eligible_report()
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = "confirmation_timeout"
+    outcome["request_count"] = report["requests_used"] = 7
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": "operational",
+        "reason_code": "confirmation_timeout",
+        "request_count": 1,
+    }
+    facts = {
+        "category": "operational",
+        "stage": "confirmation",
+        "sequence": 7,
+        "probe_kind": "baseline",
+        "condition": "timeout",
+    }
+    outcome["decision_facts"] = facts
+    _validate(write_report(tmp_path, report), 3)
+    facts[field] = replacement
+    with pytest.raises(ValueError, match=_OBSERVATION_CONTRADICTION):
+        _validate(write_report(tmp_path, report), 3)
 
 
 def write_report(tmp_path, data):

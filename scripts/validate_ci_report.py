@@ -9,7 +9,11 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
-from vintar.checks.sqli.confirmation import ConfirmationKind, confirmation_eligible
+from vintar.checks.sqli.confirmation import (
+    CONFIRMATION_ORDER,
+    ConfirmationKind,
+    confirmation_eligible,
+)
 from vintar.checks.sqli.confirmation_runner import (
     CONFIRMATION_RESULT_RULES,
     ConfirmationStatus,
@@ -29,6 +33,7 @@ from vintar.checks.sqli.decision_facts import (
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
 from vintar.checks.sqli.models import (
+    BOOLEAN_PROBE_ORDER,
     BooleanEvidence,
     Observation,
     ProbeError,
@@ -72,6 +77,111 @@ _OPERATIONAL_CONFIRMATION_REASONS = frozenset(
     and reason != "candidate_confirmation_mismatch"
 )
 _DECISION_FACT_CATEGORY_REASONS = DECISION_FACT_CATEGORY_REASONS
+
+
+class _ContradictoryDecisionFacts(ValueError):
+    """Decision facts disagree with the recorded verification evidence."""
+
+
+def _matches_response_condition(
+    condition: OperationalCondition, observation: dict[str, object]
+) -> bool:
+    if condition is OperationalCondition.RATE_LIMITED:
+        return observation["status_code"] == 429
+    if condition is OperationalCondition.TRUNCATED:
+        return observation["truncated"] is True
+    return not 200 <= observation["status_code"] < 300
+
+
+def _initial_operational_facts_match(
+    facts: OperationalDecisionFacts, verification: dict[str, object]
+) -> bool:
+    observations = verification["observations"]
+    failures = verification["failures"]
+    condition = facts.condition
+    sequence = facts.sequence
+    if condition is OperationalCondition.BUDGET_UNAVAILABLE:
+        return (
+            not observations
+            and not failures
+            and sequence == 1
+            and facts.probe_kind is BOOLEAN_PROBE_ORDER[0]
+        )
+    if isinstance(condition, ProbeError):
+        return (
+            len(failures) == 1
+            and sequence == len(observations) + 1
+            and facts.probe_kind == failures[0]["kind"]
+            and condition == failures[0]["error"]
+        )
+    if failures or sequence > len(observations):
+        return False
+    if (
+        condition is not OperationalCondition.RATE_LIMITED
+        and len(observations) == len(BOOLEAN_PROBE_ORDER)
+        and tuple(entry["kind"] for entry in observations)
+        == tuple(kind for kind in ProbeKind for _ in range(2))
+    ):
+        # The analyzer records completed responses grouped by kind, but reports
+        # the first triggering response in the original request order.
+        by_kind = iter(observations)
+        pairs = {kind: (next(by_kind), next(by_kind)) for kind in ProbeKind}
+        ordered = [
+            pairs[kind][BOOLEAN_PROBE_ORDER[:index].count(kind)]
+            for index, kind in enumerate(BOOLEAN_PROBE_ORDER)
+        ]
+        if any(
+            _matches_response_condition(condition, entry)
+            for entry in ordered[: sequence - 1]
+        ):
+            return False
+        observation = ordered[sequence - 1]
+    else:
+        if sequence != len(observations):
+            return False
+        observation = observations[sequence - 1]
+    return (
+        facts.probe_kind == observation["kind"]
+        and facts.status_code == observation["status_code"]
+        and _matches_response_condition(condition, observation)
+    )
+
+
+def _confirmation_operational_facts_match(
+    facts: OperationalDecisionFacts, item: dict[str, object]
+) -> bool:
+    confirmation = item.get("confirmation")
+    if not isinstance(confirmation, dict):
+        return False
+    index = facts.sequence - len(BOOLEAN_PROBE_ORDER)
+    count = confirmation["request_count"]
+    if facts.condition in {
+        OperationalCondition.BUDGET_UNAVAILABLE,
+        OperationalCondition.PREFLIGHT_FAILED,
+        OperationalCondition.BUDGET_EXCEEDED,
+    }:
+        index_matches = index == count + 1
+    else:
+        index_matches = index == count
+    return (
+        index_matches
+        and 1 <= index <= len(CONFIRMATION_ORDER)
+        and facts.probe_kind is CONFIRMATION_ORDER[index - 1]
+    )
+
+
+def _dynamics_facts_match(
+    facts: ResponseDynamicsDecisionFacts, verification: dict[str, object]
+) -> bool:
+    for pair in facts.unstable_pairs:
+        observed = [
+            (entry["status_code"], entry["body_digest"])
+            for entry in verification["observations"]
+            if entry["kind"] == pair.probe_kind
+        ]
+        if len(observed) != 2 or observed[0] == observed[1]:
+            return False
+    return True
 
 
 def _validate_decision_facts(item: dict[str, object]) -> None:
@@ -159,6 +269,21 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
         raise ValueError(
             "Decision facts contradict the final reason. Use facts produced by the "
             "same checks-layer decision."
+        )
+    verification = item["verification"]
+    matches = True
+    if isinstance(parsed, OperationalDecisionFacts):
+        matches = (
+            _initial_operational_facts_match(parsed, verification)
+            if parsed.stage is DecisionStage.INITIAL
+            else _confirmation_operational_facts_match(parsed, item)
+        )
+    elif isinstance(parsed, ResponseDynamicsDecisionFacts):
+        matches = _dynamics_facts_match(parsed, verification)
+    if not matches:
+        raise _ContradictoryDecisionFacts(
+            "Decision facts contradict recorded observations or request accounting. "
+            "Regenerate the report with Vintar."
         )
 
 
@@ -676,6 +801,9 @@ def main() -> int:
         _validate(Path(sys.argv[1]), code)
         return 0
 
+    except _ContradictoryDecisionFacts as exc:
+        print(f"{_ERROR_MESSAGE} {exc}", file=sys.stderr)
+        return 2
     except (OSError, ValueError, ValidationError, SchemaError):
         print(_ERROR_MESSAGE, file=sys.stderr)
         return 2
