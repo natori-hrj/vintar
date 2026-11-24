@@ -175,12 +175,39 @@ def _dynamics_facts_match(
 ) -> bool:
     for pair in facts.unstable_pairs:
         observed = [
-            (entry["status_code"], entry["body_digest"])
+            entry
             for entry in verification["observations"]
             if entry["kind"] == pair.probe_kind
         ]
-        if len(observed) != 2 or observed[0] == observed[1]:
+        if len(observed) != 2:
             return False
+        first, second = observed
+        if (first["status_code"], first["body_digest"]) == (
+            second["status_code"],
+            second["body_digest"],
+        ):
+            return False
+        if pair.localization is PairLocalization.LOCALIZED:
+            prefix, suffix = pair.prefix_size, pair.suffix_size
+            first_changed, second_changed = (
+                pair.first_changed_size,
+                pair.second_changed_size,
+            )
+            assert (
+                prefix is not None
+                and suffix is not None
+                and first_changed is not None
+                and second_changed is not None
+            )
+            anchors = prefix + suffix
+            if (
+                anchors + first_changed != first["body_size"]
+                or anchors + second_changed != second["body_size"]
+            ):
+                raise _ContradictoryDecisionFacts(
+                    "Localized response dynamics facts contradict recorded body sizes. "
+                    "Regenerate the report with Vintar."
+                )
     return True
 
 

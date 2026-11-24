@@ -217,6 +217,50 @@ def test_response_dynamics_facts_reject_a_stable_pair(tmp_path, body, status):
         _validate(write_report(tmp_path, report), 3)
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        (None, None),
+        ("prefix_size", 10_000),
+        ("suffix_size", 10_000),
+        ("second_changed_size", 2),
+    ],
+)
+def test_localized_response_dynamics_must_fit_both_recorded_bodies(
+    tmp_path, field, replacement
+):
+    prefix = b"a" * 80
+    suffix = b"z" * 80
+    first = _response(prefix + b"x" + suffix)
+    second = _response(prefix + b"y" + suffix)
+    verification = analyze_boolean_responses(
+        "case-one",
+        baseline=(first, second),
+        true_responses=(first, first),
+        false_responses=(first, first),
+    )
+    report = _report_for_verification(verification)
+    pair = report["outcomes"][0]["decision_facts"]["unstable_pairs"][0]
+    assert pair == {
+        "probe_kind": "baseline",
+        "localization": "localized",
+        "prefix_size": 80,
+        "suffix_size": 80,
+        "first_changed_size": 1,
+        "second_changed_size": 1,
+    }
+    if field is None:
+        _validate(write_report(tmp_path, report), 3)
+        return
+
+    pair[field] = replacement
+    with pytest.raises(
+        ValueError,
+        match=r"^Localized response dynamics facts contradict recorded body sizes\. Regenerate the report with Vintar\.$",
+    ):
+        _validate(write_report(tmp_path, report), 3)
+
+
 def make_eligible_report():
     report = make_report()
     outcome = report["outcomes"][0]
