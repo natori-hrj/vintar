@@ -28,6 +28,14 @@
           "request_count": 0,
           "status": "not_configured"
         },
+        "decision_facts": {
+          "category": "operational",
+          "condition": "rate_limited",
+          "probe_kind": "baseline",
+          "sequence": 1,
+          "stage": "initial",
+          "status_code": 429
+        },
         "expectation_match": false,
         "expected_verdict": "not_detected",
         "request_count": 1,

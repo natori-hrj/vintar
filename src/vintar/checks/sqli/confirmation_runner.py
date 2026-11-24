@@ -30,6 +30,15 @@ from vintar.checks.sqli.confirmation import (
     confirmation_eligible,
     prepare_confirmation_plan,
 )
+from vintar.checks.sqli.decision_facts import (
+    ConfirmationDecisionFacts,
+    ConfirmationRelation,
+    ConfirmationRelationDecisionFacts,
+    DecisionStage,
+    OperationalCondition,
+    OperationalDecisionFacts,
+    PredicatePair,
+)
 from vintar.checks.sqli.echo_normalization import (
     EchoInput,
     NormalizedEcho,
@@ -37,6 +46,7 @@ from vintar.checks.sqli.echo_normalization import (
 )
 from vintar.checks.sqli.models import (
     JSON_SAFE_INTEGER_MAX,
+    ProbeError,
     VerificationResult,
 )
 from vintar.checks.sqli.observation_sink import (
@@ -44,6 +54,7 @@ from vintar.checks.sqli.observation_sink import (
     emit_observation,
 )
 from vintar.checks.sqli.orchestrator import (
+    classify_probe_error,
     query_value_at_point,
     verify_boolean_sqli,
 )
@@ -289,6 +300,7 @@ class ConfirmationOutcome:
         default=None,
         repr=False,
     )
+    decision_facts: ConfirmationDecisionFacts | None = None
 
     def __post_init__(self) -> None:
         if type(self.initial) is not VerificationResult:
@@ -318,6 +330,17 @@ class ConfirmationOutcome:
             self.evidence, ConfirmationEvidence
         ):
             raise TypeError("Invalid confirmation evidence.")
+        if self.decision_facts is not None:
+            if not isinstance(
+                self.decision_facts,
+                (OperationalDecisionFacts, ConfirmationRelationDecisionFacts),
+            ):
+                raise TypeError("Invalid confirmation decision facts.")
+            if self.decision_facts.reason_code != self.reason_code:
+                raise ValueError(
+                    "Confirmation decision facts contradict the reason. Use facts "
+                    "produced by the same confirmation decision."
+                )
 
         rule = CONFIRMATION_RESULT_RULES.get(self.reason_code)
         if rule is None or self.status is not rule.status:
@@ -539,13 +562,17 @@ def _predicate_pairs_are_stable(
 
 def _analyze(
     observations: tuple[ConfirmationObservation, ...],
-) -> tuple[ConfirmationStatus, ConfirmationEvidence | None]:
+) -> tuple[
+    ConfirmationStatus,
+    ConfirmationEvidence | None,
+    ConfirmationRelationDecisionFacts | None,
+]:
     """Compare six stable response pairs using status, size and hash."""
     if len(observations) != CONFIRMATION_REQUESTS:
-        return ConfirmationStatus.INCONCLUSIVE, None
+        return ConfirmationStatus.INCONCLUSIVE, None, None
 
     if tuple(item.kind for item in observations) != CONFIRMATION_ORDER:
-        return ConfirmationStatus.INCONCLUSIVE, None
+        return ConfirmationStatus.INCONCLUSIVE, None, None
 
     pairs: dict[
         ConfirmationKind,
@@ -554,16 +581,26 @@ def _analyze(
 
     for observation in observations:
         if observation.truncated or not 200 <= observation.status_code < 300:
-            return ConfirmationStatus.INCONCLUSIVE, None
+            return ConfirmationStatus.INCONCLUSIVE, None, None
 
         pairs[observation.kind].append(observation)
 
-    if any(
-        len(items) != 2
-        or _confirmation_signature(items[0]) != _confirmation_signature(items[1])
-        for items in pairs.values()
-    ):
-        return ConfirmationStatus.INCONCLUSIVE, None
+    unstable_repeat_kinds = tuple(
+        kind
+        for kind in ConfirmationKind
+        if len(pairs[kind]) != 2
+        or _confirmation_signature(pairs[kind][0])
+        != _confirmation_signature(pairs[kind][1])
+    )
+    if unstable_repeat_kinds:
+        return (
+            ConfirmationStatus.INCONCLUSIVE,
+            None,
+            ConfirmationRelationDecisionFacts(
+                reason_code="confirmation_unstable",
+                unstable_repeat_kinds=unstable_repeat_kinds,
+            ),
+        )
 
     baseline_observation = pairs[ConfirmationKind.BASELINE][0]
     true_1_observation = pairs[ConfirmationKind.TRUE_1][0]
@@ -578,7 +615,30 @@ def _analyze(
         false_1=false_1_observation,
         false_2=false_2_observation,
     ):
-        return ConfirmationStatus.INCONCLUSIVE, None
+        unreproduced = tuple(
+            pair
+            for pair, matches in (
+                (
+                    PredicatePair.TRUE,
+                    _confirmation_signature(true_1_observation)
+                    == _confirmation_signature(true_2_observation),
+                ),
+                (
+                    PredicatePair.FALSE,
+                    _confirmation_signature(false_1_observation)
+                    == _confirmation_signature(false_2_observation),
+                ),
+            )
+            if not matches
+        )
+        return (
+            ConfirmationStatus.INCONCLUSIVE,
+            None,
+            ConfirmationRelationDecisionFacts(
+                reason_code="confirmation_unstable",
+                unreproduced_predicate_pairs=unreproduced,
+            ),
+        )
 
     baseline = _confirmation_signature(baseline_observation)
     true_1 = _confirmation_signature(true_1_observation)
@@ -607,9 +667,27 @@ def _analyze(
         and baseline_differs_from_false
     )
 
+    if candidate:
+        return ConfirmationStatus.CANDIDATE, evidence, None
+    mismatched_relations = tuple(
+        relation
+        for relation, matches in (
+            (ConfirmationRelation.BASELINE_TRUE, baseline_matches_true),
+            (ConfirmationRelation.BASELINE_CONTROL, baseline_matches_control),
+            (
+                ConfirmationRelation.BASELINE_FALSE,
+                baseline_differs_from_false,
+            ),
+        )
+        if not matches
+    )
     return (
-        ConfirmationStatus.CANDIDATE if candidate else ConfirmationStatus.NOT_CONFIRMED,
+        ConfirmationStatus.NOT_CONFIRMED,
         evidence,
+        ConfirmationRelationDecisionFacts(
+            reason_code="candidate_confirmation_mismatch",
+            mismatched_relations=mismatched_relations,
+        ),
     )
 
 
@@ -689,6 +767,7 @@ def verify_boolean_sqli_with_confirmation(
         status: ConfirmationStatus,
         reason_code: str,
         evidence: ConfirmationEvidence | None = None,
+        decision_facts: ConfirmationDecisionFacts | None = None,
     ) -> ConfirmationOutcome:
         used = context.budget.used_requests
 
@@ -699,6 +778,7 @@ def verify_boolean_sqli_with_confirmation(
             confirmation_requests=max(0, used - initial.request_count),
             total_requests=used,
             evidence=evidence,
+            decision_facts=decision_facts,
         )
 
     if not confirmation_eligible(initial):
@@ -714,6 +794,13 @@ def verify_boolean_sqli_with_confirmation(
         return finish(
             ConfirmationStatus.INCONCLUSIVE,
             "confirmation_budget_unavailable",
+            decision_facts=OperationalDecisionFacts(
+                reason_code="confirmation_budget_unavailable",
+                stage=DecisionStage.CONFIRMATION,
+                sequence=7,
+                probe_kind=ConfirmationKind.BASELINE,
+                condition=OperationalCondition.BUDGET_UNAVAILABLE,
+            ),
         )
 
     try:
@@ -728,18 +815,39 @@ def verify_boolean_sqli_with_confirmation(
         return finish(
             ConfirmationStatus.INCONCLUSIVE,
             "confirmation_preflight_failed",
+            decision_facts=OperationalDecisionFacts(
+                reason_code="confirmation_preflight_failed",
+                stage=DecisionStage.CONFIRMATION,
+                sequence=7,
+                probe_kind=ConfirmationKind.BASELINE,
+                condition=OperationalCondition.PREFLIGHT_FAILED,
+            ),
         )
 
     if plan is None or plan != preflight_plan:
         return finish(
             ConfirmationStatus.INCONCLUSIVE,
             "confirmation_preflight_failed",
+            decision_facts=OperationalDecisionFacts(
+                reason_code="confirmation_preflight_failed",
+                stage=DecisionStage.CONFIRMATION,
+                sequence=7,
+                probe_kind=ConfirmationKind.BASELINE,
+                condition=OperationalCondition.PREFLIGHT_FAILED,
+            ),
         )
 
     if context.budget.remaining != CONFIRMATION_REQUESTS:
         return finish(
             ConfirmationStatus.INCONCLUSIVE,
             "confirmation_budget_unavailable",
+            decision_facts=OperationalDecisionFacts(
+                reason_code="confirmation_budget_unavailable",
+                stage=DecisionStage.CONFIRMATION,
+                sequence=7,
+                probe_kind=ConfirmationKind.BASELINE,
+                condition=OperationalCondition.BUDGET_UNAVAILABLE,
+            ),
         )
 
     completed: list[tuple[ConfirmationStep, HttpResult]] = []
@@ -751,7 +859,8 @@ def verify_boolean_sqli_with_confirmation(
         _emit_confirmation_observations(observation_sink, observations)
         return observations
 
-    for step in plan.steps:
+    for confirmation_sequence, step in enumerate(plan.steps, start=1):
+        sequence = INITIAL_REQUESTS + confirmation_sequence
         try:
             response = context.execute(
                 step.template,
@@ -762,24 +871,52 @@ def verify_boolean_sqli_with_confirmation(
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_budget_exceeded",
+                decision_facts=OperationalDecisionFacts(
+                    reason_code="confirmation_budget_exceeded",
+                    stage=DecisionStage.CONFIRMATION,
+                    sequence=sequence,
+                    probe_kind=step.kind,
+                    condition=OperationalCondition.BUDGET_EXCEEDED,
+                ),
             )
         except RateLimitInterruptedError:
             emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_rate_limit_interrupted",
+                decision_facts=OperationalDecisionFacts(
+                    reason_code="confirmation_rate_limit_interrupted",
+                    stage=DecisionStage.CONFIRMATION,
+                    sequence=sequence,
+                    probe_kind=step.kind,
+                    condition=OperationalCondition.RATE_LIMIT_INTERRUPTED,
+                ),
             )
         except httpx.TimeoutException:
             emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_timeout",
+                decision_facts=OperationalDecisionFacts(
+                    reason_code="confirmation_timeout",
+                    stage=DecisionStage.CONFIRMATION,
+                    sequence=sequence,
+                    probe_kind=step.kind,
+                    condition=ProbeError.TIMEOUT,
+                ),
             )
-        except httpx.RequestError:
+        except httpx.RequestError as exc:
             emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_request_failed",
+                decision_facts=OperationalDecisionFacts(
+                    reason_code="confirmation_request_failed",
+                    stage=DecisionStage.CONFIRMATION,
+                    sequence=sequence,
+                    probe_kind=step.kind,
+                    condition=classify_probe_error(exc),
+                ),
             )
 
         completed.append((step, response))
@@ -789,6 +926,14 @@ def verify_boolean_sqli_with_confirmation(
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_rate_limited",
+                decision_facts=OperationalDecisionFacts(
+                    reason_code="confirmation_rate_limited",
+                    stage=DecisionStage.CONFIRMATION,
+                    sequence=sequence,
+                    probe_kind=step.kind,
+                    condition=OperationalCondition.RATE_LIMITED,
+                    status_code=response.status_code,
+                ),
             )
 
         if response.truncated:
@@ -796,6 +941,14 @@ def verify_boolean_sqli_with_confirmation(
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_truncated",
+                decision_facts=OperationalDecisionFacts(
+                    reason_code="confirmation_truncated",
+                    stage=DecisionStage.CONFIRMATION,
+                    sequence=sequence,
+                    probe_kind=step.kind,
+                    condition=OperationalCondition.TRUNCATED,
+                    status_code=response.status_code,
+                ),
             )
 
         if not 200 <= response.status_code < 300:
@@ -803,15 +956,24 @@ def verify_boolean_sqli_with_confirmation(
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_non_success_status",
+                decision_facts=OperationalDecisionFacts(
+                    reason_code="confirmation_non_success_status",
+                    stage=DecisionStage.CONFIRMATION,
+                    sequence=sequence,
+                    probe_kind=step.kind,
+                    condition=OperationalCondition.NON_SUCCESS_STATUS,
+                    status_code=response.status_code,
+                ),
             )
 
     observations = emit_completed(normalize=True)
-    status, evidence = _analyze(observations)
+    status, evidence, decision_facts = _analyze(observations)
 
     if status is ConfirmationStatus.INCONCLUSIVE:
         return finish(
             status,
             "confirmation_unstable",
+            decision_facts=decision_facts,
         )
 
     if status is ConfirmationStatus.CANDIDATE:
@@ -837,6 +999,10 @@ def verify_boolean_sqli_with_confirmation(
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_cross_phase_mismatch",
+                decision_facts=ConfirmationRelationDecisionFacts(
+                    reason_code="confirmation_cross_phase_mismatch",
+                    cross_phase_mismatched_kinds=assessment.mismatched_kinds,
+                ),
             )
 
     if status is ConfirmationStatus.NOT_CONFIRMED:
@@ -844,6 +1010,7 @@ def verify_boolean_sqli_with_confirmation(
             ConfirmationStatus.INCONCLUSIVE,
             "candidate_confirmation_mismatch",
             evidence,
+            decision_facts,
         )
 
     return finish(

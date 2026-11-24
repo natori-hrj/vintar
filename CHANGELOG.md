@@ -4,6 +4,10 @@
 
 **Added**
 
+- Add bounded, machine-readable Boolean `decision_facts` to new CI batch
+  reports for operational, response-dynamics, and confirmation-relation
+  non-decisions while legacy schema-v1 reports may omit the additive field.
+
 - Extend the pinned-source third-party SQLi evaluation with the independent
   MySQL 8-backed sqli-dojo-docker target, including reviewed positive and
   non-SQL negative records for Boolean, Time, and Error checks.

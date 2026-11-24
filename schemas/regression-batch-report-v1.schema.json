@@ -297,6 +297,9 @@
         "confirmation": {
           "$ref": "#/$defs/confirmation"
         },
+        "decision_facts": {
+          "$ref": "#/$defs/decision_facts"
+        },
         "timing": {
           "$ref": "#/$defs/timing"
         },
@@ -327,6 +330,7 @@
               "anyOf": [
                 { "required": ["verification"] },
                 { "required": ["confirmation"] },
+                { "required": ["decision_facts"] },
                 { "required": ["error"] }
               ]
             }
@@ -349,6 +353,7 @@
                 "anyOf": [
                   { "required": ["verification"] },
                   { "required": ["confirmation"] },
+                  { "required": ["decision_facts"] },
                   { "required": ["timing"] }
                 ]
               }
@@ -370,6 +375,68 @@
                   "actual_reason_code",
                   "request_count"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision_facts": {
+                "properties": { "category": { "const": "operational" } },
+                "required": ["category"]
+              }
+            },
+            "required": ["decision_facts"]
+          },
+          "then": {
+            "properties": {
+              "actual_reason_code": {
+                "enum": [
+                  "budget_unavailable", "probe_failed", "rate_limited",
+                  "truncated_response", "non_success_status",
+                  "confirmation_budget_unavailable", "confirmation_preflight_failed",
+                  "confirmation_budget_exceeded", "confirmation_rate_limit_interrupted",
+                  "confirmation_timeout", "confirmation_request_failed",
+                  "confirmation_rate_limited", "confirmation_truncated",
+                  "confirmation_non_success_status"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision_facts": {
+                "properties": { "category": { "const": "response_dynamics" } },
+                "required": ["category"]
+              }
+            },
+            "required": ["decision_facts"]
+          },
+          "then": {
+            "properties": {
+              "actual_reason_code": {
+                "enum": ["possible_dynamic_response", "unstable_response"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision_facts": {
+                "properties": { "category": { "const": "confirmation_relation" } },
+                "required": ["category"]
+              }
+            },
+            "required": ["decision_facts"]
+          },
+          "then": {
+            "properties": {
+              "actual_reason_code": {
+                "enum": ["confirmation_unstable", "candidate_confirmation_mismatch", "confirmation_cross_phase_mismatch"]
               }
             }
           }
@@ -477,6 +544,91 @@
           }
         }
       ]
+    },
+    "decision_facts": {
+      "oneOf": [
+        { "$ref": "#/$defs/operational_decision_facts" },
+        { "$ref": "#/$defs/response_dynamics_decision_facts" },
+        { "$ref": "#/$defs/confirmation_relation_decision_facts" }
+      ]
+    },
+    "operational_decision_facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "stage", "sequence", "probe_kind", "condition"],
+      "properties": {
+        "category": { "const": "operational" },
+        "stage": { "enum": ["initial", "confirmation"] },
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 18 },
+        "probe_kind": {
+          "enum": ["baseline", "true", "false", "true_1", "false_1", "true_2", "false_2", "baseline_preserving_control"]
+        },
+        "condition": {
+          "enum": ["timeout", "connection", "response_read", "budget_exceeded", "rate_limit", "cancelled", "unknown", "budget_unavailable", "preflight_failed", "rate_limit_interrupted", "rate_limited", "truncated", "non_success_status"]
+        },
+        "status_code": { "type": "integer", "minimum": 100, "maximum": 599 }
+      }
+    },
+    "unstable_pair_facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["probe_kind", "localization"],
+      "properties": {
+        "probe_kind": { "enum": ["baseline", "true", "false"] },
+        "localization": { "enum": ["localized", "unlocalized"] },
+        "prefix_size": { "$ref": "#/$defs/count" },
+        "suffix_size": { "$ref": "#/$defs/count" },
+        "first_changed_size": { "$ref": "#/$defs/count" },
+        "second_changed_size": { "$ref": "#/$defs/count" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "localization": { "const": "localized" } } },
+          "then": { "required": ["prefix_size", "suffix_size", "first_changed_size", "second_changed_size"] },
+          "else": { "not": { "anyOf": [
+            { "required": ["prefix_size"] }, { "required": ["suffix_size"] },
+            { "required": ["first_changed_size"] }, { "required": ["second_changed_size"] }
+          ] } }
+        }
+      ]
+    },
+    "response_dynamics_decision_facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "normalization_applied", "normalized_echo_count", "unstable_pairs"],
+      "properties": {
+        "category": { "const": "response_dynamics" },
+        "normalization_applied": { "type": "boolean" },
+        "normalized_echo_count": { "$ref": "#/$defs/count" },
+        "unstable_pairs": {
+          "type": "array", "minItems": 1, "maxItems": 3,
+          "items": { "$ref": "#/$defs/unstable_pair_facts" }
+        }
+      }
+    },
+    "confirmation_relation_decision_facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "unstable_repeat_kinds", "unreproduced_predicate_pairs", "mismatched_relations", "cross_phase_mismatched_kinds"],
+      "properties": {
+        "category": { "const": "confirmation_relation" },
+        "unstable_repeat_kinds": {
+          "type": "array", "uniqueItems": true,
+          "items": { "enum": ["baseline", "true_1", "false_1", "baseline_preserving_control", "true_2", "false_2"] }
+        },
+        "unreproduced_predicate_pairs": {
+          "type": "array", "uniqueItems": true,
+          "items": { "enum": ["true", "false"] }
+        },
+        "mismatched_relations": {
+          "type": "array", "uniqueItems": true,
+          "items": { "enum": ["baseline_true", "baseline_control", "baseline_false"] }
+        },
+        "cross_phase_mismatched_kinds": {
+          "type": "array", "uniqueItems": true,
+          "items": { "enum": ["baseline", "true", "false"] }
+        }
+      }
     },
     "error": {
       "type": "object",

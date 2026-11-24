@@ -3,7 +3,13 @@ import hashlib
 import httpx
 
 from vintar.checks.sqli.analyzer import analyze_boolean_responses
+from vintar.checks.sqli.decision_facts import (
+    DecisionStage,
+    OperationalCondition,
+    OperationalDecisionFacts,
+)
 from vintar.checks.sqli.models import (
+    BOOLEAN_PROBE_ORDER,
     Observation,
     ProbeError,
     ProbeFailure,
@@ -24,15 +30,6 @@ from vintar.core.request import InjectionPoint, RequestTemplate
 from vintar.core.scope import validate_scope
 from vintar.core.template import validate_template
 
-BOOLEAN_PROBE_ORDER = (
-    ProbeKind.BASELINE,
-    ProbeKind.TRUE,
-    ProbeKind.FALSE,
-    ProbeKind.BASELINE,
-    ProbeKind.FALSE,
-    ProbeKind.TRUE,
-)
-
 
 def _observation(
     kind: ProbeKind,
@@ -48,7 +45,8 @@ def _observation(
     )
 
 
-def _probe_error(exc: httpx.RequestError) -> ProbeError:
+def classify_probe_error(exc: httpx.RequestError) -> ProbeError:
+    """Classify a bounded probe failure without retaining exception details."""
     if isinstance(exc, httpx.TimeoutException):
         return ProbeError.TIMEOUT
     if isinstance(exc, httpx.ConnectError):
@@ -171,6 +169,13 @@ def verify_boolean_sqli(
             request_count=0,
             reason_code="budget_unavailable",
             reason="Insufficient request budget for six probes.",
+            decision_facts=OperationalDecisionFacts(
+                reason_code="budget_unavailable",
+                stage=DecisionStage.INITIAL,
+                sequence=1,
+                probe_kind=ProbeKind.BASELINE,
+                condition=OperationalCondition.BUDGET_UNAVAILABLE,
+            ),
         )
 
     observations: list[Observation] = []
@@ -203,7 +208,7 @@ def verify_boolean_sqli(
             failures.append(
                 ProbeFailure(
                     kind=kind,
-                    error=_probe_error(exc),
+                    error=classify_probe_error(exc),
                 )
             )
             break
@@ -224,6 +229,14 @@ def verify_boolean_sqli(
                 reason=(
                     "The target returned HTTP 429. Remaining probes were not sent."
                 ),
+                decision_facts=OperationalDecisionFacts(
+                    reason_code="rate_limited",
+                    stage=DecisionStage.INITIAL,
+                    sequence=len(observations),
+                    probe_kind=kind,
+                    condition=OperationalCondition.RATE_LIMITED,
+                    status_code=429,
+                ),
             )
 
     if failures:
@@ -236,6 +249,13 @@ def verify_boolean_sqli(
             request_count=len(observations) + len(failures),
             reason_code="probe_failed",
             reason="A probe failed before verification completed.",
+            decision_facts=OperationalDecisionFacts(
+                reason_code="probe_failed",
+                stage=DecisionStage.INITIAL,
+                sequence=len(observations) + len(failures),
+                probe_kind=failures[-1].kind,
+                condition=failures[-1].error,
+            ),
         )
 
     result = analyze_boolean_responses(

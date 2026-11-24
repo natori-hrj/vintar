@@ -9,14 +9,31 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
-from vintar.checks.sqli.confirmation import confirmation_eligible
+from vintar.checks.sqli.confirmation import (
+    CONFIRMATION_ORDER,
+    ConfirmationKind,
+    confirmation_eligible,
+)
 from vintar.checks.sqli.confirmation_runner import (
     CONFIRMATION_RESULT_RULES,
     ConfirmationStatus,
 )
+from vintar.checks.sqli.decision_facts import (
+    DECISION_FACT_CATEGORY_REASONS,
+    ConfirmationRelation,
+    ConfirmationRelationDecisionFacts,
+    DecisionStage,
+    OperationalCondition,
+    OperationalDecisionFacts,
+    PairLocalization,
+    PredicatePair,
+    ResponseDynamicsDecisionFacts,
+    UnstablePairFacts,
+)
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
 from vintar.checks.sqli.models import (
+    BOOLEAN_PROBE_ORDER,
     BooleanEvidence,
     Observation,
     ProbeError,
@@ -59,6 +76,242 @@ _OPERATIONAL_CONFIRMATION_REASONS = frozenset(
     if rule.status is ConfirmationStatus.INCONCLUSIVE
     and reason != "candidate_confirmation_mismatch"
 )
+_DECISION_FACT_CATEGORY_REASONS = DECISION_FACT_CATEGORY_REASONS
+
+
+class _ContradictoryDecisionFacts(ValueError):
+    """Decision facts disagree with the recorded verification evidence."""
+
+
+def _matches_response_condition(
+    condition: OperationalCondition, observation: dict[str, object]
+) -> bool:
+    if condition is OperationalCondition.RATE_LIMITED:
+        return observation["status_code"] == 429
+    if condition is OperationalCondition.TRUNCATED:
+        return observation["truncated"] is True
+    return not 200 <= observation["status_code"] < 300
+
+
+def _initial_operational_facts_match(
+    facts: OperationalDecisionFacts, verification: dict[str, object]
+) -> bool:
+    observations = verification["observations"]
+    failures = verification["failures"]
+    condition = facts.condition
+    sequence = facts.sequence
+    if condition is OperationalCondition.BUDGET_UNAVAILABLE:
+        return (
+            not observations
+            and not failures
+            and sequence == 1
+            and facts.probe_kind is BOOLEAN_PROBE_ORDER[0]
+        )
+    if isinstance(condition, ProbeError):
+        return (
+            len(failures) == 1
+            and sequence == len(observations) + 1
+            and facts.probe_kind == failures[0]["kind"]
+            and condition == failures[0]["error"]
+        )
+    if failures or sequence > len(observations):
+        return False
+    if (
+        condition is not OperationalCondition.RATE_LIMITED
+        and len(observations) == len(BOOLEAN_PROBE_ORDER)
+        and tuple(entry["kind"] for entry in observations)
+        == tuple(kind for kind in ProbeKind for _ in range(2))
+    ):
+        # The analyzer records completed responses grouped by kind, but reports
+        # the first triggering response in the original request order.
+        by_kind = iter(observations)
+        pairs = {kind: (next(by_kind), next(by_kind)) for kind in ProbeKind}
+        ordered = [
+            pairs[kind][BOOLEAN_PROBE_ORDER[:index].count(kind)]
+            for index, kind in enumerate(BOOLEAN_PROBE_ORDER)
+        ]
+        if any(
+            _matches_response_condition(condition, entry)
+            for entry in ordered[: sequence - 1]
+        ):
+            return False
+        observation = ordered[sequence - 1]
+    else:
+        if sequence != len(observations):
+            return False
+        observation = observations[sequence - 1]
+    return (
+        facts.probe_kind == observation["kind"]
+        and facts.status_code == observation["status_code"]
+        and _matches_response_condition(condition, observation)
+    )
+
+
+def _confirmation_operational_facts_match(
+    facts: OperationalDecisionFacts, item: dict[str, object]
+) -> bool:
+    confirmation = item.get("confirmation")
+    if not isinstance(confirmation, dict):
+        return False
+    index = facts.sequence - len(BOOLEAN_PROBE_ORDER)
+    count = confirmation["request_count"]
+    if facts.condition in {
+        OperationalCondition.BUDGET_UNAVAILABLE,
+        OperationalCondition.PREFLIGHT_FAILED,
+        OperationalCondition.BUDGET_EXCEEDED,
+    }:
+        index_matches = index == count + 1
+    else:
+        index_matches = index == count
+    return (
+        index_matches
+        and 1 <= index <= len(CONFIRMATION_ORDER)
+        and facts.probe_kind is CONFIRMATION_ORDER[index - 1]
+    )
+
+
+def _dynamics_facts_match(
+    facts: ResponseDynamicsDecisionFacts, verification: dict[str, object]
+) -> bool:
+    for pair in facts.unstable_pairs:
+        observed = [
+            entry
+            for entry in verification["observations"]
+            if entry["kind"] == pair.probe_kind
+        ]
+        if len(observed) != 2:
+            return False
+        first, second = observed
+        if (first["status_code"], first["body_digest"]) == (
+            second["status_code"],
+            second["body_digest"],
+        ):
+            return False
+        if pair.localization is PairLocalization.LOCALIZED:
+            prefix, suffix = pair.prefix_size, pair.suffix_size
+            first_changed, second_changed = (
+                pair.first_changed_size,
+                pair.second_changed_size,
+            )
+            assert (
+                prefix is not None
+                and suffix is not None
+                and first_changed is not None
+                and second_changed is not None
+            )
+            anchors = prefix + suffix
+            if (
+                anchors + first_changed != first["body_size"]
+                or anchors + second_changed != second["body_size"]
+            ):
+                raise _ContradictoryDecisionFacts(
+                    "Localized response dynamics facts contradict recorded body sizes. "
+                    "Regenerate the report with Vintar."
+                )
+    return True
+
+
+def _validate_decision_facts(item: dict[str, object]) -> None:
+    facts = item.get("decision_facts")
+    if facts is None:
+        return
+    if not isinstance(facts, dict):
+        raise TypeError("Invalid decision facts. Supply one bounded facts object.")
+    reason = item.get("actual_reason_code")
+    category = facts.get("category")
+    if (
+        type(category) is not str
+        or type(reason) is not str
+        or reason not in _DECISION_FACT_CATEGORY_REASONS.get(category, ())
+    ):
+        raise ValueError(
+            "Decision fact category contradicts the final reason. Use the category "
+            "produced by the same checks-layer decision."
+        )
+    try:
+        if category == "operational":
+            stage = DecisionStage(facts["stage"])
+            kind_value = facts["probe_kind"]
+            probe_kind = (
+                ProbeKind(kind_value)
+                if stage is DecisionStage.INITIAL
+                else ConfirmationKind(kind_value)
+            )
+            condition_value = facts["condition"]
+            try:
+                condition = ProbeError(condition_value)
+            except ValueError:
+                condition = OperationalCondition(condition_value)
+            parsed = OperationalDecisionFacts(
+                reason_code=reason,
+                stage=stage,
+                sequence=facts["sequence"],
+                probe_kind=probe_kind,
+                condition=condition,
+                status_code=facts.get("status_code"),
+            )
+        elif category == "response_dynamics":
+            parsed = ResponseDynamicsDecisionFacts(
+                reason_code=reason,
+                normalization_applied=facts["normalization_applied"],
+                normalized_echo_count=facts["normalized_echo_count"],
+                unstable_pairs=tuple(
+                    UnstablePairFacts(
+                        probe_kind=ProbeKind(pair["probe_kind"]),
+                        localization=PairLocalization(pair["localization"]),
+                        prefix_size=pair.get("prefix_size"),
+                        suffix_size=pair.get("suffix_size"),
+                        first_changed_size=pair.get("first_changed_size"),
+                        second_changed_size=pair.get("second_changed_size"),
+                    )
+                    for pair in facts["unstable_pairs"]
+                ),
+            )
+        elif category == "confirmation_relation":
+            parsed = ConfirmationRelationDecisionFacts(
+                reason_code=reason,
+                unstable_repeat_kinds=tuple(
+                    ConfirmationKind(value) for value in facts["unstable_repeat_kinds"]
+                ),
+                unreproduced_predicate_pairs=tuple(
+                    PredicatePair(value)
+                    for value in facts["unreproduced_predicate_pairs"]
+                ),
+                mismatched_relations=tuple(
+                    ConfirmationRelation(value)
+                    for value in facts["mismatched_relations"]
+                ),
+                cross_phase_mismatched_kinds=tuple(
+                    ProbeKind(value) for value in facts["cross_phase_mismatched_kinds"]
+                ),
+            )
+        else:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(
+            "Invalid decision facts for the final reason. Use the bounded facts "
+            "produced by the same checks-layer decision."
+        ) from None
+    if parsed.reason_code != reason:
+        raise ValueError(
+            "Decision facts contradict the final reason. Use facts produced by the "
+            "same checks-layer decision."
+        )
+    verification = item["verification"]
+    matches = True
+    if isinstance(parsed, OperationalDecisionFacts):
+        matches = (
+            _initial_operational_facts_match(parsed, verification)
+            if parsed.stage is DecisionStage.INITIAL
+            else _confirmation_operational_facts_match(parsed, item)
+        )
+    elif isinstance(parsed, ResponseDynamicsDecisionFacts):
+        matches = _dynamics_facts_match(parsed, verification)
+    if not matches:
+        raise _ContradictoryDecisionFacts(
+            "Decision facts contradict recorded observations or request accounting. "
+            "Regenerate the report with Vintar."
+        )
 
 
 def _read_report(path: Path) -> bytes:
@@ -334,6 +587,7 @@ def _validate(
     for item in outcomes:
         verdict = item["actual_verdict"]
         matched = item["expectation_match"]
+        _validate_decision_facts(item)
         if item.get("check_type") == "sqli.time":
             timing = item["timing"]
             reason = timing["reason_code"]
@@ -574,6 +828,9 @@ def main() -> int:
         _validate(Path(sys.argv[1]), code)
         return 0
 
+    except _ContradictoryDecisionFacts as exc:
+        print(f"{_ERROR_MESSAGE} {exc}", file=sys.stderr)
+        return 2
     except (OSError, ValueError, ValidationError, SchemaError):
         print(_ERROR_MESSAGE, file=sys.stderr)
         return 2

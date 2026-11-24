@@ -21,6 +21,11 @@ from vintar.checks.sqli.confirmation_runner import (
     ConfirmationStatus,
     verify_boolean_sqli_with_confirmation,
 )
+from vintar.checks.sqli.decision_facts import (
+    OperationalDecisionFacts,
+    PairLocalization,
+    ResponseDynamicsDecisionFacts,
+)
 from vintar.checks.sqli.models import Verdict
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
 from vintar.checks.sqli.presets import (
@@ -323,6 +328,41 @@ def test_precision_confusion_table():
         "fn": 0,
         "non_decision": 3,
     }
+
+
+def test_precision_non_decisions_expose_bounded_decision_facts():
+    global_noise = _measure(next(case for case in CASES if case.name == "global-noise"))
+    assert isinstance(global_noise.decision_facts, ResponseDynamicsDecisionFacts)
+    assert tuple(
+        (item.probe_kind.value, item.localization)
+        for item in global_noise.decision_facts.unstable_pairs
+    ) == (
+        ("baseline", PairLocalization.UNLOCALIZED),
+        ("true", PairLocalization.UNLOCALIZED),
+        ("false", PairLocalization.UNLOCALIZED),
+    )
+
+    localized = _measure(next(case for case in CASES if case.name == "localized-csrf"))
+    assert isinstance(localized.decision_facts, ResponseDynamicsDecisionFacts)
+    assert all(
+        (
+            item.localization,
+            item.prefix_size,
+            item.suffix_size,
+            item.first_changed_size,
+            item.second_changed_size,
+        )
+        == (PairLocalization.LOCALIZED, 21, 15, 1, 1)
+        for item in localized.decision_facts.unstable_pairs
+    )
+
+    waf = _measure(next(case for case in CASES if case.name == "waf-403"))
+    assert isinstance(waf.decision_facts, OperationalDecisionFacts)
+    assert (
+        waf.decision_facts.sequence,
+        waf.decision_facts.probe_kind.value,
+        waf.decision_facts.status_code,
+    ) == (2, "true", 403)
 
 
 def test_post_confirmation_negative_measurement():

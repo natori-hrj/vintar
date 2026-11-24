@@ -7,9 +7,15 @@ import httpx
 import pytest
 
 from vintar.checks.sqli import confirmation_runner
+from vintar.checks.sqli.confirmation import ConfirmationKind
 from vintar.checks.sqli.confirmation_runner import (
     ConfirmationStatus,
     verify_boolean_sqli_with_confirmation,
+)
+from vintar.checks.sqli.decision_facts import (
+    ConfirmationRelation,
+    ConfirmationRelationDecisionFacts,
+    PredicatePair,
 )
 from vintar.checks.sqli.models import Verdict
 from vintar.checks.sqli.observation_sink import RecordedSqliObservation
@@ -302,6 +308,8 @@ def test_simple_non_sql_branch_is_not_confirmed():
     assert result.evidence is None
     assert len(received) == 18
     assert context.budget.used_requests == 18
+    assert isinstance(result.decision_facts, ConfirmationRelationDecisionFacts)
+    assert result.decision_facts.unreproduced_predicate_pairs == (PredicatePair.FALSE,)
 
 
 @pytest.mark.parametrize("unstable_pair", ["true", "false"])
@@ -327,6 +335,10 @@ def test_cross_predicate_pair_instability_is_reported_before_mismatch(
     assert result.reason_code == "confirmation_unstable"
     assert result.evidence is None
     assert result.confirmation_requests == 12
+    assert isinstance(result.decision_facts, ConfirmationRelationDecisionFacts)
+    assert result.decision_facts.unreproduced_predicate_pairs == (
+        (PredicatePair.TRUE,) if unstable_pair == "true" else (PredicatePair.FALSE,)
+    )
 
 
 @pytest.mark.parametrize("stable_mismatch", ["control", "baseline_true"])
@@ -358,6 +370,13 @@ def test_stable_predicate_pairs_can_report_relation_mismatch(stable_mismatch):
     assert result.reason_code == "candidate_confirmation_mismatch"
     assert result.evidence is not None
     assert result.confirmation_requests == 12
+    assert isinstance(result.decision_facts, ConfirmationRelationDecisionFacts)
+    expected_relation = (
+        ConfirmationRelation.BASELINE_CONTROL
+        if stable_mismatch == "control"
+        else ConfirmationRelation.BASELINE_TRUE
+    )
+    assert result.decision_facts.mismatched_relations == (expected_relation,)
 
 
 @pytest.mark.parametrize(
@@ -433,6 +452,8 @@ def test_unstable_confirmation_does_not_become_candidate():
     assert result.evidence is None
     assert result.total_requests == 18
     assert context.budget.used_requests == 18
+    assert isinstance(result.decision_facts, ConfirmationRelationDecisionFacts)
+    assert result.decision_facts.unstable_repeat_kinds == tuple(ConfirmationKind)
 
 
 def test_initial_rate_limit_prevents_confirmation():

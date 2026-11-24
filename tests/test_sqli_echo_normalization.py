@@ -3,6 +3,7 @@
 import pytest
 
 from vintar.checks.sqli.analyzer import analyze_boolean_responses
+from vintar.checks.sqli.decision_facts import ResponseDynamicsDecisionFacts
 from vintar.checks.sqli.echo_normalization import (
     EchoInput,
     normalize_context_bound_echoes,
@@ -176,6 +177,28 @@ def test_repeat_context_mismatch_cannot_become_a_candidate() -> None:
     assert result.verdict is Verdict.INCONCLUSIVE
     assert result.reason_code in {"unstable_response", "possible_dynamic_response"}
     assert result.reason_code != "boolean_candidate"
+
+
+def test_dynamic_facts_expose_only_normalization_flag_and_count() -> None:
+    def dynamic(value: bytes, token: bytes) -> bytes:
+        return (
+            b'prefix-0123456789-value="'
+            + value
+            + b'"-0123456789abcdef0123456789abcdef-token='
+            + token
+            + b"-suffix-0123456789"
+        )
+
+    result = analyze(
+        pair(dynamic(b"Pets", b"a"), dynamic(b"Pets", b"b")),
+        pair(dynamic(b"Pets TRUE", b"a"), dynamic(b"Pets TRUE", b"b")),
+        pair(dynamic(b"Pets FALSE", b"a"), dynamic(b"Pets FALSE", b"b")),
+        ("Pets", "Pets TRUE", "Pets FALSE"),
+    )
+
+    assert isinstance(result.decision_facts, ResponseDynamicsDecisionFacts)
+    assert result.decision_facts.normalization_applied is True
+    assert result.decision_facts.normalized_echo_count == 6
 
 
 def test_normalizer_replaces_only_the_context_bound_short_occurrence() -> None:
