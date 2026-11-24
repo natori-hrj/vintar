@@ -7,6 +7,9 @@
 - Add bounded, machine-readable Boolean `decision_facts` to new CI batch
   reports for operational, response-dynamics, and confirmation-relation
   non-decisions while legacy schema-v1 reports may omit the additive field.
+- Add bounded Time SQLi `decision_facts` to new CI batch reports for
+  operational stops, timing-instability causes, and ambiguous timing
+  predicates without exposing elapsed values, thresholds, or margins.
 
 - Extend the pinned-source third-party SQLi evaluation with the independent
   MySQL 8-backed sqli-dojo-docker target, including reviewed positive and

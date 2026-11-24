@@ -6,6 +6,11 @@ from dataclasses import replace
 import httpx
 import pytest
 
+from vintar.checks.sqli.decision_facts import (
+    DecisionStage,
+    OperationalDecisionFacts,
+    TimeOperationalCondition,
+)
 from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.time_analyzer import TimeAnalysisStatus
 from vintar.checks.sqli.time_plan import (
@@ -230,6 +235,18 @@ def test_unsafe_status_stops_immediately(status, reason):
     assert report.budget_used == 1
     assert context.budget.used_requests == 1
     assert len(calls) == 1
+    assert isinstance(report.analysis.decision_facts, OperationalDecisionFacts)
+    assert report.analysis.decision_facts.stage is DecisionStage.TIME
+    assert (
+        report.analysis.decision_facts.sequence,
+        report.analysis.decision_facts.probe_kind,
+        report.analysis.decision_facts.status_code,
+    ) == (1, TimeProbeKind.BASELINE, status)
+    assert report.analysis.decision_facts.condition is (
+        TimeOperationalCondition.RATE_LIMITED
+        if status == 429
+        else TimeOperationalCondition.NON_SUCCESS_STATUS
+    )
 
 
 def test_timeout_does_not_become_candidate():
@@ -244,6 +261,10 @@ def test_timeout_does_not_become_candidate():
     assert report.analysis.request_count == 1
     assert report.transport_attempts == 1
     assert context.budget.used_requests == 1
+    assert isinstance(report.analysis.decision_facts, OperationalDecisionFacts)
+    assert report.analysis.decision_facts.condition is TimeOperationalCondition.TIMEOUT
+    assert report.analysis.decision_facts.sequence == 1
+    assert report.analysis.decision_facts.probe_kind is TimeProbeKind.BASELINE
 
 
 def test_request_failure_does_not_become_candidate():
@@ -255,6 +276,11 @@ def test_request_failure_does_not_become_candidate():
     assert report.analysis.status is TimeAnalysisStatus.INCONCLUSIVE
     assert report.analysis.reason_code == "probe_failed"
     assert report.analysis.evidence is None
+    assert isinstance(report.analysis.decision_facts, OperationalDecisionFacts)
+    assert (
+        report.analysis.decision_facts.condition
+        is TimeOperationalCondition.REQUEST_FAILED
+    )
 
 
 def test_truncated_response_stops_immediately():
@@ -277,6 +303,11 @@ def test_truncated_response_stops_immediately():
     assert report.analysis.reason_code == "truncated_response"
     assert report.transport_attempts == 1
     assert len(calls) == 1
+    assert isinstance(report.analysis.decision_facts, OperationalDecisionFacts)
+    assert (
+        report.analysis.decision_facts.condition is TimeOperationalCondition.TRUNCATED
+    )
+    assert report.analysis.decision_facts.status_code == 200
 
 
 def test_exhausted_deadline_prevents_subsequent_dispatch():
@@ -328,6 +359,10 @@ def test_deadline_during_rate_wait_prevents_dispatch():
     assert report.budget_used == 2
     assert report.transport_attempts == 1
     assert len(calls) == 1
+    assert isinstance(report.analysis.decision_facts, OperationalDecisionFacts)
+    assert report.analysis.decision_facts.condition is TimeOperationalCondition.DEADLINE
+    assert report.analysis.decision_facts.sequence == 2
+    assert report.analysis.decision_facts.probe_kind is TimeProbeKind.CONTROL
 
 
 def test_timeout_is_recapped_after_rate_wait():
@@ -380,6 +415,10 @@ def test_deadline_before_budget_reservation_records_no_attempt():
     assert report.transport_attempts == 0
     assert context.budget.used_requests == 0
     assert not calls
+    assert isinstance(report.analysis.decision_facts, OperationalDecisionFacts)
+    assert report.analysis.decision_facts.condition is TimeOperationalCondition.DEADLINE
+    assert report.analysis.decision_facts.sequence == 1
+    assert report.analysis.decision_facts.probe_kind is TimeProbeKind.BASELINE
 
 
 def test_rate_limiter_interruption_records_budget_without_dispatch():
@@ -410,6 +449,10 @@ def test_rate_limiter_interruption_records_budget_without_dispatch():
     assert report.transport_attempts == 0
     assert report.analysis.observations[0].rate_wait_seconds >= 0
     assert not calls
+    assert isinstance(report.analysis.decision_facts, OperationalDecisionFacts)
+    assert (
+        report.analysis.decision_facts.condition is TimeOperationalCondition.INTERRUPTED
+    )
 
 
 def test_response_completed_after_deadline_is_not_timing_evidence():
@@ -431,6 +474,8 @@ def test_response_completed_after_deadline_is_not_timing_evidence():
     assert report.budget_used == 1
     assert report.transport_attempts == 1
     assert context.budget.used_requests == 1
+    assert isinstance(report.analysis.decision_facts, OperationalDecisionFacts)
+    assert report.analysis.decision_facts.condition is TimeOperationalCondition.DEADLINE
 
 
 def test_invalid_budget_rejected_before_http():

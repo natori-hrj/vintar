@@ -27,8 +27,13 @@ from vintar.checks.sqli.decision_facts import (
     OperationalDecisionFacts,
     PairLocalization,
     PredicatePair,
+    RateLimitStatusMismatch,
     ResponseDynamicsDecisionFacts,
+    TimeOperationalCondition,
+    TimingDynamicsDecisionFacts,
+    TimingInstabilityCause,
     UnstablePairFacts,
+    select_initial_response_stop,
 )
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
@@ -43,6 +48,7 @@ from vintar.checks.sqli.models import (
     VerificationResult,
 )
 from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
+from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER, TimeProbeKind
 
 _SCHEMA = (
     Path(__file__).resolve().parents[1]
@@ -83,16 +89,6 @@ class _ContradictoryDecisionFacts(ValueError):
     """Decision facts disagree with the recorded verification evidence."""
 
 
-def _matches_response_condition(
-    condition: OperationalCondition, observation: dict[str, object]
-) -> bool:
-    if condition is OperationalCondition.RATE_LIMITED:
-        return observation["status_code"] == 429
-    if condition is OperationalCondition.TRUNCATED:
-        return observation["truncated"] is True
-    return not 200 <= observation["status_code"] < 300
-
-
 def _initial_operational_facts_match(
     facts: OperationalDecisionFacts, verification: dict[str, object]
 ) -> bool:
@@ -116,34 +112,37 @@ def _initial_operational_facts_match(
         )
     if failures or sequence > len(observations):
         return False
-    if (
-        condition is not OperationalCondition.RATE_LIMITED
-        and len(observations) == len(BOOLEAN_PROBE_ORDER)
-        and tuple(entry["kind"] for entry in observations)
-        == tuple(kind for kind in ProbeKind for _ in range(2))
-    ):
-        # The analyzer records completed responses grouped by kind, but reports
-        # the first triggering response in the original request order.
-        by_kind = iter(observations)
-        pairs = {kind: (next(by_kind), next(by_kind)) for kind in ProbeKind}
-        ordered = [
-            pairs[kind][BOOLEAN_PROBE_ORDER[:index].count(kind)]
-            for index, kind in enumerate(BOOLEAN_PROBE_ORDER)
-        ]
-        if any(
-            _matches_response_condition(condition, entry)
-            for entry in ordered[: sequence - 1]
-        ):
+    if len(observations) == len(BOOLEAN_PROBE_ORDER):
+        kinds = tuple(entry["kind"] for entry in observations)
+        if kinds == BOOLEAN_PROBE_ORDER:
+            ordered = observations
+        elif kinds == tuple(kind for kind in ProbeKind for _ in range(2)):
+            # Completed analyzer observations are grouped by kind.
+            by_kind = iter(observations)
+            pairs = {kind: (next(by_kind), next(by_kind)) for kind in ProbeKind}
+            ordered = [
+                pairs[kind][BOOLEAN_PROBE_ORDER[:index].count(kind)]
+                for index, kind in enumerate(BOOLEAN_PROBE_ORDER)
+            ]
+        else:
             return False
-        observation = ordered[sequence - 1]
+        offset = 0
     else:
-        if sequence != len(observations):
-            return False
-        observation = observations[sequence - 1]
+        ordered = observations[-1:]
+        offset = len(observations) - 1
+    stop = select_initial_response_stop(
+        (entry["status_code"], entry["truncated"]) for entry in ordered
+    )
+    if stop is None:
+        return False
+    expected_sequence, expected_condition, expected_reason = stop
+    observation = ordered[expected_sequence - 1]
     return (
-        facts.probe_kind == observation["kind"]
+        sequence == expected_sequence + offset
+        and condition is expected_condition
+        and facts.reason_code == expected_reason
+        and facts.probe_kind == observation["kind"]
         and facts.status_code == observation["status_code"]
-        and _matches_response_condition(condition, observation)
     )
 
 
@@ -232,16 +231,19 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
         if category == "operational":
             stage = DecisionStage(facts["stage"])
             kind_value = facts["probe_kind"]
-            probe_kind = (
-                ProbeKind(kind_value)
-                if stage is DecisionStage.INITIAL
-                else ConfirmationKind(kind_value)
-            )
+            probe_kind = {
+                DecisionStage.INITIAL: ProbeKind,
+                DecisionStage.CONFIRMATION: ConfirmationKind,
+                DecisionStage.TIME: TimeProbeKind,
+            }[stage](kind_value)
             condition_value = facts["condition"]
-            try:
-                condition = ProbeError(condition_value)
-            except ValueError:
-                condition = OperationalCondition(condition_value)
+            if stage is DecisionStage.TIME:
+                condition = TimeOperationalCondition(condition_value)
+            else:
+                try:
+                    condition = ProbeError(condition_value)
+                except ValueError:
+                    condition = OperationalCondition(condition_value)
             parsed = OperationalDecisionFacts(
                 reason_code=reason,
                 stage=stage,
@@ -285,8 +287,21 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
                     ProbeKind(value) for value in facts["cross_phase_mismatched_kinds"]
                 ),
             )
+        elif category == "timing_dynamics":
+            parsed = TimingDynamicsDecisionFacts(
+                reason_code=reason,
+                instability_causes=tuple(
+                    TimingInstabilityCause(value)
+                    for value in facts["instability_causes"]
+                ),
+                candidate_median_met=facts.get("candidate_median_met"),
+                candidate_margin_met=facts.get("candidate_margin_met"),
+                no_delay_condition_met=facts.get("no_delay_condition_met"),
+            )
         else:
             raise ValueError
+    except RateLimitStatusMismatch as exc:
+        raise _ContradictoryDecisionFacts(str(exc)) from None
     except (KeyError, TypeError, ValueError):
         raise ValueError(
             "Invalid decision facts for the final reason. Use the bounded facts "
@@ -296,6 +311,41 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
         raise ValueError(
             "Decision facts contradict the final reason. Use facts produced by the "
             "same checks-layer decision."
+        )
+    if item.get("check_type") == "sqli.time" and isinstance(
+        parsed, OperationalDecisionFacts
+    ):
+        request_count = item.get("request_count")
+        if type(request_count) is not int:
+            raise ValueError(
+                "Time operational facts require the bounded report request count. "
+                "Regenerate the report with the current writer."
+            )
+        expected_sequence = (
+            request_count + 1 if reason == "incomplete_probes" else request_count
+        )
+        if (
+            parsed.stage is not DecisionStage.TIME
+            or parsed.sequence != expected_sequence
+            or parsed.probe_kind is not TIME_PROBE_ORDER[parsed.sequence - 1]
+        ):
+            raise ValueError(
+                "Time operational facts contradict the stopping plan position. Use "
+                "the fixed-plan sequence and probe kind emitted by the timing runner."
+            )
+    if item.get("check_type") == "sqli.time":
+        if not isinstance(
+            parsed, (OperationalDecisionFacts, TimingDynamicsDecisionFacts)
+        ):
+            raise ValueError(
+                "Time decision facts use an invalid category. Use operational or "
+                "timing-dynamics facts emitted by the timing check."
+            )
+        return
+    if isinstance(parsed, TimingDynamicsDecisionFacts):
+        raise TypeError(
+            "Timing-dynamics facts require a Time outcome. Use facts emitted by the "
+            "check that produced this outcome."
         )
     verification = item["verification"]
     matches = True
@@ -308,9 +358,15 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
     elif isinstance(parsed, ResponseDynamicsDecisionFacts):
         matches = _dynamics_facts_match(parsed, verification)
     if not matches:
+        precedence_guidance = (
+            " The initial reason and position must follow analyzer precedence."
+            if isinstance(parsed, OperationalDecisionFacts)
+            and parsed.stage is DecisionStage.INITIAL
+            else ""
+        )
         raise _ContradictoryDecisionFacts(
-            "Decision facts contradict recorded observations or request accounting. "
-            "Regenerate the report with Vintar."
+            "Decision facts contradict recorded observations or request accounting."
+            f"{precedence_guidance} Regenerate the report with Vintar."
         )
 
 

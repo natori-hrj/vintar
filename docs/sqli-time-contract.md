@@ -351,6 +351,30 @@ injection.
 analyzer validates status, reason, request count, completeness, and evidence
 against that table before a result can be mapped.
 
+### Structured decision facts
+
+New CI reports include bounded `decision_facts` for every Time non-decision
+listed below. Legacy schema-v1 reports may omit this additive sibling.
+
+- Operational reasons identify stage `time`, the one-based sequence and fixed
+  probe kind, a condition enum, and an HTTP status only when a response exists.
+  Deadline expiry before dispatch points to the next request in the fixed plan.
+- `unstable_timing` lists one or more causes in deterministic order:
+  `baseline_span`, `control_span`, `baseline_control_difference`, `drift`, and
+  `delay_span`.
+- `ambiguous_timing` records only whether the candidate median condition, the
+  candidate minimum-margin condition, and the no-delay condition were met.
+
+These facts deliberately exclude elapsed values, medians, thresholds, margins,
+payloads, URLs, and response content. They are constructed by the analyzer or
+runner from the same predicates that select the reason; the report layer only
+serializes them. Constructors, JSON Schema, and the Python report validator
+reject a fact category or shape that contradicts the reason.
+
+The CI report has no per-probe Time observation array. Its validator can bind
+an operational fact to the fixed plan and `request_count`, but cannot compare
+the reported HTTP status against a second per-probe field.
+
 ## HTTP Runner
 
 The runner constructs the plan and observations inside one trusted

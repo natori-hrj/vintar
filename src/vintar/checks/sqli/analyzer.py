@@ -9,6 +9,7 @@ from vintar.checks.sqli.decision_facts import (
     PairLocalization,
     ResponseDynamicsDecisionFacts,
     UnstablePairFacts,
+    select_initial_response_stop,
 )
 from vintar.checks.sqli.dynamic import detect_dynamic_region
 from vintar.checks.sqli.echo_normalization import (
@@ -174,44 +175,27 @@ def analyze_boolean_responses(
     for kind in BOOLEAN_PROBE_ORDER:
         ordered.append(observations_by_kind[kind][offsets[kind]])
         offsets[kind] += 1
-    ordered_observations = tuple(ordered)
-
-    if any(item.truncated for item in observations):
-        sequence, item = next(
-            (index, item)
-            for index, item in enumerate(ordered_observations, start=1)
-            if item.truncated
-        )
+    stop = select_initial_response_stop(
+        (item.status_code, item.truncated) for item in ordered
+    )
+    if stop is not None:
+        sequence, condition, reason = stop
+        item = ordered[sequence - 1]
+        explanation = {
+            OperationalCondition.RATE_LIMITED: "A probe returned HTTP 429.",
+            OperationalCondition.TRUNCATED: "At least one response was truncated.",
+            OperationalCondition.NON_SUCCESS_STATUS: "At least one probe returned a non-2xx HTTP status.",
+        }[condition]
         return result(
             Verdict.INCONCLUSIVE,
-            "truncated_response",
-            "At least one response was truncated.",
+            reason,
+            explanation,
             decision_facts=OperationalDecisionFacts(
-                reason_code="truncated_response",
+                reason_code=reason,
                 stage=DecisionStage.INITIAL,
                 sequence=sequence,
                 probe_kind=item.kind,
-                condition=OperationalCondition.TRUNCATED,
-                status_code=item.status_code,
-            ),
-        )
-
-    if any(not 200 <= item.status_code < 300 for item in observations):
-        sequence, item = next(
-            (index, item)
-            for index, item in enumerate(ordered_observations, start=1)
-            if not 200 <= item.status_code < 300
-        )
-        return result(
-            Verdict.INCONCLUSIVE,
-            "non_success_status",
-            "At least one probe returned a non-2xx HTTP status.",
-            decision_facts=OperationalDecisionFacts(
-                reason_code="non_success_status",
-                stage=DecisionStage.INITIAL,
-                sequence=sequence,
-                probe_kind=item.kind,
-                condition=OperationalCondition.NON_SUCCESS_STATUS,
+                condition=condition,
                 status_code=item.status_code,
             ),
         )

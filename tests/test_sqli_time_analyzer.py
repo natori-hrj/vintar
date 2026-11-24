@@ -4,6 +4,10 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
+from vintar.checks.sqli.decision_facts import (
+    TimingDynamicsDecisionFacts,
+    TimingInstabilityCause,
+)
 from vintar.checks.sqli.time_analyzer import (
     TimeAnalysisStatus,
     TimeObservation,
@@ -166,6 +170,61 @@ def test_control_instability_is_inconclusive():
 
 
 @pytest.mark.parametrize(
+    ("observations", "expected_cause"),
+    [
+        (
+            {"baseline": (0.10, 0.40, 0.10)},
+            TimingInstabilityCause.BASELINE_SPAN,
+        ),
+        (
+            {"control": (0.10, 0.40, 0.10)},
+            TimingInstabilityCause.CONTROL_SPAN,
+        ),
+        (
+            {
+                "baseline": (0.10, 0.10, 0.10),
+                "control": (0.40, 0.40, 0.40),
+            },
+            TimingInstabilityCause.BASELINE_CONTROL_DIFFERENCE,
+        ),
+        (
+            {"baseline": (0.10, 0.20, 0.40)},
+            TimingInstabilityCause.DRIFT,
+        ),
+        (
+            {
+                "baseline": (0.10, 0.10, 0.10),
+                "control": (0.10, 0.10, 0.10),
+                "delay": (0.10, 0.10, 2.00),
+            },
+            TimingInstabilityCause.DELAY_SPAN,
+        ),
+    ],
+)
+def test_each_timing_instability_cause_is_reported_alone(observations, expected_cause):
+    result = run_analysis(**observations)
+
+    assert isinstance(result.decision_facts, TimingDynamicsDecisionFacts)
+    assert result.decision_facts.instability_causes == (expected_cause,)
+
+
+def test_multiple_timing_instability_causes_use_deterministic_order():
+    result = run_analysis(
+        baseline=(0.10, 0.50, 0.10),
+        control=(0.40, 0.80, 0.40),
+        delay=(0.10, 0.10, 2.00),
+    )
+
+    assert isinstance(result.decision_facts, TimingDynamicsDecisionFacts)
+    assert result.decision_facts.instability_causes == (
+        TimingInstabilityCause.BASELINE_SPAN,
+        TimingInstabilityCause.CONTROL_SPAN,
+        TimingInstabilityCause.BASELINE_CONTROL_DIFFERENCE,
+        TimingInstabilityCause.DELAY_SPAN,
+    )
+
+
+@pytest.mark.parametrize(
     "delay",
     [
         (1.20, 2.00, 3.10),
@@ -276,6 +335,12 @@ def test_intermediate_delay_is_ambiguous():
     assert result.status is TimeAnalysisStatus.INCONCLUSIVE
     assert result.reason_code == "ambiguous_timing"
     assert result.evidence is not None
+    assert isinstance(result.decision_facts, TimingDynamicsDecisionFacts)
+    assert (
+        result.decision_facts.candidate_median_met,
+        result.decision_facts.candidate_margin_met,
+        result.decision_facts.no_delay_condition_met,
+    ) == (False, False, False)
 
 
 def test_stable_delay_span_with_insufficient_margin_is_ambiguous():
@@ -290,6 +355,12 @@ def test_stable_delay_span_with_insufficient_margin_is_ambiguous():
     assert result.evidence.minimum_delay_margin == pytest.approx(0.49)
     assert result.status is TimeAnalysisStatus.INCONCLUSIVE
     assert result.reason_code == "ambiguous_timing"
+    assert isinstance(result.decision_facts, TimingDynamicsDecisionFacts)
+    assert (
+        result.decision_facts.candidate_median_met,
+        result.decision_facts.candidate_margin_met,
+        result.decision_facts.no_delay_condition_met,
+    ) == (True, False, False)
 
 
 @pytest.mark.parametrize(
@@ -325,6 +396,13 @@ def test_candidate_threshold_and_margin_boundaries(
 
     assert result.status is expected_status
     assert result.reason_code == expected_reason
+    if expected_reason == "ambiguous_timing":
+        assert isinstance(result.decision_facts, TimingDynamicsDecisionFacts)
+        assert (
+            result.decision_facts.candidate_median_met,
+            result.decision_facts.candidate_margin_met,
+            result.decision_facts.no_delay_condition_met,
+        ) == (False, True, False)
 
 
 def test_exact_no_delay_threshold_is_not_confirmed():

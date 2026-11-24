@@ -330,7 +330,6 @@
               "anyOf": [
                 { "required": ["verification"] },
                 { "required": ["confirmation"] },
-                { "required": ["decision_facts"] },
                 { "required": ["error"] }
               ]
             }
@@ -381,6 +380,76 @@
         },
         {
           "if": {
+            "allOf": [
+              {
+                "properties": {
+                  "actual_reason_code": { "const": "unstable_timing" }
+                },
+                "required": ["actual_reason_code"]
+              },
+              {
+                "properties": {
+                  "decision_facts": {
+                    "properties": { "category": { "const": "timing_dynamics" } },
+                    "required": ["category"]
+                  }
+                },
+                "required": ["decision_facts"]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "decision_facts": {
+                "required": ["instability_causes"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["candidate_median_met"] },
+                    { "required": ["candidate_margin_met"] },
+                    { "required": ["no_delay_condition_met"] }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "allOf": [
+              {
+                "properties": {
+                  "actual_reason_code": { "const": "ambiguous_timing" }
+                },
+                "required": ["actual_reason_code"]
+              },
+              {
+                "properties": {
+                  "decision_facts": {
+                    "properties": { "category": { "const": "timing_dynamics" } },
+                    "required": ["category"]
+                  }
+                },
+                "required": ["decision_facts"]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "decision_facts": {
+                "required": [
+                  "candidate_median_met",
+                  "candidate_margin_met",
+                  "no_delay_condition_met"
+                ],
+                "properties": {
+                  "instability_causes": { "maxItems": 0 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
             "properties": {
               "decision_facts": {
                 "properties": { "category": { "const": "operational" } },
@@ -395,12 +464,31 @@
                 "enum": [
                   "budget_unavailable", "probe_failed", "rate_limited",
                   "truncated_response", "non_success_status",
+                  "incomplete_probes", "probe_timeout", "probe_interrupted",
                   "confirmation_budget_unavailable", "confirmation_preflight_failed",
                   "confirmation_budget_exceeded", "confirmation_rate_limit_interrupted",
                   "confirmation_timeout", "confirmation_request_failed",
                   "confirmation_rate_limited", "confirmation_truncated",
                   "confirmation_non_success_status"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "decision_facts": {
+                "properties": { "category": { "const": "timing_dynamics" } },
+                "required": ["category"]
+              }
+            },
+            "required": ["decision_facts"]
+          },
+          "then": {
+            "properties": {
+              "actual_reason_code": {
+                "enum": ["unstable_timing", "ambiguous_timing"]
               }
             }
           }
@@ -549,7 +637,8 @@
       "oneOf": [
         { "$ref": "#/$defs/operational_decision_facts" },
         { "$ref": "#/$defs/response_dynamics_decision_facts" },
-        { "$ref": "#/$defs/confirmation_relation_decision_facts" }
+        { "$ref": "#/$defs/confirmation_relation_decision_facts" },
+        { "$ref": "#/$defs/timing_dynamics_decision_facts" }
       ]
     },
     "operational_decision_facts": {
@@ -558,13 +647,13 @@
       "required": ["category", "stage", "sequence", "probe_kind", "condition"],
       "properties": {
         "category": { "const": "operational" },
-        "stage": { "enum": ["initial", "confirmation"] },
+        "stage": { "enum": ["initial", "confirmation", "time"] },
         "sequence": { "type": "integer", "minimum": 1, "maximum": 18 },
         "probe_kind": {
-          "enum": ["baseline", "true", "false", "true_1", "false_1", "true_2", "false_2", "baseline_preserving_control"]
+          "enum": ["baseline", "true", "false", "control", "delay", "true_1", "false_1", "true_2", "false_2", "baseline_preserving_control"]
         },
         "condition": {
-          "enum": ["timeout", "connection", "response_read", "budget_exceeded", "rate_limit", "cancelled", "unknown", "budget_unavailable", "preflight_failed", "rate_limit_interrupted", "rate_limited", "truncated", "non_success_status"]
+          "enum": ["timeout", "connection", "response_read", "budget_exceeded", "rate_limit", "cancelled", "unknown", "budget_unavailable", "preflight_failed", "rate_limit_interrupted", "rate_limited", "truncated", "non_success_status", "request_failed", "interrupted", "deadline"]
         },
         "status_code": { "type": "integer", "minimum": 100, "maximum": 599 }
       }
@@ -629,6 +718,36 @@
           "items": { "enum": ["baseline", "true", "false"] }
         }
       }
+    },
+    "timing_dynamics_decision_facts": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["category", "instability_causes"],
+          "properties": {
+            "category": { "const": "timing_dynamics" },
+            "instability_causes": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "enum": ["baseline_span", "control_span", "baseline_control_difference", "drift", "delay_span"] }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["category", "instability_causes", "candidate_median_met", "candidate_margin_met", "no_delay_condition_met"],
+          "properties": {
+            "category": { "const": "timing_dynamics" },
+            "instability_causes": { "type": "array", "maxItems": 0 },
+            "candidate_median_met": { "type": "boolean" },
+            "candidate_margin_met": { "type": "boolean" },
+            "no_delay_condition_met": { "type": "boolean" }
+          }
+        }
+      ]
     },
     "error": {
       "type": "object",

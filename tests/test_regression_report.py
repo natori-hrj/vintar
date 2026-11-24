@@ -13,6 +13,8 @@ from vintar.checks.sqli.decision_facts import (
     DecisionStage,
     OperationalCondition,
     OperationalDecisionFacts,
+    TimingDynamicsDecisionFacts,
+    TimingInstabilityCause,
 )
 from vintar.checks.sqli.models import (
     BooleanEvidence,
@@ -113,6 +115,36 @@ def test_writer_emits_bounded_decision_facts_without_sensitive_values():
         "probe_kind": "baseline",
         "condition": "budget_unavailable",
     }
+
+
+def test_time_decision_facts_omit_timing_measurements_and_sensitive_values():
+    sentinel = "SENTINEL-TIMING-VALUE-DO-NOT-REPORT"
+    facts = regression_report._decision_facts_dict(
+        TimingDynamicsDecisionFacts(
+            reason_code="unstable_timing",
+            instability_causes=(TimingInstabilityCause.CONTROL_SPAN,),
+        )
+    )
+    pending = [facts]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            assert not {
+                "elapsed",
+                "elapsed_seconds",
+                "median",
+                "threshold",
+                "margin",
+            }.intersection(value)
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        else:
+            assert not isinstance(value, float)
+            assert sentinel not in str(value)
+
+    assert sentinel not in json.dumps(facts)
+    assert set(facts) == {"category", "instability_causes"}
 
 
 def test_result_rejects_decision_facts_for_another_reason():

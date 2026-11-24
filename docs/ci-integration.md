@@ -158,8 +158,9 @@ The artifact retention period is seven days.
 
 The report does not contain raw HTTP request payloads, URLs, or credentials.
 `sqli.time` outcomes contain no elapsed timing durations or medians: they contain
-only the final verdict, reason, request count, and a sibling `timing` object with
-analysis status, reason, and request count. Boolean outcomes retain their
+the final verdict, reason, request count, a sibling `timing` object with analysis
+status, reason, and request count, and bounded `decision_facts` for applicable
+non-decisions. Boolean outcomes retain their
 per-observation `elapsed` values, response digests, and sizes. Case IDs and this
 Boolean response metadata may still disclose information.
 `sqli.error` outcomes likewise contain only the final verdict, reason, request
@@ -167,13 +168,22 @@ count, and a sibling `error` object. A matched signal adds only the reviewed
 DBMS family and signature ID. Response bodies, matched text, payloads, and
 target URLs are never included.
 
-Boolean outcomes may include an additive `decision_facts` sibling for a
-non-decision. Its category is `operational`, `response_dynamics`, or
-`confirmation_relation`, and it contains only fixed enums, sequences, status
-codes, booleans, counts, and byte offsets or lengths. Legacy schema-v1 reports
-may omit it; the current writer emits it for the corresponding Boolean and
-confirmation reasons. JSON Schema and Python validation require its category
-and fields to agree with the final reason code.
+Boolean and Time outcomes may include an additive `decision_facts` sibling for
+a non-decision. Boolean categories are `operational`, `response_dynamics`, and
+`confirmation_relation`. Time uses `operational` and `timing_dynamics`. The
+facts contain only fixed enums, sequences, status codes, booleans, counts, and
+Boolean byte offsets or lengths. Time facts never contain elapsed values,
+medians, thresholds, or margins. Legacy schema-v1 reports may omit the sibling;
+the current writer requires and emits it for the corresponding Boolean,
+confirmation, and Time reasons. JSON Schema and Python validation require its
+category and fields to agree with the final reason code.
+
+For Time operational facts, schema-v1 reports do not contain the individual
+probe observations. Validation can therefore check the stopping sequence
+against `request_count`, the probe kind against the fixed nine-request plan,
+and whether the condition permits an HTTP status. It cannot independently
+compare that status with a separate per-probe report field because no such
+field exists.
 
 Access to artifacts must be restricted appropriately.
 Anyone with read access to the repository can normally download its

@@ -200,6 +200,99 @@ def test_initial_analysis_facts_use_request_order_for_completed_plan(
         _validate(write_report(tmp_path, report), 3)
 
 
+@pytest.mark.parametrize("last_is_also_rate_limited", [False, True])
+def test_completed_boolean_rate_limit_facts_must_match_first_429(
+    tmp_path, last_is_also_rate_limited
+):
+    normal = _response()
+    rate_limited = _response(status_code=429, truncated=True)
+    verification = analyze_boolean_responses(
+        "case-one",
+        baseline=(_response(status_code=503), normal),
+        true_responses=(
+            _response(truncated=True),
+            rate_limited if last_is_also_rate_limited else normal,
+        ),
+        false_responses=(rate_limited, normal),
+    )
+    report = _report_for_verification(verification)
+    facts = report["outcomes"][0]["decision_facts"]
+    assert facts == {
+        "category": "operational",
+        "stage": "initial",
+        "sequence": 3,
+        "probe_kind": "false",
+        "condition": "rate_limited",
+        "status_code": 429,
+    }
+    _validate(write_report(tmp_path, report), 3)
+
+    facts.update(sequence=6, probe_kind="true")
+    with pytest.raises(ValueError, match=_OBSERVATION_CONTRADICTION):
+        _validate(write_report(tmp_path, report), 3)
+
+
+@pytest.mark.parametrize(
+    ("earlier", "later"),
+    [
+        ("non_success_status", "rate_limited"),
+        ("truncated_response", "rate_limited"),
+        ("non_success_status", "truncated_response"),
+    ],
+)
+def test_completed_boolean_facts_must_use_highest_precedence_reason(
+    tmp_path, earlier, later
+):
+    responses = {
+        "non_success_status": _response(status_code=503),
+        "truncated_response": _response(truncated=True),
+        "rate_limited": _response(status_code=429, truncated=True),
+    }
+    normal = _response()
+    verification = analyze_boolean_responses(
+        "case-one",
+        baseline=(responses[earlier], normal),
+        true_responses=(normal, normal),
+        false_responses=(responses[later], normal),
+    )
+    report = _report_for_verification(verification)
+    outcome = report["outcomes"][0]
+    facts = outcome["decision_facts"]
+    assert outcome["actual_reason_code"] == later
+    assert facts["sequence"] == 3
+    _validate(write_report(tmp_path, report), 3)
+
+    outcome["actual_reason_code"] = outcome["verification"]["reason_code"] = earlier
+    facts.update(
+        sequence=1,
+        probe_kind="baseline",
+        condition="truncated" if earlier == "truncated_response" else earlier,
+        status_code=responses[earlier].status_code,
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"reason and position must follow analyzer precedence.*Regenerate",
+    ):
+        _validate(write_report(tmp_path, report), 3)
+
+
+def test_early_stopped_boolean_facts_must_match_last_response_condition(tmp_path):
+    path = Path("tests/golden/cli/verify/partial-inconclusive.json")
+    report = json.loads(path.read_text(encoding="utf-8"))["stdout_json"]
+    outcome = report["outcomes"][0]
+    outcome["verification"]["observations"][0].update(status_code=503, truncated=True)
+    outcome["actual_reason_code"] = outcome["verification"]["reason_code"] = (
+        "non_success_status"
+    )
+    outcome["decision_facts"].update(condition="non_success_status", status_code=503)
+
+    with pytest.raises(
+        ValueError,
+        match=r"reason and position must follow analyzer precedence.*Regenerate",
+    ):
+        _validate(write_report(tmp_path, report), 3)
+
+
 @pytest.mark.parametrize(("body", "status"), [(b"different", 200), (b"response", 201)])
 def test_response_dynamics_facts_reject_a_stable_pair(tmp_path, body, status):
     response = _response()
@@ -338,6 +431,66 @@ def test_confirmation_operational_facts_match_count_and_plan(
         _validate(write_report(tmp_path, report), 3)
 
 
+_RATE_LIMIT_PRECEDENCE = (
+    r"HTTP 429 is classified as rate_limited first.*regenerate the report"
+    r".*current Vintar writer"
+)
+
+
+@pytest.mark.parametrize(
+    ("reason", "condition"),
+    [("non_success_status", "non_success_status"), ("truncated_response", "truncated")],
+)
+def test_initial_operational_facts_reject_mislabeled_rate_limit(
+    tmp_path, reason, condition
+):
+    path = Path("tests/golden/cli/verify/partial-inconclusive.json")
+    report = json.loads(path.read_text(encoding="utf-8"))["stdout_json"]
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = reason
+    outcome["verification"]["reason_code"] = reason
+    outcome["decision_facts"]["condition"] = condition
+
+    with pytest.raises(ValueError, match=_RATE_LIMIT_PRECEDENCE):
+        _validate(write_report(tmp_path, report), 3)
+
+
+@pytest.mark.parametrize(
+    ("reason", "condition", "original_status"),
+    [
+        ("confirmation_non_success_status", "non_success_status", 503),
+        ("confirmation_truncated", "truncated", 200),
+    ],
+)
+def test_confirmation_operational_facts_reject_mislabeled_rate_limit(
+    tmp_path, reason, condition, original_status
+):
+    report = make_eligible_report()
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = reason
+    outcome["request_count"] = report["requests_used"] = 7
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": "operational",
+        "reason_code": reason,
+        "request_count": 1,
+    }
+    facts = {
+        "category": "operational",
+        "stage": "confirmation",
+        "sequence": 7,
+        "probe_kind": "baseline",
+        "condition": condition,
+        "status_code": original_status,
+    }
+    outcome["decision_facts"] = facts
+    _validate(write_report(tmp_path, report), 3)
+    facts["status_code"] = 429
+
+    with pytest.raises(ValueError, match=_RATE_LIMIT_PRECEDENCE):
+        _validate(write_report(tmp_path, report), 3)
+
+
 def write_report(tmp_path, data):
     path = tmp_path / "report.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -385,6 +538,56 @@ def make_time_report(reason: str):
             }
         ],
     }
+
+
+def time_decision_facts(reason: str, request_count: int) -> dict[str, object]:
+    if reason == "unstable_timing":
+        return {
+            "category": "timing_dynamics",
+            "instability_causes": ["control_span"],
+        }
+    if reason == "ambiguous_timing":
+        return {
+            "category": "timing_dynamics",
+            "instability_causes": [],
+            "candidate_median_met": True,
+            "candidate_margin_met": False,
+            "no_delay_condition_met": False,
+        }
+    sequence = request_count + 1 if reason == "incomplete_probes" else request_count
+    condition = {
+        "incomplete_probes": "deadline",
+        "probe_timeout": "timeout",
+        "probe_failed": "request_failed",
+        "probe_interrupted": "interrupted",
+        "rate_limited": "rate_limited",
+        "non_success_status": "non_success_status",
+        "truncated_response": "truncated",
+    }[reason]
+    result: dict[str, object] = {
+        "category": "operational",
+        "stage": "time",
+        "sequence": sequence,
+        "probe_kind": [
+            "baseline",
+            "control",
+            "delay",
+            "control",
+            "delay",
+            "baseline",
+            "delay",
+            "baseline",
+            "control",
+        ][sequence - 1],
+        "condition": condition,
+    }
+    if reason == "rate_limited":
+        result["status_code"] = 429
+    elif reason == "non_success_status":
+        result["status_code"] = 403
+    elif reason == "truncated_response":
+        result["status_code"] = 200
+    return result
 
 
 def make_error_report(reason: str):
@@ -697,6 +900,68 @@ def test_time_schema_reason_enum_matches_product_contract():
         TIME_RESULT_RULES
     )
     assert _VALIDATOR_MODULE["TIME_RESULT_RULES"] is TIME_RESULT_RULES
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "incomplete_probes",
+        "probe_timeout",
+        "probe_failed",
+        "probe_interrupted",
+        "rate_limited",
+        "non_success_status",
+        "truncated_response",
+        "unstable_timing",
+        "ambiguous_timing",
+    ],
+)
+def test_time_decision_facts_are_accepted_by_schema_and_validator(tmp_path, reason):
+    report = make_time_report(reason)
+    outcome = report["outcomes"][0]
+    outcome["decision_facts"] = time_decision_facts(reason, outcome["request_count"])
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    Draft202012Validator(schema).validate(report)
+    _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize(
+    ("reason", "mutation"),
+    [
+        ("probe_timeout", {"sequence": 2}),
+        ("probe_timeout", {"probe_kind": "control"}),
+        ("rate_limited", {"status_code": 200}),
+        ("non_success_status", {"status_code": 200}),
+        ("non_success_status", {"status_code": 429}),
+        ("truncated_response", {"status_code": 429}),
+    ],
+)
+def test_time_operational_fact_mutations_are_rejected(tmp_path, reason, mutation):
+    report = make_time_report(reason)
+    outcome = report["outcomes"][0]
+    facts = time_decision_facts(reason, outcome["request_count"])
+    facts.update(mutation)
+    outcome["decision_facts"] = facts
+
+    expected = (
+        _RATE_LIMIT_PRECEDENCE
+        if mutation.get("status_code") == 429 or reason == "rate_limited"
+        else r"facts|status|429"
+    )
+    with pytest.raises((ValueError, ValidationError), match=expected):
+        _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+def test_time_decision_fact_reason_mislabel_is_rejected(tmp_path):
+    report = make_time_report("unstable_timing")
+    report["outcomes"][0]["decision_facts"] = time_decision_facts("ambiguous_timing", 9)
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(report)
+    with pytest.raises((ValueError, ValidationError)):
+        _validate(write_report(tmp_path, report), 3)
 
 
 @pytest.mark.parametrize("reason", TIME_RESULT_RULES)

@@ -12,9 +12,13 @@ from vintar.checks.sqli.decision_facts import (
     PairLocalization,
     PredicatePair,
     ResponseDynamicsDecisionFacts,
+    TimeOperationalCondition,
+    TimingDynamicsDecisionFacts,
+    TimingInstabilityCause,
     UnstablePairFacts,
 )
 from vintar.checks.sqli.models import ProbeError, ProbeKind
+from vintar.checks.sqli.time_plan import TimeProbeKind
 
 
 def test_operational_facts_reject_reason_stage_condition_and_status_mismatches():
@@ -132,4 +136,45 @@ def test_confirmation_relation_facts_reject_empty_or_mislabeled_shapes():
         ConfirmationRelationDecisionFacts(
             "confirmation_cross_phase_mismatch",
             cross_phase_mismatched_kinds=(ProbeKind.FALSE, ProbeKind.BASELINE),
+        )
+
+
+def test_time_operational_facts_reject_reason_condition_and_kind_mismatches():
+    with pytest.raises(ValueError, match="contradict"):
+        OperationalDecisionFacts(
+            "probe_timeout",
+            DecisionStage.TIME,
+            1,
+            TimeProbeKind.BASELINE,
+            TimeOperationalCondition.REQUEST_FAILED,
+        )
+    with pytest.raises(TypeError, match="probe kind"):
+        OperationalDecisionFacts(
+            "probe_timeout",
+            DecisionStage.TIME,
+            1,
+            ProbeKind.BASELINE,
+            TimeOperationalCondition.TIMEOUT,
+        )
+
+
+def test_timing_dynamics_facts_reject_inconsistent_reason_shapes():
+    with pytest.raises(ValueError, match="require causes"):
+        TimingDynamicsDecisionFacts("unstable_timing")
+    with pytest.raises(ValueError, match="three boolean"):
+        TimingDynamicsDecisionFacts("ambiguous_timing")
+    with pytest.raises(ValueError, match="contradict"):
+        TimingDynamicsDecisionFacts(
+            "ambiguous_timing",
+            candidate_median_met=True,
+            candidate_margin_met=True,
+            no_delay_condition_met=False,
+        )
+    with pytest.raises(ValueError, match="deterministic order"):
+        TimingDynamicsDecisionFacts(
+            "unstable_timing",
+            instability_causes=(
+                TimingInstabilityCause.DELAY_SPAN,
+                TimingInstabilityCause.BASELINE_SPAN,
+            ),
         )

@@ -202,6 +202,32 @@ def test_time_case_batch_accounts_for_nine_requests(monkeypatch):
     assert "confirmation" not in outcome
 
 
+def test_time_case_batch_emits_bounded_timing_decision_facts(monkeypatch):
+    analysis = run_analysis(control=(0.10, 0.50, 0.12))
+
+    def fake_verify(**kwargs):
+        return TimeRunReport(
+            analysis=analysis,
+            budget_used=9,
+            transport_attempts=9,
+            total_elapsed_seconds=0.0,
+            deadline_exceeded=False,
+        )
+
+    monkeypatch.setattr(runner_module, "verify_time_based_sqli", fake_verify)
+    result = run_regression_batch(
+        [time_case("http://localhost:8000", "safe", "inconclusive")],
+        policy=policy(),
+    )
+
+    outcome = regression_batch_report_dict(result)["outcomes"][0]
+    assert outcome["actual_reason_code"] == "unstable_timing"
+    assert outcome["decision_facts"] == {
+        "category": "timing_dynamics",
+        "instability_causes": ["control_span"],
+    }
+
+
 def test_time_case_batch_budget_preflight_counts_nine_before_http():
     calls = []
     with pytest.raises(ValueError, match="budget"):

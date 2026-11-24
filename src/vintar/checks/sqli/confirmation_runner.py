@@ -38,6 +38,7 @@ from vintar.checks.sqli.decision_facts import (
     OperationalCondition,
     OperationalDecisionFacts,
     PredicatePair,
+    response_operational_condition,
 )
 from vintar.checks.sqli.echo_normalization import (
     EchoInput,
@@ -921,7 +922,10 @@ def verify_boolean_sqli_with_confirmation(
 
         completed.append((step, response))
 
-        if response.status_code == 429:
+        condition = response_operational_condition(
+            response.status_code, truncated=response.truncated
+        )
+        if condition is OperationalCondition.RATE_LIMITED:
             emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
@@ -936,7 +940,7 @@ def verify_boolean_sqli_with_confirmation(
                 ),
             )
 
-        if response.truncated:
+        if condition is OperationalCondition.TRUNCATED:
             emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
@@ -951,7 +955,7 @@ def verify_boolean_sqli_with_confirmation(
                 ),
             )
 
-        if not 200 <= response.status_code < 300:
+        if condition is OperationalCondition.NON_SUCCESS_STATUS:
             emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,

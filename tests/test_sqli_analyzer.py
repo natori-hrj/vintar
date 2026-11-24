@@ -279,7 +279,7 @@ def test_invalid_http_result_metadata_is_rejected(field, invalid, error):
 
 @pytest.mark.parametrize(
     "status_code",
-    [100, 199, 300, 301, 302, 401, 403, 404, 429, 500, 503, 599],
+    [100, 199, 300, 301, 302, 401, 403, 404, 500, 503, 599],
 )
 def test_non_success_responses_are_inconclusive(status_code):
     result = analyze(
@@ -292,6 +292,18 @@ def test_non_success_responses_are_inconclusive(status_code):
     assert result.verdict is Verdict.INCONCLUSIVE
     assert result.reason_code == "non_success_status"
     assert result.evidence is None
+
+
+def test_rate_limited_takes_priority_over_truncation_and_other_statuses():
+    result = analyze(
+        baseline=(response(status_code=503), response()),
+        true_responses=(response(truncated=True), response()),
+        false_responses=(response(status_code=429, truncated=True), response()),
+    )
+
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert result.reason_code == "rate_limited"
+    assert result.decision_facts.sequence == 3
 
 
 def test_all_blocked_responses_are_not_marked_not_detected():
