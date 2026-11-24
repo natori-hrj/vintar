@@ -13,6 +13,10 @@
 
 **Changed**
 
+- Report `confirmation_unstable` when independently reviewed Boolean TRUE or FALSE
+  predicate pairs do not reproduce each other; reserve
+  `candidate_confirmation_mismatch` for stable pairs whose remaining relation
+  differs.
 - Normalize only context-bound echoes of complete Boolean SQLi probe values
   before response comparison, preserving status codes and unrelated response
   differences while reducing reflection-only non-decisions. Manual third-party

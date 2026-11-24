@@ -221,7 +221,7 @@ def test_configured_confirmation_preserves_boolean_candidate_contract():
     assert outcome.status is RegressionStatus.INCONCLUSIVE
 
 
-def test_confirmation_mismatch_is_final_inconclusive_reason():
+def test_confirmation_pair_instability_is_final_inconclusive_reason():
     case = make_confirmed_case()
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -235,7 +235,7 @@ def test_confirmation_mismatch_is_final_inconclusive_reason():
     )
 
     assert outcome.final_verdict is Verdict.INCONCLUSIVE
-    assert outcome.final_reason_code == "candidate_confirmation_mismatch"
+    assert outcome.final_reason_code == "confirmation_unstable"
     assert outcome.request_count == 18
 
 

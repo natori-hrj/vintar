@@ -196,18 +196,7 @@ OBSERVATION_KIND_ORDERS = {
 
 def derive_relations(evidence: list[dict[str, object]]) -> dict[str, bool]:
     """Derive analyzer response relations from decoded observation evidence."""
-    signatures: dict[str, list[tuple[object, object, object]]] = {}
-    for item in evidence:
-        role = item.get("role")
-        digest = item.get("analyzer_body_sha256")
-        if type(role) is str and type(digest) is str:
-            signatures.setdefault(role, []).append(
-                (
-                    item.get("analyzer_status_code"),
-                    item.get("analyzer_body_size"),
-                    digest,
-                )
-            )
+    signatures = _boolean_role_signatures(evidence)
     relations = {
         f"{role}_stable": len(set(values)) == 1
         for role, values in sorted(signatures.items())
@@ -314,6 +303,53 @@ def _boolean_relation_is_stable(relations: dict[str, object]) -> bool:
     )
 
 
+def _boolean_role_signatures(
+    evidence: list[dict[str, object]],
+) -> dict[str, list[tuple[object, object, object]]]:
+    signatures: dict[str, list[tuple[object, object, object]]] = {}
+    for item in evidence:
+        role = item.get("role")
+        digest = item.get("analyzer_body_sha256")
+        if type(role) is str and type(digest) is str:
+            signatures.setdefault(role, []).append(
+                (
+                    item.get("analyzer_status_code"),
+                    item.get("analyzer_body_size"),
+                    digest,
+                )
+            )
+    return signatures
+
+
+def _confirmation_pair_state(
+    evidence: list[dict[str, object]],
+) -> tuple[bool, bool]:
+    """Return per-kind stability and cross-predicate reproduction."""
+    signatures = _boolean_role_signatures(evidence)
+    roles = ("baseline", "true", "false", "control", "true2", "false2")
+    per_kind_stable = all(
+        len(signatures.get(role, ())) == 2 and len(set(signatures[role])) == 1
+        for role in roles
+    )
+    pairs_reproduced = (
+        per_kind_stable
+        and signatures["true"][0] == signatures["true2"][0]
+        and signatures["false"][0] == signatures["false2"][0]
+    )
+    return per_kind_stable, pairs_reproduced
+
+
+def _confirmation_remaining_relation_matches(
+    evidence: list[dict[str, object]],
+) -> bool:
+    signatures = _boolean_role_signatures(evidence)
+    return (
+        signatures["baseline"][0] == signatures["true"][0]
+        and signatures["baseline"][0] == signatures["control"][0]
+        and signatures["baseline"][0] != signatures["false"][0]
+    )
+
+
 def _validate_reason_evidence(
     record: dict[str, object],
     evidence: list[dict[str, object]],
@@ -366,23 +402,46 @@ def _validate_reason_evidence(
                 raise MeasurementError(
                     f"Probe evidence for {endpoint!r} contradicts confirmation_pattern_matched. Remeasure the target so both confirmation pairs and the baseline-preserving control reproduce the declared relation."
                 )
-    if check_type == "sqli.boolean" and reason == "candidate_confirmation_mismatch":
+    if check_type == "sqli.boolean" and reason in {
+        "candidate_confirmation_mismatch",
+        "confirmation_unstable",
+    }:
+        initial_evidence = evidence[: len(BOOLEAN_PROBE_ORDER)]
+        confirmation_evidence = evidence[len(BOOLEAN_PROBE_ORDER) :]
+        initial_relations = derive_relations(initial_evidence)
         initial_candidate = (
-            relations.get("baseline_equals_true") is True
-            and relations.get("baseline_equals_false") is False
-            and relations.get("true_equals_false") is False
+            len(initial_evidence) == len(BOOLEAN_PROBE_ORDER)
+            and _boolean_relation_is_stable(initial_relations)
+            and initial_relations.get("baseline_equals_true") is True
+            and initial_relations.get("baseline_equals_false") is False
+            and initial_relations.get("true_equals_false") is False
         )
-        matched = all(
-            relations.get(name) is True
-            for name in (
-                "baseline_equals_control",
-                "baseline_equals_true2",
-                "false_equals_false2",
-            )
+        complete_confirmation = len(confirmation_evidence) == len(CONFIRMATION_ORDER)
+        per_kind_stable, pairs_reproduced = _confirmation_pair_state(
+            confirmation_evidence
         )
-        if not all_success or not stable or not initial_candidate or matched:
+        remaining_relation_matches = (
+            per_kind_stable
+            and _confirmation_remaining_relation_matches(confirmation_evidence)
+        )
+        if reason == "candidate_confirmation_mismatch" and not (
+            all_success
+            and initial_candidate
+            and complete_confirmation
+            and pairs_reproduced
+            and not remaining_relation_matches
+        ):
             raise MeasurementError(
-                f"Probe evidence for {endpoint!r} contradicts candidate_confirmation_mismatch. Remeasure the target so stable 2xx evidence shows an eligible initial candidate and a mismatching confirmation relation."
+                f"Probe evidence for {endpoint!r} contradicts candidate_confirmation_mismatch: both confirmation predicate pairs must be stable and reproduced before the remaining relation can mismatch. Remeasure the target with the current runner instead of hand-editing the reason."
+            )
+        if reason == "confirmation_unstable" and not (
+            all_success
+            and initial_candidate
+            and complete_confirmation
+            and (not per_kind_stable or not pairs_reproduced)
+        ):
+            raise MeasurementError(
+                f"Probe evidence for {endpoint!r} contradicts confirmation_unstable: an eligible initial candidate must complete all confirmation requests and show an unstable repeated kind or unreproduced TRUE/FALSE predicate pair. Remeasure the target with the current runner instead of hand-editing the reason."
             )
     if (
         check_type == "sqli.boolean"

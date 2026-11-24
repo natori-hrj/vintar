@@ -464,7 +464,8 @@ baseline-preserving third predicate. The third predicate checks reproducibility 
 the response relation, not SQL semantics. Real string and numeric SQLite vulnerable
 twins retain `boolean_candidate` after 18 total requests. Exact-string branches such
 as `simple_branch` and `pagination-branch` become INCONCLUSIVE with
-`candidate_confirmation_mismatch`; they do not become NOT_DETECTED. Synthetic
+`confirmation_unstable` because the second predicate pair does not reproduce the
+first; they do not become NOT_DETECTED. Synthetic
 positive response-relation cases are reported separately from real SQLite fixtures,
 and their confirmation mismatch is not counted as a real vulnerable false negative.
 
@@ -477,7 +478,7 @@ The deterministic precision measurements are:
 The three TPs in that table are synthetic positive response relations, not SQL-backed
 vulnerabilities. After confirmation, the eight negative fixtures record two TNs, one
 remaining FP (`waf-200`), and five non-decisions. The three synthetic positives all
-produce `candidate_confirmation_mismatch` and are reported as three synthetic
+produce `confirmation_unstable` and are reported as three synthetic
 demotions, not as real vulnerable FNs. Separately, both real SQLite vulnerable twins
 retain `boolean_candidate`; both parameterized twins retain their initial
 NOT_DETECTED results and do not enter confirmation.

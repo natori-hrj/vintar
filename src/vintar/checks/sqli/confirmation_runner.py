@@ -364,6 +364,32 @@ class ConfirmationOutcome:
                 and self.evidence is None
             ):
                 raise ValueError("Incomplete confirmation mismatch outcome.")
+            if self.reason_code == "candidate_confirmation_mismatch":
+                assert self.evidence is not None
+                observations = {
+                    kind: next(
+                        item for item in self.evidence.observations if item.kind is kind
+                    )
+                    for kind in ConfirmationKind
+                }
+                pairs_stable = _predicate_pairs_are_stable(
+                    true_1=observations[ConfirmationKind.TRUE_1],
+                    true_2=observations[ConfirmationKind.TRUE_2],
+                    false_1=observations[ConfirmationKind.FALSE_1],
+                    false_2=observations[ConfirmationKind.FALSE_2],
+                )
+                relation_matches = (
+                    self.evidence.baseline_matches_true
+                    and self.evidence.baseline_matches_control
+                    and self.evidence.false_pair_matches
+                    and self.evidence.baseline_differs_from_false
+                )
+                if not pairs_stable or relation_matches:
+                    raise ValueError(
+                        "Confirmation mismatch requires reproduced TRUE/FALSE "
+                        "predicate pairs and a mismatching remaining relation. Use "
+                        "confirmation_unstable when a predicate pair does not reproduce."
+                    )
             return
 
         if self.evidence is None:
@@ -488,6 +514,29 @@ def _emit_confirmation_observations(
         )
 
 
+def _confirmation_signature(
+    observation: ConfirmationObservation,
+) -> tuple[int, int, str]:
+    return (
+        observation.status_code,
+        observation.body_size,
+        observation.body_digest,
+    )
+
+
+def _predicate_pairs_are_stable(
+    *,
+    true_1: ConfirmationObservation,
+    true_2: ConfirmationObservation,
+    false_1: ConfirmationObservation,
+    false_2: ConfirmationObservation,
+) -> bool:
+    """Require both independent predicates to reproduce their truth relation."""
+    return _confirmation_signature(true_1) == _confirmation_signature(
+        true_2
+    ) and _confirmation_signature(false_1) == _confirmation_signature(false_2)
+
+
 def _analyze(
     observations: tuple[ConfirmationObservation, ...],
 ) -> tuple[ConfirmationStatus, ConfirmationEvidence | None]:
@@ -509,27 +558,34 @@ def _analyze(
 
         pairs[observation.kind].append(observation)
 
-    def signature(
-        item: ConfirmationObservation,
-    ) -> tuple[int, int, str]:
-        return (
-            item.status_code,
-            item.body_size,
-            item.body_digest,
-        )
-
     if any(
-        len(items) != 2 or signature(items[0]) != signature(items[1])
+        len(items) != 2
+        or _confirmation_signature(items[0]) != _confirmation_signature(items[1])
         for items in pairs.values()
     ):
         return ConfirmationStatus.INCONCLUSIVE, None
 
-    baseline = signature(pairs[ConfirmationKind.BASELINE][0])
-    true_1 = signature(pairs[ConfirmationKind.TRUE_1][0])
-    false_1 = signature(pairs[ConfirmationKind.FALSE_1][0])
-    true_2 = signature(pairs[ConfirmationKind.TRUE_2][0])
-    false_2 = signature(pairs[ConfirmationKind.FALSE_2][0])
-    control = signature(pairs[ConfirmationKind.BASELINE_PRESERVING_CONTROL][0])
+    baseline_observation = pairs[ConfirmationKind.BASELINE][0]
+    true_1_observation = pairs[ConfirmationKind.TRUE_1][0]
+    false_1_observation = pairs[ConfirmationKind.FALSE_1][0]
+    true_2_observation = pairs[ConfirmationKind.TRUE_2][0]
+    false_2_observation = pairs[ConfirmationKind.FALSE_2][0]
+    control_observation = pairs[ConfirmationKind.BASELINE_PRESERVING_CONTROL][0]
+
+    if not _predicate_pairs_are_stable(
+        true_1=true_1_observation,
+        true_2=true_2_observation,
+        false_1=false_1_observation,
+        false_2=false_2_observation,
+    ):
+        return ConfirmationStatus.INCONCLUSIVE, None
+
+    baseline = _confirmation_signature(baseline_observation)
+    true_1 = _confirmation_signature(true_1_observation)
+    false_1 = _confirmation_signature(false_1_observation)
+    true_2 = _confirmation_signature(true_2_observation)
+    false_2 = _confirmation_signature(false_2_observation)
+    control = _confirmation_signature(control_observation)
 
     baseline_matches_true = baseline == true_1 == true_2
     baseline_matches_control = baseline == control

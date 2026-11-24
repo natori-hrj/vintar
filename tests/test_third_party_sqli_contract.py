@@ -1,5 +1,6 @@
 """Keep the offline third-party declaration and reviewed summary deterministic."""
 
+import copy
 import gzip
 import hashlib
 import importlib.util
@@ -1247,7 +1248,7 @@ def test_fixed_dojo_relation_rejects_filtered_preset_confirmation():
     result = _fixed_dojo_confirmation(old.true_payload, old.false_payload)
 
     assert result.status is ConfirmationStatus.INCONCLUSIVE
-    assert result.reason_code == "candidate_confirmation_mismatch"
+    assert result.reason_code == "confirmation_unstable"
     assert result.confirmation_requests == 12
     assert result.total_requests == 18
 
@@ -2697,6 +2698,72 @@ def test_changed_repeated_true_digest_still_rejects_boolean_candidate():
     with pytest.raises(
         runner.MeasurementError,
         match=r"dsvw-blind-boolean-id.*contradicts boolean_candidate.*stable 2xx.*Remeasure",
+    ):
+        runner.validate_measurement_report(report)
+
+
+def _set_confirmation_report_reason(runner, report, record, reason):
+    record["reason_code"] = reason
+    record["classification"] = "non_decision"
+    record["detail"] = {
+        "configured": True,
+        "reason_code": reason,
+        "request_count": 12,
+        "status": "inconclusive",
+    }
+    record["relations"] = runner.derive_relations(record["evidence"])
+    report["counts"] = runner.counts(report["records"])
+
+
+def _confirmation_report_record(report):
+    return next(
+        record
+        for record in report["records"]
+        if record["endpoint_id"] == "dsvw-blind-boolean-id"
+        and record["mode"] == "confirmation"
+    )
+
+
+def test_v8_unreproduced_pair_accepts_unstable_and_rejects_mismatch():
+    runner = load_runner()
+    unstable_report = v8_report_from_legacy_v4(runner)
+    unstable_record = _confirmation_report_record(unstable_report)
+    for item in unstable_record["evidence"]:
+        if item["role"] == "true2":
+            item["analyzer_body_sha256"] = "0" * 64
+    _set_confirmation_report_reason(
+        runner, unstable_report, unstable_record, "confirmation_unstable"
+    )
+
+    assert runner.validate_measurement_report(unstable_report) is unstable_report
+
+    mismatch_report = copy.deepcopy(unstable_report)
+    mismatch_record = _confirmation_report_record(mismatch_report)
+    _set_confirmation_report_reason(
+        runner,
+        mismatch_report,
+        mismatch_record,
+        "candidate_confirmation_mismatch",
+    )
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-blind-boolean-id.*contradicts candidate_confirmation_mismatch.*both confirmation predicate pairs.*Remeasure",
+    ):
+        runner.validate_measurement_report(mismatch_report)
+
+
+def test_v8_stable_relation_mismatch_rejects_unstable_reason():
+    runner = load_runner()
+    report = v8_report_from_legacy_v4(runner)
+    record = _confirmation_report_record(report)
+    for item in record["evidence"]:
+        if item["role"] == "control":
+            item["analyzer_body_sha256"] = "1" * 64
+    _set_confirmation_report_reason(runner, report, record, "confirmation_unstable")
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"dsvw-blind-boolean-id.*contradicts confirmation_unstable.*unreproduced TRUE/FALSE predicate pair.*Remeasure",
     ):
         runner.validate_measurement_report(report)
 

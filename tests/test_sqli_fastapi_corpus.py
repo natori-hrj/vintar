@@ -392,8 +392,8 @@ def test_fastapi_sqlite_corpus(
 
     if expected is ConfirmationStatus.INCONCLUSIVE:
         if mode == "simple":
-            assert outcome.reason_code == "candidate_confirmation_mismatch"
-            assert outcome.evidence is not None
+            assert outcome.reason_code == "confirmation_unstable"
+            assert outcome.evidence is None
         else:
             assert outcome.evidence is None
 
