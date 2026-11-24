@@ -741,6 +741,12 @@ def _first_difference(
     return None
 
 
+_NON_OBJECT_REPORT_MESSAGE = (
+    "The third-party measurement report is not a JSON object. "
+    "Pass a report produced by scripts/run_third_party_sqli_measurement.py."
+)
+
+
 def _validate_measurement_report(
     report: object,
     *,
@@ -748,9 +754,7 @@ def _validate_measurement_report(
 ) -> dict[str, object]:
     """Validate current output or one explicitly docs-bound reviewed fixture."""
     if type(report) is not dict:
-        raise MeasurementError(
-            "The third-party measurement report is not a JSON object. This reader supports legacy version 4 and current version 8; rerun the measurement to regenerate the report."
-        )
+        raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
     version = report.get("schema_version")
     reviewed_v7 = version == 7 and reviewed_schema_version == 7
     if (
@@ -2409,10 +2413,10 @@ def render_measurement_input_revisions(
     return "\n".join(lines)
 
 
-def check_documented_summary(
-    report: dict[str, object], documentation: Path = DOCS
-) -> str:
+def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
     """Reject actual results that differ from the committed reviewed summary."""
+    if type(report) is not dict:
+        raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
     try:
         text = documentation.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:

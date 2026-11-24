@@ -2173,6 +2173,18 @@ def test_v8_renderer_matches_legacy_summary_without_using_evidence():
     ) == runner.render_summary(legacy_v4_report())
 
 
+@pytest.mark.parametrize("report", [[], "private report text", 42, None])
+def test_documented_summary_rejects_non_object_reports(report, tmp_path):
+    runner = load_runner()
+    message = (
+        "The third-party measurement report is not a JSON object. "
+        "Pass a report produced by scripts/run_third_party_sqli_measurement.py."
+    )
+
+    with pytest.raises(runner.MeasurementError, match=rf"^{re.escape(message)}$"):
+        runner.check_documented_summary(report, tmp_path / "missing.md")
+
+
 @pytest.mark.doc_drift
 def test_documented_schema_binding_rejects_legacy_v4_fixture():
     runner = load_runner()
