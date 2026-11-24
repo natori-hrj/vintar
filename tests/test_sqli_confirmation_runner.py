@@ -155,6 +155,28 @@ def test_vulnerable_sqlite_runs_eighteen_requests():
     assert received[15] == "Pets" + BASELINE_PRESERVING_CONTROL
 
 
+def test_confirmation_uses_context_bound_echo_normalization() -> None:
+    def handler(request):
+        category = request.url.params["category"]
+        blocked = category in {"Pets" + FALSE_1, "Pets" + FALSE_2}
+        body = (
+            b'prefix-0123456789-value="'
+            + category.encode()
+            + b'"-suffix-0123456789|'
+            + (b"blocked" if blocked else b"rows")
+        )
+        return httpx.Response(200, content=body)
+
+    result, _ = run_check(handler)
+
+    assert result.initial.reason_code == "boolean_candidate"
+    assert result.status is ConfirmationStatus.CANDIDATE
+    assert result.reason_code == "confirmation_pattern_matched"
+    assert all(item.normalization_applied for item in result.initial.observations)
+    assert result.evidence is not None
+    assert all(item.normalization_applied for item in result.evidence.observations)
+
+
 def test_trusted_sink_receives_initial_and_confirmation_observations_in_order():
     recorded: list[RecordedSqliObservation] = []
 

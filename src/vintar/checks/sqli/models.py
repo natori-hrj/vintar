@@ -47,6 +47,8 @@ class Observation:
     elapsed: float
     body_digest: str
     truncated: bool = False
+    normalization_applied: bool = False
+    normalized_echo_count: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, ProbeKind):
@@ -78,6 +80,17 @@ class Observation:
 
         if type(self.truncated) is not bool:
             raise TypeError("truncated must be a boolean.")
+        if type(self.normalization_applied) is not bool:
+            raise TypeError("normalization_applied must be a boolean.")
+        if type(self.normalized_echo_count) is not int:
+            raise TypeError("normalized_echo_count must be an integer.")
+        if self.normalized_echo_count < 0:
+            raise ValueError("normalized_echo_count must be non-negative.")
+        if self.normalization_applied != (self.normalized_echo_count > 0):
+            raise ValueError(
+                "Normalization metadata is inconsistent. Record a positive echo "
+                "count only when exact-echo normalization changed the comparison body."
+            )
 
 
 @dataclass(frozen=True, slots=True)

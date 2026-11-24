@@ -30,6 +30,11 @@ from vintar.checks.sqli.confirmation import (
     confirmation_eligible,
     prepare_confirmation_plan,
 )
+from vintar.checks.sqli.echo_normalization import (
+    EchoInput,
+    NormalizedEcho,
+    normalize_context_bound_echoes,
+)
 from vintar.checks.sqli.models import (
     JSON_SAFE_INTEGER_MAX,
     VerificationResult,
@@ -38,7 +43,10 @@ from vintar.checks.sqli.observation_sink import (
     SqliObservationSink,
     emit_observation,
 )
-from vintar.checks.sqli.orchestrator import verify_boolean_sqli
+from vintar.checks.sqli.orchestrator import (
+    query_value_at_point,
+    verify_boolean_sqli,
+)
 from vintar.core.budget import RequestBudgetExceededError
 from vintar.core.executor import ExecutionContext
 from vintar.core.injector import inject
@@ -153,6 +161,8 @@ class ConfirmationObservation:
     body_size: int
     body_digest: str
     truncated: bool
+    normalization_applied: bool = False
+    normalized_echo_count: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, ConfirmationKind):
@@ -171,6 +181,17 @@ class ConfirmationObservation:
             raise ValueError("Invalid confirmation body digest.")
         if type(self.truncated) is not bool:
             raise TypeError("Invalid confirmation truncation flag.")
+        if type(self.normalization_applied) is not bool:
+            raise TypeError("Invalid confirmation normalization flag.")
+        if type(self.normalized_echo_count) is not int:
+            raise TypeError("Invalid confirmation normalized echo count.")
+        if self.normalized_echo_count < 0:
+            raise ValueError("Invalid confirmation normalized echo count.")
+        if self.normalization_applied != (self.normalized_echo_count > 0):
+            raise ValueError(
+                "Inconsistent confirmation normalization metadata. Record a "
+                "positive echo count only when the comparison body changed."
+            )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -413,14 +434,58 @@ def _build_preflight_plan(
 def _observation(
     kind: ConfirmationKind,
     response: HttpResult,
+    normalization: NormalizedEcho | None = None,
 ) -> ConfirmationObservation:
+    comparison = normalization or NormalizedEcho(response.body, False, 0)
     return ConfirmationObservation(
         kind=kind,
         status_code=response.status_code,
-        body_size=len(response.body),
-        body_digest=hashlib.sha256(response.body).hexdigest(),
+        body_size=len(comparison.body),
+        body_digest=hashlib.sha256(comparison.body).hexdigest(),
         truncated=response.truncated,
+        normalization_applied=comparison.applied,
+        normalized_echo_count=comparison.echo_count,
     )
+
+
+def _confirmation_observations(
+    completed: tuple[tuple[ConfirmationStep, HttpResult], ...],
+    point: InjectionPoint,
+    *,
+    normalize: bool,
+) -> tuple[ConfirmationObservation, ...]:
+    if normalize:
+        normalized = normalize_context_bound_echoes(
+            tuple(
+                EchoInput(
+                    response.body,
+                    query_value_at_point(step.template, point),
+                )
+                for step, response in completed
+            )
+        )
+    else:
+        normalized = tuple(
+            NormalizedEcho(response.body, False, 0) for _, response in completed
+        )
+    return tuple(
+        _observation(step.kind, response, item)
+        for (step, response), item in zip(completed, normalized, strict=True)
+    )
+
+
+def _emit_confirmation_observations(
+    sink: SqliObservationSink | None,
+    observations: tuple[ConfirmationObservation, ...],
+) -> None:
+    for index, observation in enumerate(observations, start=1):
+        emit_observation(
+            sink,
+            family="confirmation",
+            sequence=INITIAL_REQUESTS + index,
+            kind=observation.kind.value,
+            observation=observation,
+        )
 
 
 def _analyze(
@@ -621,7 +686,14 @@ def verify_boolean_sqli_with_confirmation(
             "confirmation_budget_unavailable",
         )
 
-    observations: list[ConfirmationObservation] = []
+    completed: list[tuple[ConfirmationStep, HttpResult]] = []
+
+    def emit_completed(*, normalize: bool) -> tuple[ConfirmationObservation, ...]:
+        observations = _confirmation_observations(
+            tuple(completed), plan.point, normalize=normalize
+        )
+        _emit_confirmation_observations(observation_sink, observations)
+        return observations
 
     for step in plan.steps:
         try:
@@ -630,55 +702,55 @@ def verify_boolean_sqli_with_confirmation(
                 transport=transport,
             )
         except RequestBudgetExceededError:
+            emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_budget_exceeded",
             )
         except RateLimitInterruptedError:
+            emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_rate_limit_interrupted",
             )
         except httpx.TimeoutException:
+            emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_timeout",
             )
         except httpx.RequestError:
+            emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_request_failed",
             )
 
-        observation = _observation(step.kind, response)
-        observations.append(observation)
-        emit_observation(
-            observation_sink,
-            family="confirmation",
-            sequence=INITIAL_REQUESTS + len(observations),
-            kind=step.kind.value,
-            observation=observation,
-        )
+        completed.append((step, response))
 
         if response.status_code == 429:
+            emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_rate_limited",
             )
 
         if response.truncated:
+            emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_truncated",
             )
 
         if not 200 <= response.status_code < 300:
+            emit_completed(normalize=False)
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_non_success_status",
             )
 
-    status, evidence = _analyze(tuple(observations))
+    observations = emit_completed(normalize=True)
+    status, evidence = _analyze(observations)
 
     if status is ConfirmationStatus.INCONCLUSIVE:
         return finish(
