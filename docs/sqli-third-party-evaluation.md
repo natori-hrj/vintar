@@ -86,8 +86,8 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
-The current reviewed fixture uses schema version 8. New measurement runs write
-schema version 9. Versions 2 and 3 introduced
+The current reviewed fixture and new measurement runs use schema version 9.
+Versions 2 and 3 introduced
 per-technique records and Error evidence. Version 4 generalizes that contract to
 multiple independently prepared targets:
 
@@ -114,13 +114,13 @@ Version 4 moves the former `target` object to target-id-keyed `targets`, adds
 `target_id` to every record, moves the former counts tree to `counts.overall`, and
 adds the same complete tree for each target under `counts.by_target`.
 
-The reviewed fixture is a real version 8 measurement. Each record adds
+The reviewed fixture is a real version 9 measurement. Each record adds
 request-ordered wire provenance with
 `sequence`, `role`, `wire_status_code`, `wire_body_size`, and
 `wire_body_sha256`. Exact production observations provide
 `analyzer_status_code` and `truncated`; Boolean, confirmation, and Error also
 provide `analyzer_body_size` and `analyzer_body_sha256`. Every Boolean and
-confirmation entry in v8 requires `normalization_applied` and
+confirmation entry requires `normalization_applied` and
 `normalized_echo_count`: the boolean says whether context-bound complete-value
 echo normalization changed the analyzer body, and the integer counts the
 normalized echo sites. Time provides
@@ -130,17 +130,15 @@ from analyzer digests. The report never stores bodies, payloads, headers,
 cookies, matched text, or URLs with query values. The writer now requires v9.
 Version 9 applies the current confirmation precedence: per-kind stability,
 cross-predicate TRUE/FALSE pair reproduction, then the remaining relation.
-Version 8 used the previous confirmation reason rules, so it is accepted only
-through this document's explicit reviewed-fixture binding until a new live
-measurement replaces it; it cannot be interpreted as current output.
+Version 8 used the previous confirmation reason rules and cannot be interpreted
+as current output.
 Versions 5 and 6 used wire-derived analytical facts that are unreliable under
-content encoding, while v7 lacks required Boolean normalization evidence; all
-must be regenerated for new output. Versions 1 through 3 and mixed shapes are
-rejected rather than inferred or upgraded.
+content encoding, while v7 lacks required Boolean normalization evidence. All
+older versions and mixed shapes are rejected rather than inferred or upgraded.
 
-Reviewed report schema version: `8`.
+Reviewed report schema version: `9`.
 
-Each v8 target metadata object records the prepared app image ID and the resolved
+Each v9 target metadata object records the prepared app image ID and the resolved
 digest-pinned auxiliary `service_images` map. The runner compares that map with
 the declaration before starting Compose, so the report identifies every image
 that participated in the measurement.

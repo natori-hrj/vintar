@@ -2016,7 +2016,7 @@ def test_reviewed_documentation_matches_the_report_contract():
     for field in evidence_fields:
         assert f"`{field}`" in documentation
         assert f"`{field}`" in readme
-    assert "Reviewed report schema version: `8`." in documentation
+    assert "Reviewed report schema version: `9`." in documentation
 
 
 @pytest.mark.doc_drift
@@ -2115,18 +2115,13 @@ def test_mysql_by_target_counts_are_recomputed_from_records():
 
 
 @pytest.mark.doc_drift
-def test_reviewed_fixture_uses_docs_bound_v8_while_writer_uses_v9():
+def test_reviewed_fixture_and_documentation_use_current_v9():
     runner = load_runner()
     report = expected_report()
 
-    assert report["schema_version"] == 8
-    assert runner.MEASUREMENT_SCHEMA_VERSION == 9
-    runner.check_documented_summary(report)
-    with pytest.raises(
-        runner.MeasurementError,
-        match=r"schema version 8.*previous confirmation reason rules.*v9 predicate-pair stability precedence.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*version 9",
-    ):
-        runner.validate_measurement_report(report)
+    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 9
+    assert runner.validate_measurement_report(report) is report
+    assert runner.check_documented_summary(report)
 
 
 def test_current_v9_report_round_trips_through_validator():
@@ -2214,7 +2209,7 @@ def test_documented_schema_binding_rejects_legacy_v4_fixture():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"bound to report schema version 8.*update.*binding and fixture together",
+        match=r"bound to report schema version 9.*update.*binding and fixture together",
     ):
         runner.check_documented_summary(legacy_v4_report())
 
@@ -2729,7 +2724,7 @@ def _confirmation_report_record(report):
     )
 
 
-def test_unreproduced_pair_uses_schema_specific_confirmation_precedence(tmp_path):
+def test_unreproduced_pair_uses_current_confirmation_precedence():
     runner = load_runner()
     unstable_report = v9_report_from_legacy_v4(runner)
     unstable_record = _confirmation_report_record(unstable_report)
@@ -2753,12 +2748,6 @@ def test_unreproduced_pair_uses_schema_specific_confirmation_precedence(tmp_path
     previous_v8_report = copy.deepcopy(mismatch_report)
     previous_v8_report["schema_version"] = 8
     _confirmation_report_record(previous_v8_report)["detail"]["status"] = "mismatch"
-    documentation = tmp_path / "evaluation.md"
-    summary = runner._render_summary(previous_v8_report)
-    documentation.write_text(
-        f"Reviewed report schema version: `8`.\n\n{summary}\n", encoding="utf-8"
-    )
-    assert runner.check_documented_summary(previous_v8_report, documentation) == summary
 
     with pytest.raises(
         runner.MeasurementError,
