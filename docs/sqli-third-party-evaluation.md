@@ -86,7 +86,7 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
-The current reviewed fixture uses schema version 7. Versions 2 and 3 introduced
+The current reviewed fixture uses schema version 8. Versions 2 and 3 introduced
 per-technique records and Error evidence. Version 4 generalizes that contract to
 multiple independently prepared targets:
 
@@ -113,8 +113,7 @@ Version 4 moves the former `target` object to target-id-keyed `targets`, adds
 `target_id` to every record, moves the former counts tree to `counts.overall`, and
 adds the same complete tree for each target under `counts.by_target`.
 
-The reviewed fixture remains the real version 7 measurement. New runs use
-version 8. Each record adds
+The reviewed fixture is a real version 8 measurement. Each record adds
 request-ordered wire provenance with
 `sequence`, `role`, `wire_status_code`, `wire_body_size`, and
 `wire_body_sha256`. Exact production observations provide
@@ -133,17 +132,18 @@ content encoding, while v7 lacks required Boolean normalization evidence; all
 must be regenerated for new output. Versions 1 through 3 and mixed shapes are
 rejected rather than inferred or upgraded.
 
-Reviewed report schema version: `7`.
+Reviewed report schema version: `8`.
 
-Each v7 target metadata object records the prepared app image ID and the resolved
+Each v8 target metadata object records the prepared app image ID and the resolved
 digest-pinned auxiliary `service_images` map. The runner compares that map with
 the declaration before starting Compose, so the report identifies every image
 that participated in the measurement.
 
 Across all three targets, Boolean six-probe and confirmation modes each record
-TP 2, TN 1, and non-decision 3. Time records TP 3, TN 3, and no
-non-decisions. Error records candidate 2, TN 3, and non-decision 1. The seven
-non-decision records remain listed below rather than being relabeled.
+TP 3, TN 3, and no non-decisions after context-bound echo normalization. Time
+records TP 3, TN 3, and no non-decisions. Error records candidate 2, TN 3, and
+non-decision 1. The remaining non-decision stays listed below rather than being
+relabeled.
 
 <!-- third-party-measurement:start -->
 | Target | Check type | Record | Mode | Expected label | Actual verdict | Reason | Detail status | Requests | Classification |
@@ -154,12 +154,12 @@ non-decision records remain listed below rather than being relabeled.
 | dsvw | sqli.error | dsvw-error-version-query | error_probe | negative | not_detected | dbms_error_not_observed | not_matched | 4 | tn |
 | dsvw | sqli.time | dsvw-time-id | nine_probe | positive | inconclusive | timing_pattern_matched | candidate | 9 | tp |
 | dsvw | sqli.time | dsvw-time-version-query | nine_probe | negative | not_detected | timing_pattern_not_matched | not_confirmed | 9 | tn |
-| dsvw | sqli.boolean | dsvw-version-query | confirmation | negative | inconclusive | unexpected_difference | not_eligible | 6 | non_decision |
-| dsvw | sqli.boolean | dsvw-version-query | six_probe | negative | inconclusive | unexpected_difference | not_configured | 6 | non_decision |
-| owasp-lab | sqli.boolean | owasp-lab-boolean-greet | confirmation | negative | inconclusive | unexpected_difference | not_eligible | 6 | non_decision |
-| owasp-lab | sqli.boolean | owasp-lab-boolean-greet | six_probe | negative | inconclusive | unexpected_difference | not_configured | 6 | non_decision |
-| owasp-lab | sqli.boolean | owasp-lab-boolean-search | confirmation | positive | inconclusive | unexpected_difference | not_eligible | 6 | non_decision |
-| owasp-lab | sqli.boolean | owasp-lab-boolean-search | six_probe | positive | inconclusive | unexpected_difference | not_configured | 6 | non_decision |
+| dsvw | sqli.boolean | dsvw-version-query | confirmation | negative | not_detected | no_boolean_difference | not_eligible | 6 | tn |
+| dsvw | sqli.boolean | dsvw-version-query | six_probe | negative | not_detected | no_boolean_difference | not_configured | 6 | tn |
+| owasp-lab | sqli.boolean | owasp-lab-boolean-greet | confirmation | negative | not_detected | no_boolean_difference | not_eligible | 6 | tn |
+| owasp-lab | sqli.boolean | owasp-lab-boolean-greet | six_probe | negative | not_detected | no_boolean_difference | not_configured | 6 | tn |
+| owasp-lab | sqli.boolean | owasp-lab-boolean-search | confirmation | positive | inconclusive | boolean_candidate | matched | 18 | tp |
+| owasp-lab | sqli.boolean | owasp-lab-boolean-search | six_probe | positive | inconclusive | boolean_candidate | not_configured | 6 | tp |
 | owasp-lab | sqli.error | owasp-lab-error-greet | error_probe | negative | not_detected | dbms_error_not_observed | not_matched | 4 | tn |
 | owasp-lab | sqli.error | owasp-lab-error-search | error_probe | positive | inconclusive | non_success_status | inconclusive | 4 | non_decision |
 | owasp-lab | sqli.time | owasp-lab-time-check-username | nine_probe | positive | inconclusive | timing_pattern_matched | candidate | 9 | tp |
@@ -175,8 +175,8 @@ non-decision records remain listed below rather than being relabeled.
 
 | Check type | Mode | Candidate | TP | TN | FP | FN | Non-decision |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| sqli.boolean | six_probe | - | 2 | 1 | 0 | 0 | 3 |
-| sqli.boolean | confirmation | - | 2 | 1 | 0 | 0 | 3 |
+| sqli.boolean | six_probe | - | 3 | 3 | 0 | 0 | 0 |
+| sqli.boolean | confirmation | - | 3 | 3 | 0 | 0 | 0 |
 | sqli.time | nine_probe | - | 3 | 3 | 0 | 0 | 0 |
 | sqli.error | error_probe | 2 | - | 3 | 0 | 0 | 1 |
 
@@ -186,18 +186,12 @@ Cells list TP/TN/FP/FN/non-decision. Error cells append candidate. A dash means 
 
 | Target (DBMS) | Boolean six_probe | Boolean confirmation | Time nine_probe | Error error_probe |
 | --- | --- | --- | --- | --- |
-| dsvw (sqlite) | 1/0/0/0/1 | 1/0/0/0/1 | 1/1/0/0/0 | —/1/0/0/0/1 |
-| owasp-lab (postgresql) | 0/0/0/0/2 | 0/0/0/0/2 | 1/1/0/0/0 | —/1/0/0/1/0 |
+| dsvw (sqlite) | 1/1/0/0/0 | 1/1/0/0/0 | 1/1/0/0/0 | —/1/0/0/0/1 |
+| owasp-lab (postgresql) | 1/1/0/0/0 | 1/1/0/0/0 | 1/1/0/0/0 | —/1/0/0/1/0 |
 | sqli-dojo (mysql) | 1/1/0/0/0 | 1/1/0/0/0 | 1/1/0/0/0 | —/1/0/0/0/1 |
 
 ### Known non-decisions
 
-- `dsvw` / `dsvw-version-query` / `sqli.boolean` / `confirmation`: `unexpected_difference`.
-- `dsvw` / `dsvw-version-query` / `sqli.boolean` / `six_probe`: `unexpected_difference`.
-- `owasp-lab` / `owasp-lab-boolean-greet` / `sqli.boolean` / `confirmation`: `unexpected_difference`.
-- `owasp-lab` / `owasp-lab-boolean-greet` / `sqli.boolean` / `six_probe`: `unexpected_difference`.
-- `owasp-lab` / `owasp-lab-boolean-search` / `sqli.boolean` / `confirmation`: `unexpected_difference`.
-- `owasp-lab` / `owasp-lab-boolean-search` / `sqli.boolean` / `six_probe`: `unexpected_difference`.
 - `owasp-lab` / `owasp-lab-error-search` / `sqli.error` / `error_probe`: `non_success_status`.
 <!-- third-party-measurement:end -->
 
@@ -219,12 +213,11 @@ literal plus signs as `%2B`. With the same label, initial value, payloads, and
 expectation, the real SQL-backed positive produces `boolean_candidate` in both modes
 and its confirmation relation matches after eighteen requests.
 
-The reflected safe value produces stable responses, but each appended predicate is
-also reflected and therefore the TRUE and FALSE responses differ. Under the existing
-contract this is a non-decision, not a true negative and not evidence of SQLi. The
-measurement command consequently returns non-zero after preserving the report. This
-weak reflected-parameter negative remains a non-decision and must not be relabeled or
-suppressed to make the measurement pass.
+The reflected safe value produces stable responses, and each appended predicate is
+also reflected. Context-bound complete-value echo normalization removes only that
+reviewed reflection before comparison, so both Boolean modes now produce
+`NOT_DETECTED / no_boolean_difference`. This remains weaker negative evidence than
+a parameterized SQL sink because the parameter never reaches SQL.
 
 On sqli-dojo-docker, both Boolean modes reported
 `INCONCLUSIVE / boolean_candidate` for the positive record. The confirmation
@@ -238,11 +231,10 @@ On OWASP Training Lab, the PostgreSQL Time positive produced
 `timing_pattern_matched` and the `greet` Time negative was a true negative. The
 Error positive returned a generic non-success page without a PostgreSQL signature,
 so it remains `INCONCLUSIVE / non_success_status`; the Error negative was a true
-negative. Both Boolean records produced `unexpected_difference`: the vulnerable
-search and the non-SQL greeting reflect their inputs, so exact response relations
-do not isolate the SQL-driven difference. These are recorded as non-decisions in
-both six-probe and confirmation modes. No payload, threshold, label, or expected
-verdict was changed after observing the run.
+negative. Context-bound complete-value echo normalization makes the non-SQL greeting
+a true negative and isolates the search route's SQL-driven difference, producing
+`boolean_candidate` in both six-probe and confirmation modes. No payload, threshold,
+label, or expected verdict was changed after observing the run.
 
 The Boolean classification contract matches `docs/sqli-boolean-evaluation.md`: only
 `INCONCLUSIVE / boolean_candidate` is a positive decision, only `NOT_DETECTED` is a

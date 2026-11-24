@@ -2011,7 +2011,7 @@ def test_reviewed_documentation_matches_the_report_contract():
     for field in evidence_fields:
         assert f"`{field}`" in documentation
         assert f"`{field}`" in readme
-    assert "Reviewed report schema version: `7`." in documentation
+    assert "Reviewed report schema version: `8`." in documentation
 
 
 @pytest.mark.doc_drift
@@ -2110,18 +2110,13 @@ def test_mysql_by_target_counts_are_recomputed_from_records():
 
 
 @pytest.mark.doc_drift
-def test_reviewed_fixture_uses_docs_bound_v7_while_writer_uses_v8():
+def test_reviewed_fixture_uses_current_v8_contract():
     runner = load_runner()
     report = expected_report()
 
-    assert report["schema_version"] == 7
-    assert runner.MEASUREMENT_SCHEMA_VERSION == 8
+    assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 8
     runner.check_documented_summary(report)
-    with pytest.raises(
-        runner.MeasurementError,
-        match=r"schema version 7.*lacks the required Boolean normalization_applied and normalized_echo_count evidence.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*version 8",
-    ):
-        runner.validate_measurement_report(report)
+    assert runner.validate_measurement_report(report) is report
     legacy = legacy_v4_report()
     assert legacy["schema_version"] == runner.LEGACY_MEASUREMENT_SCHEMA_VERSION == 4
     assert runner.validate_measurement_report(legacy) is legacy
@@ -2153,6 +2148,28 @@ def test_v5_error_evidence_requires_remeasurement_for_v8():
         match=r"schema version 5.*wire bytes.*unreliable under HTTP content encoding.*Re-run scripts/run_third_party_sqli_measurement.py on current main.*schema version 8",
     ):
         runner.validate_measurement_report(legacy_v5_report(runner))
+
+
+def test_v7_boolean_evidence_requires_remeasurement_for_v8():
+    runner = load_runner()
+    report = expected_report()
+    report["schema_version"] = 7
+    for record in report["records"]:
+        if record["check_type"] != "sqli.boolean":
+            continue
+        for evidence in record["evidence"]:
+            evidence.pop("normalization_applied")
+            evidence.pop("normalized_echo_count")
+
+    message = (
+        r"schema version 7.*lacks the required Boolean normalization_applied "
+        r"and normalized_echo_count evidence.*Re-run "
+        r"scripts/run_third_party_sqli_measurement.py on current main.*version 8"
+    )
+    with pytest.raises(runner.MeasurementError, match=message):
+        runner.validate_measurement_report(report)
+    with pytest.raises(runner.MeasurementError, match=message):
+        runner.check_documented_summary(report)
 
 
 def test_new_writer_rejects_v5_fixture(tmp_path):
@@ -2191,7 +2208,7 @@ def test_documented_schema_binding_rejects_legacy_v4_fixture():
 
     with pytest.raises(
         runner.MeasurementError,
-        match=r"bound to report schema version 7.*update.*binding and fixture together",
+        match=r"bound to report schema version 8.*update.*binding and fixture together",
     ):
         runner.check_documented_summary(legacy_v4_report())
 

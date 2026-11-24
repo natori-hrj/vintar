@@ -747,21 +747,12 @@ _NON_OBJECT_REPORT_MESSAGE = (
 )
 
 
-def _validate_measurement_report(
-    report: object,
-    *,
-    reviewed_schema_version: int | None = None,
-) -> dict[str, object]:
-    """Validate current output or one explicitly docs-bound reviewed fixture."""
+def _validate_measurement_report(report: object) -> dict[str, object]:
+    """Validate current output or the separately supported legacy v4 shape."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
     version = report.get("schema_version")
-    reviewed_v7 = version == 7 and reviewed_schema_version == 7
-    if (
-        type(version) is int
-        and version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS
-        and not reviewed_v7
-    ):
+    if type(version) is int and version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS:
         detail = (
             "v7 lacks the required Boolean normalization_applied and normalized_echo_count evidence"
             if version == 7
@@ -770,14 +761,10 @@ def _validate_measurement_report(
         raise MeasurementError(
             f"Unsupported third-party measurement report schema version {version}: {detail}. Re-run scripts/run_third_party_sqli_measurement.py on current main to produce schema version 8 with exact analyzer evidence."
         )
-    if type(version) is not int or (
-        version
-        not in {
-            LEGACY_MEASUREMENT_SCHEMA_VERSION,
-            MEASUREMENT_SCHEMA_VERSION,
-        }
-        and not reviewed_v7
-    ):
+    if type(version) is not int or version not in {
+        LEGACY_MEASUREMENT_SCHEMA_VERSION,
+        MEASUREMENT_SCHEMA_VERSION,
+    }:
         raise MeasurementError(
             f"Unsupported third-party measurement report schema_version: observed JSON type {_json_type(version)}. Expected an integer with allowed value 4 or 8; this reader supports legacy version 4 and current version 8. The report shape cannot be inferred from another version; re-run scripts/run_third_party_sqli_measurement.py on current main."
         )
@@ -2417,6 +2404,7 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
     """Reject actual results that differ from the committed reviewed summary."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
+    validate_measurement_report(report)
     try:
         text = documentation.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -2430,10 +2418,6 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
         raise MeasurementError(
             f"The reviewed documentation is bound to report schema version {found}, but fixture schema_version has JSON type {_json_type(report_version)} outside the bound version. Expected the integer specified by the docs binding. After a real measurement, update the documented schema binding and fixture together; do not fabricate or silently upgrade evidence."
         )
-    _validate_measurement_report(
-        report,
-        reviewed_schema_version=int(reviewed_version.group(1)),
-    )
     expected = _render_summary(report)
     if expected not in text:
         raise MeasurementError(
