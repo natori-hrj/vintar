@@ -34,6 +34,23 @@ class TimeOperationalCondition(StrEnum):
     DEADLINE = "deadline"
 
 
+def response_operational_condition(
+    status_code: int, *, truncated: bool
+) -> OperationalCondition | None:
+    """Classify a completed response in operational precedence order."""
+    if status_code == 429:
+        return OperationalCondition.RATE_LIMITED
+    if truncated:
+        return OperationalCondition.TRUNCATED
+    if not 200 <= status_code < 300:
+        return OperationalCondition.NON_SUCCESS_STATUS
+    return None
+
+
+class RateLimitStatusMismatch(ValueError):
+    """An operational decision uses the wrong reason for a rate-limit status."""
+
+
 class TimingInstabilityCause(StrEnum):
     BASELINE_SPAN = "baseline_span"
     CONTROL_SPAN = "control_span"
@@ -209,11 +226,19 @@ class OperationalDecisionFacts:
                 raise ValueError(
                     "Response-based operational facts require a valid HTTP status code."
                 )
-            if (
-                self.condition is OperationalCondition.RATE_LIMITED
-                or self.condition is TimeOperationalCondition.RATE_LIMITED
-            ) and self.status_code != 429:
-                raise ValueError("Rate-limited facts require HTTP status 429.")
+            rate_limited_status = (
+                response_operational_condition(self.status_code, truncated=False)
+                is OperationalCondition.RATE_LIMITED
+            )
+            if rate_limited_status != (
+                self.condition == OperationalCondition.RATE_LIMITED
+            ):
+                raise RateLimitStatusMismatch(
+                    "Invalid operational facts. HTTP 429 is classified as rate_limited "
+                    "first, and the rate-limited reason requires HTTP 429. Use the "
+                    "stage's rate-limited reason for HTTP 429 or regenerate the report "
+                    "with the current Vintar writer."
+                )
             if (
                 self.condition
                 in {

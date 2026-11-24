@@ -27,11 +27,13 @@ from vintar.checks.sqli.decision_facts import (
     OperationalDecisionFacts,
     PairLocalization,
     PredicatePair,
+    RateLimitStatusMismatch,
     ResponseDynamicsDecisionFacts,
     TimeOperationalCondition,
     TimingDynamicsDecisionFacts,
     TimingInstabilityCause,
     UnstablePairFacts,
+    response_operational_condition,
 )
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
@@ -90,11 +92,9 @@ class _ContradictoryDecisionFacts(ValueError):
 def _matches_response_condition(
     condition: OperationalCondition, observation: dict[str, object]
 ) -> bool:
-    if condition is OperationalCondition.RATE_LIMITED:
-        return observation["status_code"] == 429
-    if condition is OperationalCondition.TRUNCATED:
-        return observation["truncated"] is True
-    return not 200 <= observation["status_code"] < 300
+    return condition is response_operational_condition(
+        observation["status_code"], truncated=observation["truncated"]
+    )
 
 
 def _initial_operational_facts_match(
@@ -305,6 +305,8 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
             )
         else:
             raise ValueError
+    except RateLimitStatusMismatch as exc:
+        raise _ContradictoryDecisionFacts(str(exc)) from None
     except (KeyError, TypeError, ValueError):
         raise ValueError(
             "Invalid decision facts for the final reason. Use the bounded facts "

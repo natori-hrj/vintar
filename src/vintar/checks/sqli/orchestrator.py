@@ -7,6 +7,7 @@ from vintar.checks.sqli.decision_facts import (
     DecisionStage,
     OperationalCondition,
     OperationalDecisionFacts,
+    response_operational_condition,
 )
 from vintar.checks.sqli.models import (
     BOOLEAN_PROBE_ORDER,
@@ -217,7 +218,12 @@ def verify_boolean_sqli(
         observations.append(observation)
         responses[kind].append(response)
 
-        if response.status_code == 429:
+        if (
+            response_operational_condition(
+                response.status_code, truncated=response.truncated
+            )
+            is OperationalCondition.RATE_LIMITED
+        ):
             _emit_in_request_order(observation_sink, plan, tuple(observations))
             return VerificationResult(
                 check_id=check_id,
@@ -235,7 +241,7 @@ def verify_boolean_sqli(
                     sequence=len(observations),
                     probe_kind=kind,
                     condition=OperationalCondition.RATE_LIMITED,
-                    status_code=429,
+                    status_code=response.status_code,
                 ),
             )
 

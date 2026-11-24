@@ -11,11 +11,13 @@ from enum import StrEnum
 
 from vintar.checks.sqli.decision_facts import (
     DecisionStage,
+    OperationalCondition,
     OperationalDecisionFacts,
     TimeDecisionFacts,
     TimeOperationalCondition,
     TimingDynamicsDecisionFacts,
     TimingInstabilityCause,
+    response_operational_condition,
 )
 from vintar.checks.sqli.time_contract import (
     TIME_RESULT_RULES,
@@ -138,13 +140,12 @@ class _CompletedObservation:
 
 
 def _terminal_reason(observation: _CompletedObservation) -> str | None:
-    if observation.status_code == 429:
-        return "rate_limited"
-    if observation.truncated:
+    condition = response_operational_condition(
+        observation.status_code, truncated=observation.truncated
+    )
+    if condition is OperationalCondition.TRUNCATED:
         return "truncated_response"
-    if not 200 <= observation.status_code < 300:
-        return "non_success_status"
-    return None
+    return condition.value if condition is not None else None
 
 
 def _validate_observation_series(

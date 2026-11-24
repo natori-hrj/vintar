@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 import httpx
 
 from vintar.checks.sqli._errors import redact_runtime_errors
+from vintar.checks.sqli.decision_facts import response_operational_condition
 from vintar.checks.sqli.observation_sink import (
     SqliObservationSink,
     emit_observation,
@@ -319,9 +320,10 @@ def verify_time_based_sqli(
                     ) from None
 
                 if (
-                    response.status_code == 429
-                    or response.truncated
-                    or not 200 <= response.status_code < 300
+                    response_operational_condition(
+                        response.status_code, truncated=response.truncated
+                    )
+                    is not None
                 ):
                     return finish()
 

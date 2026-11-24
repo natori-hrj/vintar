@@ -338,6 +338,66 @@ def test_confirmation_operational_facts_match_count_and_plan(
         _validate(write_report(tmp_path, report), 3)
 
 
+_RATE_LIMIT_PRECEDENCE = (
+    r"HTTP 429 is classified as rate_limited first.*regenerate the report"
+    r".*current Vintar writer"
+)
+
+
+@pytest.mark.parametrize(
+    ("reason", "condition"),
+    [("non_success_status", "non_success_status"), ("truncated_response", "truncated")],
+)
+def test_initial_operational_facts_reject_mislabeled_rate_limit(
+    tmp_path, reason, condition
+):
+    path = Path("tests/golden/cli/verify/partial-inconclusive.json")
+    report = json.loads(path.read_text(encoding="utf-8"))["stdout_json"]
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = reason
+    outcome["verification"]["reason_code"] = reason
+    outcome["decision_facts"]["condition"] = condition
+
+    with pytest.raises(ValueError, match=_RATE_LIMIT_PRECEDENCE):
+        _validate(write_report(tmp_path, report), 3)
+
+
+@pytest.mark.parametrize(
+    ("reason", "condition", "original_status"),
+    [
+        ("confirmation_non_success_status", "non_success_status", 503),
+        ("confirmation_truncated", "truncated", 200),
+    ],
+)
+def test_confirmation_operational_facts_reject_mislabeled_rate_limit(
+    tmp_path, reason, condition, original_status
+):
+    report = make_eligible_report()
+    outcome = report["outcomes"][0]
+    outcome["actual_reason_code"] = reason
+    outcome["request_count"] = report["requests_used"] = 7
+    outcome["confirmation"] = {
+        "configured": True,
+        "status": "operational",
+        "reason_code": reason,
+        "request_count": 1,
+    }
+    facts = {
+        "category": "operational",
+        "stage": "confirmation",
+        "sequence": 7,
+        "probe_kind": "baseline",
+        "condition": condition,
+        "status_code": original_status,
+    }
+    outcome["decision_facts"] = facts
+    _validate(write_report(tmp_path, report), 3)
+    facts["status_code"] = 429
+
+    with pytest.raises(ValueError, match=_RATE_LIMIT_PRECEDENCE):
+        _validate(write_report(tmp_path, report), 3)
+
+
 def write_report(tmp_path, data):
     path = tmp_path / "report.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -780,6 +840,8 @@ def test_time_decision_facts_are_accepted_by_schema_and_validator(tmp_path, reas
         ("probe_timeout", {"probe_kind": "control"}),
         ("rate_limited", {"status_code": 200}),
         ("non_success_status", {"status_code": 200}),
+        ("non_success_status", {"status_code": 429}),
+        ("truncated_response", {"status_code": 429}),
     ],
 )
 def test_time_operational_fact_mutations_are_rejected(tmp_path, reason, mutation):
@@ -789,7 +851,12 @@ def test_time_operational_fact_mutations_are_rejected(tmp_path, reason, mutation
     facts.update(mutation)
     outcome["decision_facts"] = facts
 
-    with pytest.raises((ValueError, ValidationError), match=r"facts|status|429"):
+    expected = (
+        _RATE_LIMIT_PRECEDENCE
+        if mutation.get("status_code") == 429 or reason == "rate_limited"
+        else r"facts|status|429"
+    )
+    with pytest.raises((ValueError, ValidationError), match=expected):
         _validate(write_report(tmp_path, report), report["exit_code"])
 
 
