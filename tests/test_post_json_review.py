@@ -537,9 +537,13 @@ def test_named_entry_extensions_are_opaque_and_sibling_references_resolve(tmp_pa
     literal = {"$ref": "order-123"}
     path_item["x-path-metadata"] = literal
     operation["x-operation-metadata"] = literal
-    media["x-content-metadata"] = literal
+    media["x-content-mode"] = {"schema": {"$ref": "#/components/schemas/Mode"}}
+    media["application/json"]["examples"] = {
+        "x-example": {"$ref": "#/components/examples/Mode"}
+    }
     operation["responses"] = {
         "200": {"$ref": "#/components/responses/Ok"},
+        "X-Mode": {"$ref": "#/components/responses/Ok"},
         "x-response-metadata": literal,
     }
     operation["callbacks"] = {
@@ -547,13 +551,20 @@ def test_named_entry_extensions_are_opaque_and_sibling_references_resolve(tmp_pa
         "x-callback-metadata": literal,
     }
     document["components"] = {
-        "headers": {"Trace": {"schema": {"type": "string"}}},
+        "schemas": {"Mode": {"type": "string", "description": "mode"}},
+        "examples": {"Mode": {"value": {"name": "example"}}},
+        "headers": {
+            "Mode": {
+                "description": "mode",
+                "schema": {"$ref": "#/components/schemas/Mode"},
+            }
+        },
         "responses": {
             "Ok": {
                 "description": "ok",
                 "headers": {
-                    "X-Trace": {"$ref": "#/components/headers/Trace"},
-                    "x-header-metadata": literal,
+                    "X-Mode": {"$ref": "#/components/headers/Mode"},
+                    "x-mode": {"$ref": "#/components/headers/Mode"},
                 },
             }
         },
@@ -578,14 +589,8 @@ def test_named_entry_extensions_are_opaque_and_sibling_references_resolve(tmp_pa
         lambda doc: doc["paths"]["/items"]["post"]["x-operation-metadata"].update(
             {"$ref": "order-456"}
         ),
-        lambda doc: doc["paths"]["/items"]["post"]["requestBody"]["content"][
-            "x-content-metadata"
-        ].update({"$ref": "order-456"}),
         lambda doc: doc["paths"]["/items"]["post"]["responses"][
             "x-response-metadata"
-        ].update({"$ref": "order-456"}),
-        lambda doc: doc["components"]["responses"]["Ok"]["headers"][
-            "x-header-metadata"
         ].update({"$ref": "order-456"}),
         lambda doc: doc["paths"]["/items"]["post"]["callbacks"][
             "x-callback-metadata"
@@ -597,6 +602,25 @@ def test_named_entry_extensions_are_opaque_and_sibling_references_resolve(tmp_pa
         spec.write_text(json.dumps(edited), encoding="utf-8")
         changed = analyze_post_json(spec).operations[0].review_candidates[0]
         assert changed.candidate_id == candidate.candidate_id
+        assert (
+            changed.operation_definition_sha256 != candidate.operation_definition_sha256
+        )
+    referenced_changes = (
+        lambda doc: doc["components"]["headers"]["Mode"].update(
+            {"description": "changed"}
+        ),
+        lambda doc: doc["components"]["schemas"]["Mode"].update(
+            {"description": "changed"}
+        ),
+        lambda doc: doc["components"]["examples"]["Mode"]["value"].update(
+            {"name": "changed"}
+        ),
+    )
+    for mutate in referenced_changes:
+        edited = json.loads(json.dumps(document))
+        mutate(edited)
+        spec.write_text(json.dumps(edited), encoding="utf-8")
+        changed = analyze_post_json(spec).operations[0].review_candidates[0]
         assert (
             changed.operation_definition_sha256 != candidate.operation_definition_sha256
         )

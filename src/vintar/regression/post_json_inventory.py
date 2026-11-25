@@ -215,6 +215,7 @@ def _definition_map(
             trail,
             kind,
             named=False,
+            extensions_allowed=True,
         )
         for key, child in sorted(value.items())
     }
@@ -229,9 +230,10 @@ def _openapi_entry(
     kind: str,
     *,
     named: bool,
+    extensions_allowed: bool,
 ) -> JSON:
-    """Keep extension entry values opaque in every OpenAPI named-entry map."""
-    if key.lower().startswith("x-"):
+    """Keep lowercase x- entries opaque only where OpenAPI permits them."""
+    if extensions_allowed and key.startswith("x-"):
         return value
     if named:
         return _definition_value(document, value, source, trail, kind)
@@ -259,6 +261,8 @@ def _openapi_entries(
     source: Source,
     trail: tuple[Source, ...],
     kind: str,
+    *,
+    extensions_allowed: bool,
 ) -> JSON:
     if not isinstance(value, dict):
         return value
@@ -271,6 +275,7 @@ def _openapi_entries(
             trail,
             kind,
             named=True,
+            extensions_allowed=extensions_allowed,
         )
         for key, child in sorted(value.items())
     }
@@ -383,9 +388,23 @@ def _definition_child(
         if key == "requestBody":
             return _definition_value(document, value, source, trail, "request_body")
         if key == "responses":
-            return _openapi_entries(document, value, source, trail, "response")
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "response",
+                extensions_allowed=True,
+            )
         if key == "callbacks":
-            return _openapi_entries(document, value, source, trail, "callback")
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "callback",
+                extensions_allowed=True,
+            )
         return value
     if kind == "path_item":
         if key.lower() in {
@@ -404,37 +423,70 @@ def _definition_child(
         if key == "schema":
             return _definition_value(document, value, source, trail, "schema")
         if key == "content":
-            return _openapi_entries(document, value, source, trail, "media")
+            return _openapi_entries(
+                document, value, source, trail, "media", extensions_allowed=False
+            )
         if key == "examples":
-            return _openapi_entries(document, value, source, trail, "example")
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "example",
+                extensions_allowed=False,
+            )
         if key == "example":
             return value
         return value
     if kind == "request_body":
         if key == "content":
-            return _openapi_entries(document, value, source, trail, "media")
+            return _openapi_entries(
+                document, value, source, trail, "media", extensions_allowed=False
+            )
         return value
     if kind == "media":
         if key == "schema":
             return _definition_value(document, value, source, trail, "schema")
         if key == "examples":
-            return _openapi_entries(document, value, source, trail, "example")
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "example",
+                extensions_allowed=False,
+            )
         if key == "example":
             return value
         if key == "encoding":
-            return _openapi_entries(document, value, source, trail, "encoding")
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "encoding",
+                extensions_allowed=False,
+            )
         return value
     if kind == "encoding":
         if key == "headers":
-            return _openapi_entries(document, value, source, trail, "header")
+            return _openapi_entries(
+                document, value, source, trail, "header", extensions_allowed=False
+            )
         return value
     if kind == "response":
         if key == "headers":
-            return _openapi_entries(document, value, source, trail, "header")
+            return _openapi_entries(
+                document, value, source, trail, "header", extensions_allowed=False
+            )
         if key == "content":
-            return _openapi_entries(document, value, source, trail, "media")
+            return _openapi_entries(
+                document, value, source, trail, "media", extensions_allowed=False
+            )
         if key == "links":
-            return _openapi_entries(document, value, source, trail, "link")
+            return _openapi_entries(
+                document, value, source, trail, "link", extensions_allowed=False
+            )
         return value
     if kind == "callback":
         return _definition_value(document, value, source, trail, "path_item")
@@ -487,6 +539,7 @@ def _operation_definition_sha256(
             path_source,
             trail,
             "path_item",
+            extensions_allowed=True,
         ),
     }
     encoded = json.dumps(
