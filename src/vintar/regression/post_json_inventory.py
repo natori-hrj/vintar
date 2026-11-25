@@ -100,7 +100,7 @@ class ReviewCandidate:
     path: str
     operation_pointer: str
     request_body_pointer: str
-    operation_sha256: str
+    operation_definition_sha256: str
     json_pointer_pattern: str
     schema_pointer: str
     schema_definition_pointer: str
@@ -175,48 +175,97 @@ _SECURITY_TYPES = frozenset({"apiKey", "http", "oauth2", "openIdConnect", "mutua
 
 def _candidate_identity(
     path: str,
-    operation_pointer: str,
-    request_body_pointer: str,
     field: BodyField,
 ) -> list[object]:
     return [
         "POST",
         path,
-        operation_pointer,
-        request_body_pointer,
         field.json_pointer,
-        field.schema_pointer,
-        field.schema_definition_pointer,
-        list(field.types),
     ]
-
-
-def post_json_operation_sha256(
-    path: str,
-    operation_pointer: str,
-    request_body_pointer: str,
-    field: BodyField,
-) -> str:
-    """Digest the exact operation and schema provenance used for review."""
-    encoded = json.dumps(
-        _candidate_identity(path, operation_pointer, request_body_pointer, field),
-        ensure_ascii=True,
-        separators=(",", ":"),
-    ).encode("ascii")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def post_json_candidate_id(
     path: str,
-    operation_pointer: str,
-    request_body_pointer: str,
     field: BodyField,
 ) -> str:
-    """Return a stable ID for one unapproved review candidate."""
-    digest = post_json_operation_sha256(
-        path, operation_pointer, request_body_pointer, field
-    )[:32]
-    return f"post-json-candidate-{digest}"
+    """Identify one candidate by its stable operation and field location."""
+    encoded = json.dumps(
+        _candidate_identity(path, field),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return f"post-json-candidate-{hashlib.sha256(encoded).hexdigest()[:32]}"
+
+
+def _resolved_definition(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...] = (),
+) -> JSON:
+    if isinstance(value, list):
+        return [
+            _resolved_definition(document, child, source.child(index), trail)
+            for index, child in enumerate(value)
+        ]
+    if not isinstance(value, dict):
+        return value
+    if "$ref" in value:
+        reference_source = source.child("$ref")
+        target, referenced = document._pointer(
+            _string(value["$ref"], reference_source), reference_source
+        )
+        if target == source or target in trail:
+            raise DiscoveryError(
+                reference_source,
+                "Reference cycle detected. Break the recursive reference chain.",
+            )
+        resolved = _resolved_definition(document, referenced, target, (*trail, target))
+        siblings = {
+            key: _resolved_definition(document, child, source.child(key), trail)
+            for key, child in sorted(value.items())
+            if key != "$ref"
+        }
+        if isinstance(resolved, dict):
+            return resolved | siblings
+        return {"resolved": resolved, "siblings": siblings}
+    return {
+        key: _resolved_definition(document, child, source.child(key), trail)
+        for key, child in sorted(value.items())
+    }
+
+
+def _operation_definition_sha256(
+    document: _Discovery,
+    operation: JSONMap,
+    operation_source: Source,
+    path_item: JSONMap,
+    path_source: Source,
+    trail: tuple[Source, ...],
+) -> str:
+    definition: JSON = {
+        "operation": _resolved_definition(document, operation, operation_source, trail),
+        "path_parameters": _resolved_definition(
+            document,
+            path_item.get("parameters", []),
+            path_source.child("parameters"),
+            trail,
+        ),
+        "path_servers": _resolved_definition(
+            document,
+            path_item.get("servers", []),
+            path_source.child("servers"),
+            trail,
+        ),
+    }
+    encoded = json.dumps(
+        definition,
+        allow_nan=False,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _review_candidates(
@@ -225,6 +274,7 @@ def _review_candidates(
     request_body_pointer: str,
     fields: tuple[BodyField, ...],
     diagnostics: tuple[SchemaDiagnostic, ...],
+    operation_definition_sha256: str,
 ) -> tuple[ReviewCandidate, ...]:
     if diagnostics:
         return ()
@@ -232,20 +282,15 @@ def _review_candidates(
     for field in fields:
         if field.types != ("string",):
             continue
-        digest = post_json_operation_sha256(
-            path, operation_pointer, request_body_pointer, field
-        )
         candidates.append(
             ReviewCandidate(
-                post_json_candidate_id(
-                    path, operation_pointer, request_body_pointer, field
-                ),
+                post_json_candidate_id(path, field),
                 CandidateApproval.UNAPPROVED,
                 "POST",
                 path,
                 operation_pointer,
                 request_body_pointer,
-                digest,
+                operation_definition_sha256,
                 field.json_pointer,
                 field.schema_pointer,
                 field.schema_definition_pointer,
@@ -602,6 +647,16 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
                     media_source.pointer,
                     ordered_fields,
                     ordered_diagnostics,
+                    ""
+                    if ordered_diagnostics
+                    else _operation_definition_sha256(
+                        document,
+                        operation,
+                        operation_source,
+                        path_item,
+                        path_definition,
+                        path_trail,
+                    ),
                 ),
             )
         )
@@ -633,7 +688,7 @@ def _json_value(value: object) -> object:
         return {
             "candidate_id": value.candidate_id,
             "approval": value.approval.value,
-            "operation_sha256": value.operation_sha256,
+            "operation_definition_sha256": value.operation_definition_sha256,
         }
     if isinstance(value, StrEnum):
         return value.value

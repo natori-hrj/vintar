@@ -241,8 +241,7 @@ def replace_json_leaf(
     return JsonBody._from_value(_replace(body._value, pointer.tokens, replacement))
 
 
-def json_leaf_at(body: JsonBody, pointer: JsonPointer) -> JsonLeaf:
-    """Return one existing leaf selected by a concrete RFC 6901 pointer."""
+def _value_at(body: JsonBody, pointer: JsonPointer) -> _JsonValue:
     if type(body) is not JsonBody:
         raise TypeError("JSON body must be a JsonBody. Parse strict JSON first.")
     if type(pointer) is not JsonPointer:
@@ -266,11 +265,25 @@ def json_leaf_at(body: JsonBody, pointer: JsonPointer) -> JsonLeaf:
             _raise_pointer_value_error(
                 "JSON Pointer traverses through a leaf. Use a pointer to an existing leaf."
             )
+    return value
+
+
+def json_leaf_at(body: JsonBody, pointer: JsonPointer) -> JsonLeaf:
+    """Return one existing leaf selected by a concrete RFC 6901 pointer."""
+    value = _value_at(body, pointer)
     if isinstance(value, (_JsonArray, _JsonObject)):
         _raise_pointer_value_error(
             "JSON Pointer resolves to a container. Use a pointer to an existing leaf."
         )
     return value
+
+
+def json_array_at(body: JsonBody, pointer: JsonPointer) -> None:
+    """Require a concrete pointer to resolve to an existing JSON array."""
+    if not isinstance(_value_at(body, pointer), _JsonArray):
+        _raise_pointer_value_error(
+            "JSON Pointer does not resolve to an array. Use a pointer to an existing array."
+        )
 
 
 def _raise_pointer_value_error(message: str) -> Never:

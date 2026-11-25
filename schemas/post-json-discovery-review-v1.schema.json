@@ -20,11 +20,11 @@
     "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "operation": {
       "type": "object", "additionalProperties": false,
-      "required": ["approved", "method", "path", "operation_pointer", "request_body_pointer", "operation_sha256"],
+      "required": ["approved", "method", "path", "operation_pointer", "request_body_pointer", "operation_definition_sha256"],
       "properties": {
         "approved": {"const": true}, "method": {"const": "POST"}, "path": {"type": "string", "pattern": "^/"},
         "operation_pointer": {"$ref": "#/$defs/pointer"}, "request_body_pointer": {"$ref": "#/$defs/pointer"},
-        "operation_sha256": {"$ref": "#/$defs/digest"}
+        "operation_definition_sha256": {"$ref": "#/$defs/digest"}
       }
     },
     "field": {

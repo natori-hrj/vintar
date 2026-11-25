@@ -218,6 +218,12 @@ uv run --locked vintar review-post-json \
 The separate review artifact records only digests, schema provenance, the
 concrete pointer, and confirmations. It never records the baseline body and
 cannot execute HTTP or materialize a regression case.
+Candidate IDs identify stable operation/field locations. A separate operation
+definition digest binds side-effect approval to the complete resolved operation,
+including referenced request/response schemas and path-level parameters and
+servers. Changing that definition requires side-effect review again. Baseline
+pointers are limited to the selected JSON media type's direct `example` or its
+named `examples[*].value`, including locally referenced component examples.
 
 Validate a report before consuming or archiving it:
 

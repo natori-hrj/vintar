@@ -44,11 +44,11 @@
     "diagnostic": {"type": "object", "additionalProperties": false, "required": ["reason", "schema_pointer", "schema_definition_pointer"], "properties": {"reason": {"$ref": "#/$defs/diagnostic_reason"}, "schema_pointer": {"$ref": "#/$defs/pointer"}, "schema_definition_pointer": {"oneOf": [{"$ref": "#/$defs/pointer"}, {"type": "null"}]}}},
     "candidate": {
       "type": "object", "additionalProperties": false,
-      "required": ["candidate_id", "approval", "operation_sha256"],
+      "required": ["candidate_id", "approval", "operation_definition_sha256"],
       "properties": {
         "candidate_id": {"type": "string", "pattern": "^post-json-candidate-[0-9a-f]{32}$"},
         "approval": {"const": "unapproved"},
-        "operation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "operation_definition_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "operation": {

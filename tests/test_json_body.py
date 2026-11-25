@@ -8,6 +8,7 @@ from vintar.core.json_body import (
     MAX_JSON_POINTER_CHARACTERS,
     JsonBody,
     JsonPointer,
+    json_array_at,
     json_leaf_at,
     replace_json_leaf,
 )
@@ -295,3 +296,12 @@ def test_json_leaf_at_rejects_nonconcrete_or_nonleaf_targets(pointer):
 
     with pytest.raises(ValueError):
         json_leaf_at(body, JsonPointer.parse(pointer))
+
+
+def test_json_array_at_distinguishes_arrays_from_numeric_object_members():
+    array_body = JsonBody.from_bytes(b'{"items":[{"name":"x"}]}')
+    object_body = JsonBody.from_bytes(b'{"items":{"0":{"name":"x"}}}')
+
+    assert json_array_at(array_body, JsonPointer.parse("/items")) is None
+    with pytest.raises(ValueError, match="does not resolve to an array"):
+        json_array_at(object_body, JsonPointer.parse("/items"))

@@ -13,6 +13,7 @@ from urllib.parse import quote
 from vintar.core.json_body import (
     JsonBody,
     JsonPointer,
+    json_array_at,
     json_leaf_at,
     replace_json_leaf,
 )
@@ -29,7 +30,6 @@ from vintar.regression.post_json_inventory import (
     MAX_REPORT_BYTES,
     ReviewCandidate,
     analyze_post_json,
-    report_data,
 )
 
 MAX_REVIEW_BYTES = 262_144
@@ -40,6 +40,18 @@ STALE_INVENTORY_MESSAGE = (
 STALE_BODY_DIGEST_MESSAGE = (
     "Baseline body digest does not match. Recompute body_sha256 from the complete "
     "canonical JSON body and confirm it before reviewing."
+)
+OPERATION_DEFINITION_CHANGED_MESSAGE = (
+    "the operation definition changed since review; review side effects again"
+)
+INVALID_BASELINE_POINTER_MESSAGE = (
+    "Baseline pointer is not an allowed request-body example. Use "
+    'requestBody.content["application/json"].example or '
+    'requestBody.content["application/json"].examples[name].value.'
+)
+ARRAY_PATTERN_MESSAGE = (
+    "The candidate pointer pattern requires a JSON array at the wildcard position. "
+    "Supply a baseline body with an array there."
 )
 
 
@@ -75,7 +87,7 @@ def _as_json(value: object) -> JSON:
         return {
             "candidate_id": value.candidate_id,
             "approval": value.approval.value,
-            "operation_sha256": value.operation_sha256,
+            "operation_definition_sha256": value.operation_definition_sha256,
         }
     if isinstance(value, tuple):
         return [_as_json(item) for item in value]
@@ -146,6 +158,37 @@ def _body_from_value(value: JSON) -> JsonBody:
         ) from exc
 
 
+def _allowed_example_values(spec: Path, candidate: ReviewCandidate) -> dict[str, JSON]:
+    document = _load_document(spec)
+    media_source, media_value = document._pointer(
+        f"#{quote(candidate.request_body_pointer, safe='/~')}",
+        Source(spec, candidate.request_body_pointer),
+    )
+    if not isinstance(media_value, dict):
+        raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
+    allowed: dict[str, JSON] = {}
+    if "example" in media_value:
+        allowed[media_source.child("example").pointer] = media_value["example"]
+    examples = media_value.get("examples")
+    if not isinstance(examples, dict):
+        return allowed
+    for name, example_value in sorted(examples.items()):
+        site = media_source.child("examples").child(name)
+        if not isinstance(example_value, dict):
+            continue
+        if "$ref" in example_value:
+            try:
+                example, definition, _ = document.resolve(example_value, site)
+            except DiscoveryError:
+                continue
+            if "value" in example and "externalValue" not in example:
+                allowed[site.child("value").pointer] = example["value"]
+                allowed[definition.child("value").pointer] = example["value"]
+        elif "value" in example_value and "externalValue" not in example_value:
+            allowed[site.child("value").pointer] = example_value["value"]
+    return allowed
+
+
 def _baseline(
     spec: Path, candidate: ReviewCandidate, decision: object
 ) -> tuple[JsonBody, JSON]:
@@ -168,20 +211,15 @@ def _baseline(
             raise PostJsonReviewError(
                 "Baseline example pointer is invalid. Use an explicit local bundled example pointer or provide value."
             )
-        final = selected.rpartition("/")[2]
-        if final not in {"example", "value"} and "/examples/" not in selected:
-            raise PostJsonReviewError(
-                "Baseline pointer is not a supported example. Select a bundled example value or provide value."
-            )
         try:
-            document = _load_document(spec)
-            _, value = document._pointer(
-                f"#{quote(selected, safe='/~')}", Source(spec, selected)
-            )
+            allowed = _allowed_example_values(spec, candidate)
         except DiscoveryError as exc:
             raise PostJsonReviewError(
                 "Baseline example is missing or stale. Select a current bundled example or provide value."
             ) from exc
+        if selected not in allowed:
+            raise PostJsonReviewError(INVALID_BASELINE_POINTER_MESSAGE)
+        value = allowed[selected]
         source = {"file": spec.name, "pointer": selected}
     body = _body_from_value(value)
     digest = hashlib.sha256(body.to_bytes()).hexdigest()
@@ -237,16 +275,34 @@ def resolve_post_json_review(
         for operation in current.operations
         for candidate in operation.review_candidates
     }
-    if inventory_value != report_data(current):
-        raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
     candidate = current_candidates.get(candidate_id)
     supplied = supplied_candidates.get(candidate_id)
-    if candidate is None or supplied != _as_json(candidate):
+    if candidate is None:
         raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
+    matching_fields: list[dict[str, JSON]] = []
+    for operation_value in operations:
+        if (
+            not isinstance(operation_value, dict)
+            or operation_value.get("path") != candidate.path
+            or operation_value.get("operation_pointer") != candidate.operation_pointer
+            or operation_value.get("request_body_pointer")
+            != candidate.request_body_pointer
+        ):
+            continue
+        fields = operation_value.get("fields")
+        if not isinstance(fields, list):
+            raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
+        matching_fields.extend(
+            field
+            for field in fields
+            if isinstance(field, dict)
+            and field.get("json_pointer") == candidate.json_pointer_pattern
+        )
+    supplied_field = matching_fields[0] if len(matching_fields) == 1 else None
     expected_keys = {
         "version",
         "candidate_id",
-        "operation_sha256",
+        "operation_definition_sha256",
         "schema_pointer",
         "schema_definition_pointer",
         "baseline",
@@ -259,8 +315,14 @@ def resolve_post_json_review(
         raise PostJsonReviewError(
             "Review answers are invalid. Use version 1 and only the documented review decisions."
         )
+    if answer["operation_definition_sha256"] != candidate.operation_definition_sha256:
+        raise PostJsonReviewError(OPERATION_DEFINITION_CHANGED_MESSAGE)
     if (
-        answer["operation_sha256"] != candidate.operation_sha256
+        supplied != _as_json(candidate)
+        or supplied_field is None
+        or supplied_field.get("schema_pointer") != candidate.schema_pointer
+        or supplied_field.get("schema_definition_pointer")
+        != candidate.schema_definition_pointer
         or answer["schema_pointer"] != candidate.schema_pointer
         or answer["schema_definition_pointer"] != candidate.schema_definition_pointer
     ):
@@ -299,6 +361,18 @@ def resolve_post_json_review(
     pointer = _concrete_pointer(
         candidate.json_pointer_pattern, answer["concrete_pointer"]
     )
+    pattern = JsonPointer.parse(candidate.json_pointer_pattern)
+    for index, token in enumerate(pattern.tokens):
+        if token != "*":
+            continue
+        parent_tokens = pointer.tokens[:index]
+        parent_value = "".join(
+            "/" + item.replace("~", "~0").replace("/", "~1") for item in parent_tokens
+        )
+        try:
+            json_array_at(body, JsonPointer.parse(parent_value))
+        except ValueError as exc:
+            raise PostJsonReviewError(ARRAY_PATTERN_MESSAGE) from exc
     try:
         selected = json_leaf_at(body, pointer)
         replace_json_leaf(body, pointer, "vintar-review-validation")
@@ -320,7 +394,7 @@ def resolve_post_json_review(
             "path": candidate.path,
             "operation_pointer": candidate.operation_pointer,
             "request_body_pointer": candidate.request_body_pointer,
-            "operation_sha256": candidate.operation_sha256,
+            "operation_definition_sha256": candidate.operation_definition_sha256,
         },
         "field": {
             "json_pointer_pattern": candidate.json_pointer_pattern,

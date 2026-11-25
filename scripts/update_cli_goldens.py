@@ -578,7 +578,7 @@ def capture_post_review(name, scenario, folder, args, env):
     answer = {
         "version": 1,
         "candidate_id": candidate.candidate_id,
-        "operation_sha256": candidate.operation_sha256,
+        "operation_definition_sha256": candidate.operation_definition_sha256,
         "schema_pointer": candidate.schema_pointer,
         "schema_definition_pointer": candidate.schema_definition_pointer,
         "baseline": {
