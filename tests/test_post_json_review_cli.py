@@ -72,3 +72,53 @@ def test_review_cli_failures_never_echo_body_values(tmp_path, mutation):
     assert SENTINEL not in result.stderr
     if answer["baseline"]["body_sha256"] == "0" * 64:
         assert result.stderr == f"Error: {STALE_BODY_DIGEST_MESSAGE}\n"
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "diagnostic"),
+    [
+        (
+            OSError,
+            2,
+            "cannot complete offline POST JSON review. Check the local spec, current inventory, answers, and writable output path.",
+        ),
+        (
+            KeyboardInterrupt,
+            130,
+            "POST JSON review was interrupted. Rerun to regenerate the review artifact.",
+        ),
+    ],
+)
+def test_review_cli_reports_failed_publication(
+    tmp_path, monkeypatch, failure, code, diagnostic
+):
+    spec, inventory, answers, _ = inputs(tmp_path)
+    output = tmp_path / "review.json"
+    existing = b"existing review notes\n"
+    output.write_bytes(existing)
+
+    def fail_write(*args):
+        raise failure("synthetic publication failure")
+
+    monkeypatch.setattr(
+        "vintar.post_json_review_cli.write_post_json_review", fail_write
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "review-post-json",
+            "--spec",
+            str(spec),
+            "--inventory",
+            str(inventory),
+            "--answers",
+            str(answers),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == code
+    assert result.stderr == f"Error: {diagnostic}\n"
+    assert result.stdout == ""
+    assert output.read_bytes() == existing

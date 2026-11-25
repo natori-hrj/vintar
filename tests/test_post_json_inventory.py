@@ -940,3 +940,28 @@ def test_operation_id_absent_is_null(tmp_path):
     report = inventory.analyze_post_json(write_spec(tmp_path, document))
     assert report.operations[0].operation_id is None
     assert '"operation_id": null' in inventory.serialize_report(report)
+
+
+@pytest.mark.parametrize(
+    "operation_path", ["items", "//items", "/items?q=x", "/items#part", "/items\\part"]
+)
+def test_inventory_rejects_ambiguous_operation_paths(tmp_path, operation_path):
+    path = write_spec(tmp_path, spec(paths={operation_path: {"post": {}}}))
+
+    with pytest.raises(DiscoveryError) as caught:
+        inventory.analyze_post_json(path)
+
+    assert "Invalid operation path." in str(caught.value)
+    assert "Use a root-relative path without an authority, query, or fragment." in str(
+        caught.value
+    )
+
+
+def test_inventory_ignores_extensions_and_keeps_valid_post(tmp_path):
+    document = spec(schema={"type": "string"})
+    document["paths"].update({"x-example": {"post": {}}, "/read": {"get": {}}})
+
+    report = inventory.analyze_post_json(write_spec(tmp_path, document))
+
+    assert [operation.path for operation in report.operations] == ["/items"]
+    assert [field.json_pointer for field in report.operations[0].fields] == [""]

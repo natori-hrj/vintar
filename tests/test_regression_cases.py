@@ -776,3 +776,63 @@ def test_no_network_execution_is_performed(monkeypatch):
     case = parse_regression_case(VALID_CASE)
 
     assert case.max_requests == 6
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "diagnostic"),
+    [
+        ({"schema_version": True}, ValueError, "require Schema v1. Set version = 1."),
+        (
+            {"check_type": None},
+            ValueError,
+            'require type = "sqli.error". Use that exact check type.',
+        ),
+        (
+            {"case_id": ""},
+            ValueError,
+            "Invalid error case identifier. Use 1-64 letters",
+        ),
+        (
+            {"case_id": "-bad"},
+            ValueError,
+            "Invalid error case identifier. Use 1-64 letters",
+        ),
+        ({"template": None}, TypeError, "template must be a RequestTemplate."),
+        ({"point": None}, TypeError, "point must be an InjectionPoint."),
+        ({"expected_verdict": None}, TypeError, "expected_verdict must be a Verdict."),
+        ({"scope": None}, TypeError, "scope must be a ScopePolicy."),
+        (
+            {"error_payload": ""},
+            ValueError,
+            "Invalid error_payload. Supply an explicit nonempty reviewed string",
+        ),
+        (
+            {"max_requests": True},
+            ValueError,
+            "require exactly 4 requests. Set limits.max_requests = 4.",
+        ),
+        (
+            {"max_response_size": 1},
+            ValueError,
+            "require the fixed response-size limit. Use the Schema v1 loader default.",
+        ),
+        (
+            {"requests_per_second": True},
+            ValueError,
+            "require numeric requests_per_second from 0.1 through 10.0",
+        ),
+        (
+            {"timeout_seconds": 0},
+            ValueError,
+            "timeout_seconds from 0.1 through 60.0, excluding booleans.",
+        ),
+    ],
+)
+def test_error_case_rejects_invalid_direct_construction(changes, error, diagnostic):
+    case = parse_regression_case(ERROR_CASE)
+    assert isinstance(case, ErrorRegressionCase)
+
+    with pytest.raises(error) as caught:
+        replace(case, **changes)
+
+    assert diagnostic in str(caught.value)

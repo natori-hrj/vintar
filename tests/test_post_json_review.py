@@ -16,6 +16,7 @@ from vintar.regression.post_json_review import (
     ARRAY_PATTERN_MESSAGE,
     INVALID_BASELINE_POINTER_MESSAGE,
     INVENTORY_SPEC_MISMATCH_MESSAGE,
+    MAX_REVIEW_BYTES,
     OPERATION_DEFINITION_CHANGED_MESSAGE,
     STALE_BODY_DIGEST_MESSAGE,
     STALE_INVENTORY_MESSAGE,
@@ -823,3 +824,95 @@ def test_literal_star_and_array_item_have_distinct_review_candidates(tmp_path):
         assert resolve_post_json_review(spec, inventory, answers).pointer.tokens == (
             pointer[1:],
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "diagnostic"),
+    [
+        (
+            "version",
+            2,
+            "Review answers are invalid. Use version 1 and only the documented review decisions.",
+        ),
+        (
+            "baseline",
+            [],
+            "Baseline decision is invalid. Supply value or one explicit bundled example pointer plus body_sha256.",
+        ),
+        (
+            "baseline",
+            {},
+            "Baseline decision is invalid. Supply value or one explicit bundled example pointer plus body_sha256.",
+        ),
+        (
+            "baseline",
+            {"pointer": "relative", "body_sha256": ""},
+            "Baseline example pointer is invalid. Use an explicit local bundled example pointer or provide value.",
+        ),
+        (
+            "concrete_pointer",
+            1,
+            "Concrete JSON Pointer is invalid. Use the candidate pattern with each array wildcard replaced by an explicit index.",
+        ),
+        (
+            "concrete_pointer",
+            "relative",
+            "Concrete JSON Pointer is invalid. Use the candidate pattern with each array wildcard replaced by an explicit index.",
+        ),
+        (
+            "side_effect",
+            {},
+            "Side-effect decision is invalid. Explicitly confirm no_side_effect.",
+        ),
+        (
+            "side_effect",
+            {"class": "mutating", "confirmed": True},
+            "POST side effects are not approved. Use no_side_effect only after explicit review; mutating operations are not supported.",
+        ),
+        (
+            "environment",
+            [],
+            "Environment decision is invalid. Name and explicitly confirm an isolated test environment class.",
+        ),
+        (
+            "environment",
+            {"class": "Invalid Alias", "confirmed": True},
+            "Environment class is invalid. Use a lowercase bounded alias for an isolated test environment.",
+        ),
+    ],
+)
+def test_review_rejects_invalid_decisions_with_corrective_guidance(
+    tmp_path, field, value, diagnostic
+):
+    spec_path, inventory, answers, answer = inputs(tmp_path, nested=True)
+    answer[field] = value
+    write_answer(answers, answer)
+
+    with pytest.raises(PostJsonReviewError) as caught:
+        resolve_post_json_review(spec_path, inventory, answers)
+
+    assert str(caught.value) == diagnostic
+
+
+@pytest.mark.parametrize(
+    ("content", "diagnostic"),
+    [
+        (
+            b'{"version":1,"version":1}',
+            "Cannot read JSON input. Supply a bounded UTF-8 JSON file with unique keys.",
+        ),
+        (
+            b"\xff",
+            "Cannot read JSON input. Supply a bounded UTF-8 JSON file with unique keys.",
+        ),
+        (None, "JSON input exceeds its size limit. Supply a smaller review artifact."),
+    ],
+)
+def test_review_rejects_invalid_json_artifacts(tmp_path, content, diagnostic):
+    spec_path, inventory, answers, _ = inputs(tmp_path)
+    answers.write_bytes(b" " * (MAX_REVIEW_BYTES + 1) if content is None else content)
+
+    with pytest.raises(PostJsonReviewError) as caught:
+        resolve_post_json_review(spec_path, inventory, answers)
+
+    assert str(caught.value) == diagnostic

@@ -13,8 +13,11 @@ from vintar.checks.sqli.time_analyzer import (
     TimeDecisionInputs,
     TimeObservation,
     TimeProbeOutcome,
+    TimeResponseSignature,
     analyze_time_probes,
     classify_time_decision_inputs,
+    time_operational_decision_facts,
+    time_response_signature,
 )
 from vintar.checks.sqli.time_plan import (
     TIME_PROBE_ORDER,
@@ -970,3 +973,135 @@ def test_result_is_deterministic():
     results = [run_analysis() for _ in range(2)]
 
     assert results[0] == results[1]
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "field"),
+    [
+        ({"status_code": True}, ValueError, "Time response status"),
+        ({"status_code": 99}, ValueError, "Time response status"),
+        ({"truncated": 1}, TypeError, "Time truncation flag"),
+        ({"body_size": True}, ValueError, "Time response size"),
+        ({"body_size": -1}, ValueError, "Time response size"),
+        ({"body_digest": None}, ValueError, "Time response digest"),
+        ({"body_digest": "abc"}, ValueError, "Time response digest"),
+        ({"body_digest": "z" * 64}, ValueError, "Time response digest"),
+    ],
+)
+def test_time_response_signature_rejects_invalid_metadata(changes, error, field):
+    signature = TimeResponseSignature(200, False, 0, "a" * 64)
+
+    with pytest.raises(error) as caught:
+        replace(signature, **changes)
+
+    assert str(caught.value) == f"Invalid {field}. Use a completed runner response."
+
+
+def test_timeout_cannot_supply_a_completed_response_signature():
+    observation = TimeObservation(
+        kind=TIME_PROBE_ORDER[0], sequence=1, outcome=TimeProbeOutcome.TIMEOUT
+    )
+
+    with pytest.raises(ValueError) as caught:
+        time_response_signature(observation, body_size=0, body_digest="a" * 64)
+
+    assert str(caught.value) == (
+        "Time response signatures require a completed analyzer observation."
+    )
+
+
+@pytest.mark.parametrize(
+    ("make_series", "error", "diagnostic"),
+    [
+        (list, TypeError, "Invalid time analysis observations."),
+        (
+            lambda series: (*series, series[-1]),
+            ValueError,
+            "Too many timing observations.",
+        ),
+        (lambda series: (None, *series[1:]), TypeError, "Invalid timing observation."),
+    ],
+)
+def test_analyzer_rejects_invalid_synthetic_observation_series(
+    make_series, error, diagnostic
+):
+    with pytest.raises(error) as caught:
+        analyze_time_probes(
+            plan=make_plan(), observations=make_series(make_observations())
+        )
+
+    assert str(caught.value) == diagnostic
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "diagnostic"),
+    [
+        ({"status": "inconclusive"}, TypeError, "Invalid timing analysis status."),
+        ({"reason_code": None}, TypeError, "Invalid timing analysis reason."),
+        (
+            {"reason_code": "unknown"},
+            ValueError,
+            "Unsupported timing analysis reason. Use a reason declared in TIME_RESULT_RULES.",
+        ),
+        ({"observations": []}, TypeError, "Invalid timing observations."),
+        ({"observations": (None,)}, TypeError, "Invalid timing observation."),
+        ({"evidence": {}}, TypeError, "Invalid timing evidence."),
+        ({"decision_facts": {}}, TypeError, "Invalid timing decision facts."),
+    ],
+)
+def test_time_analysis_rejects_invalid_result_fields(changes, error, diagnostic):
+    analysis = analyze_time_probes(plan=make_plan(), observations=())
+
+    with pytest.raises(error) as caught:
+        replace(analysis, **changes)
+
+    assert str(caught.value) == diagnostic
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "diagnostic"),
+    [
+        ({"deadline": 1}, TypeError, "Time deadline fact selector must be a boolean."),
+        (
+            {"reason_code": "unknown"},
+            ValueError,
+            "Time operational facts require a terminal Time reason. Use the reason selected by the timing analyzer.",
+        ),
+    ],
+)
+def test_time_operational_facts_reject_invalid_inputs(changes, error, diagnostic):
+    fields = {
+        "reason_code": "probe_timeout",
+        "sequence": 1,
+        "probe_kind": TIME_PROBE_ORDER[0],
+    }
+
+    with pytest.raises(error) as caught:
+        time_operational_decision_facts(**(fields | changes))
+
+    assert str(caught.value) == diagnostic
+
+
+@pytest.mark.parametrize(
+    ("changes", "diagnostic"),
+    [
+        (
+            {"sequence": 2},
+            "Time operational facts do not identify the stopping plan position. Use the sequence and probe kind selected by the bounded runner.",
+        ),
+        (
+            {"status_code": 503},
+            "Time operational status facts contradict the stopping observation. Use the completed response status or omit it when no response exists.",
+        ),
+    ],
+)
+def test_time_analysis_rejects_inconsistent_stopping_facts(changes, diagnostic):
+    observation = replace(make_observations()[0], status_code=502)
+    analysis = analyze_time_probes(plan=make_plan(), observations=(observation,))
+    assert analysis.reason_code == "non_success_status"
+    assert analysis.decision_facts is not None
+
+    with pytest.raises(ValueError) as caught:
+        replace(analysis, decision_facts=replace(analysis.decision_facts, **changes))
+
+    assert str(caught.value) == diagnostic

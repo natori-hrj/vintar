@@ -1255,3 +1255,65 @@ def test_toml_is_deterministic_and_contains_no_selection_metadata(
     assert parsed["version"] == 1
     assert "selection" not in parsed["probes"]
     assert first.endswith(b"\n")
+
+
+@pytest.mark.parametrize(
+    ("changes", "diagnostic"),
+    [
+        (
+            b"[unterminated",
+            "Cannot read materialization config. Supply bounded UTF-8 TOML with the documented version 1 fields.",
+        ),
+        (
+            b"",
+            "Invalid materialization config keys. Use only config_version, optional type, input_id, target, injection, probes, and limits.",
+        ),
+    ],
+)
+def test_invalid_config_reports_corrective_guidance(
+    tmp_path, monkeypatch, changes, diagnostic
+):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    inputs["config"].write_bytes(changes)
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2
+    assert result.stderr == f"Error: {diagnostic}\n"
+    assert not inputs["output"].exists()
+
+
+def test_failed_case_write_preserves_existing_output(tmp_path, monkeypatch):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    output = inputs["output"]
+    existing = b"existing case notes\n"
+    output.write_bytes(existing)
+
+    def fail_sync(_descriptor):
+        raise OSError("synthetic filesystem failure")
+
+    monkeypatch.setattr("vintar.regression.case_materialization.os.fsync", fail_sync)
+    result = invoke(inputs)
+
+    assert result.exit_code == 2
+    assert "cannot materialize the case" in result.stderr.lower()
+    assert "writable output path" in result.stderr
+    assert output.read_bytes() == existing
+    assert list(output.parent.glob(".vintar-case-*")) == []
+
+
+def test_case_output_cannot_be_a_symlink(tmp_path, monkeypatch):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    original = tmp_path / "original.toml"
+    original.write_bytes(b"existing case notes\n")
+    inputs["output"].symlink_to(original)
+
+    result = invoke(inputs)
+
+    assert result.exit_code == 2
+    assert (
+        result.stderr
+        == "Error: Case output is a symlink. Choose a different --output path.\n"
+    )
+    assert inputs["output"].is_symlink()
+    assert original.read_bytes() == b"existing case notes\n"
