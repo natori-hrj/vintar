@@ -75,8 +75,8 @@ Bodies, payloads, URLs with query values, headers, cookies, exception text,
 elapsed/rate-wait values, medians, spans, thresholds, margins, and matched DBMS
 text are never stored. Public tooling rejects v9 and older reports because v9
 lacks per-attempt failures and structured facts; regenerate with the commands
-above. The exact hash-pinned reviewed v9 fixture remains readable only by the
-documentation drift check until a real maintainer-run v10 report replaces it.
+above. The reviewed fixture is a real maintainer-run v10 report and passes the
+same public validation path as newly produced reports.
 Error candidates remain `candidate`, never `tp` or `vulnerable`.
 
 Docker absence, an unavailable loopback binding, a changed archive, a changed local

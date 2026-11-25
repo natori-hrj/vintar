@@ -86,9 +86,8 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
-The current reviewed fixture uses schema version 9. New measurement runs write
-schema version 10; the fixture and binding remain at 9 until a real v10 run is
-reviewed and copied byte-for-byte.
+The current reviewed fixture is a real maintainer-run schema version 10 report,
+copied byte-for-byte and validated through the public report path.
 Versions 2 and 3 introduced
 per-technique records and Error evidence. Version 4 generalizes that contract to
 multiple independently prepared targets:
@@ -116,7 +115,7 @@ Version 4 moves the former `target` object to target-id-keyed `targets`, adds
 `target_id` to every record, moves the former counts tree to `counts.overall`, and
 adds the same complete tree for each target under `counts.by_target`.
 
-The reviewed fixture is a real version 9 measurement. Each record adds
+Version 9 added
 request-ordered wire provenance with
 `sequence`, `role`, `wire_status_code`, `wire_body_size`, and
 `wire_body_sha256`. Exact production observations provide
@@ -129,7 +128,7 @@ normalized echo sites. Time provides
 `outcome`, and Error provides sorted `matches` whose entries contain only
 `dbms` and `signature_id`. Equality and repeat-pair stability flags are derived
 from analyzer digests. The report never stores bodies, payloads, headers,
-cookies, matched text, or URLs with query values. The writer now requires v9.
+cookies, matched text, or URLs with query values.
 Version 9 applies the current confirmation precedence: per-kind stability,
 cross-predicate TRUE/FALSE pair reproduction, then the remaining relation.
 Version 8 used the previous confirmation reason rules and cannot be interpreted
@@ -146,13 +145,12 @@ runs retain only eight boolean decision predicates; and every measured
 non-decision retains production `decision_facts`. No bodies, payloads, query
 values, headers, cookies, exception text, elapsed values, medians, spans,
 thresholds, margins, or matched DBMS text are stored. Public validation rejects
-v9 and older reports and tells maintainers to rerun the measurement. During this
-transition only the exact hash-pinned reviewed v9 fixture is accepted by the
-private documentation check.
+v9 and older reports and tells maintainers to rerun the measurement. The
+reviewed v10 fixture follows the same validation path as newly produced reports.
 
-Reviewed report schema version: `9`.
+Reviewed report schema version: `10`.
 
-Each v9 target metadata object records the prepared app image ID and the resolved
+Each reviewed target metadata object records the prepared app image ID and the resolved
 digest-pinned auxiliary `service_images` map. The runner compares that map with
 the declaration before starting Compose, so the report identifies every image
 that participated in the measurement.
