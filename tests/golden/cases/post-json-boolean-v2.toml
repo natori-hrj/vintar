@@ -1,0 +1,39 @@
+version = 2
+id = "post-json-boolean"
+type = "sqli.boolean"
+expected_verdict = "not_detected"
+
+[request]
+method = "POST"
+url = "https://golden.invalid/items"
+allowed_origin = "https://golden.invalid"
+json_body = "{\"name\":\"baseline\"}"
+
+[injection]
+location = "json_body"
+pointer = "/name"
+mode = "replace"
+
+[probes]
+true_payload = "true-probe"
+false_payload = "false-probe"
+
+[limits]
+max_requests = 6
+requests_per_second = 2.0
+timeout_seconds = 5.0
+
+[approval]
+candidate_id = "post-json-candidate-00000000000000000000000000000000"
+method = "POST"
+path = "/items"
+operation_pointer = "/paths/~1items/post"
+request_body_pointer = "/paths/~1items/post/requestBody/content/application~1json"
+operation_definition_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+baseline_body_sha256 = "5e5c0546e15bd689be19e8e151d0517b1ae9f6c96edfda7fbf930a72ae99056d"
+side_effect = "no_side_effect"
+environment_class = "isolated_test"
+
+[approval.review]
+schema_version = 1
+report_type = "post_json_discovery_review"

@@ -6,6 +6,7 @@ import httpx
 
 from vintar.core.scope import AllowedOrigin, ScopePolicy, validate_scope
 from vintar.regression.cases import AnyRegressionCase
+from vintar.regression.cases_v2 import PostJsonRegressionCase
 
 
 def parse_runtime_origin(value: str) -> AllowedOrigin:
@@ -62,6 +63,10 @@ def bind_runtime_target(
     Schema v1's original absolute origin is a placeholder in this workflow.
     The raw request path and all injection inputs remain unchanged.
     """
+    if isinstance(case, PostJsonRegressionCase):
+        raise TypeError(
+            "Schema v2 POST JSON cases cannot be rebound before trusted POST execution is implemented."
+        )
     if not isinstance(case, AnyRegressionCase):
         raise TypeError("Invalid regression case.")
     if type(target) is not AllowedOrigin:

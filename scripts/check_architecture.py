@@ -63,6 +63,7 @@ def discovery_diagnostics(path, tree):
             Path("discover_cli.py"),
             Path("review_draft_cli.py"),
             Path("materialize_case_cli.py"),
+            Path("materialize_post_json_case_cli.py"),
             Path("post_json_inventory_cli.py"),
             Path("post_json_review_cli.py"),
         }
@@ -80,6 +81,10 @@ def discovery_diagnostics(path, tree):
         allowed = DISCOVER_CLI_IMPORTS | {
             "vintar.regression.case_materialization",
             "vintar.regression.discovery_review",
+        }
+    if path == Path("materialize_post_json_case_cli.py"):
+        allowed = DISCOVER_CLI_IMPORTS | {
+            "vintar.regression.post_json_case_materialization",
         }
     if path == Path("regression/discovery_review.py"):
         allowed = DISCOVERY_IMPORTS | {
@@ -110,6 +115,28 @@ def discovery_diagnostics(path, tree):
             "vintar.regression.cases",
             "vintar.regression.discovery",
             "vintar.regression.discovery_review",
+        }
+    if path == Path("regression/post_json_case_materialization.py"):
+        allowed = DISCOVERY_IMPORTS | {
+            "vintar.core.strict_json",
+            "vintar.regression.cases",
+            "vintar.regression.cases_v2",
+            "vintar.regression.discovery",
+            "vintar.regression.discovery_drafts",
+            "vintar.regression.post_json_review",
+        }
+    if path == Path("regression/cases_v2.py"):
+        allowed = DISCOVERY_IMPORTS | {
+            "hashlib",
+            "httpx",
+            "importlib",
+            "jsonschema",
+            "jsonschema.exceptions",
+            "unicodedata",
+            "vintar.checks.sqli.error_analyzer",
+            "vintar.checks.sqli.models",
+            "vintar.core.json_body",
+            "vintar.core.scope",
         }
     if path == Path("checks/sqli/presets.py"):
         allowed = {"collections.abc", "dataclasses", "types"}
@@ -159,10 +186,13 @@ def check_source(path: Path, source: str) -> list[str]:
         Path("discover_cli.py"),
         Path("review_draft_cli.py"),
         Path("materialize_case_cli.py"),
+        Path("materialize_post_json_case_cli.py"),
         Path("post_json_inventory_cli.py"),
         Path("post_json_review_cli.py"),
         Path("checks/sqli/presets.py"),
         Path("regression/case_materialization.py"),
+        Path("regression/cases_v2.py"),
+        Path("regression/post_json_case_materialization.py"),
         Path("regression/discovery_review.py"),
         Path("regression/post_json_inventory.py"),
         Path("regression/post_json_review.py"),

@@ -80,7 +80,13 @@ def check_distributions(root: Path, output: Path) -> tuple[Path, Path]:
     license_text = (root / "LICENSE").read_bytes()
     source_files = {
         file.relative_to(root / "src").as_posix()
-        for file in (root / "src" / "vintar").rglob("*.py")
+        for file in (root / "src" / "vintar").rglob("*")
+        if file.is_file()
+        and (
+            file.suffix == ".py"
+            or file.relative_to(root / "src").as_posix()
+            == "vintar/schemas/regression-case-v2.schema.json"
+        )
     }
     require(
         {"vintar/__init__.py", "vintar/cli.py"} <= source_files,

@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/natori-hrj/vintar/blob/main/schemas/regression-case-v2.schema.json",
+  "title": "Vintar Regression Case v2",
+  "oneOf": [
+    {"$ref": "#/$defs/boolean_case"},
+    {"$ref": "#/$defs/time_case"},
+    {"$ref": "#/$defs/error_case"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "pointer": {"type": "string", "pattern": "^(?:/(?:[^~/]|~[01])*)*$"},
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "id", "type", "expected_verdict", "request", "injection", "probes", "limits", "approval"],
+      "properties": {
+        "version": {"const": 2},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+        "type": {"enum": ["sqli.boolean", "sqli.time", "sqli.error"]},
+        "expected_verdict": {"enum": ["not_detected", "inconclusive", "vulnerable"]},
+        "request": {"$ref": "#/$defs/request"},
+        "injection": {"$ref": "#/$defs/injection"},
+        "probes": {"type": "object"},
+        "limits": {"$ref": "#/$defs/limits"},
+        "approval": {"$ref": "#/$defs/approval"}
+      }
+    },
+    "boolean_case": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"properties": {"type": {"const": "sqli.boolean"}, "probes": {"$ref": "#/$defs/boolean_probes"}}}
+      ]
+    },
+    "time_case": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"properties": {"type": {"const": "sqli.time"}, "probes": {"$ref": "#/$defs/time_probes"}}}
+      ]
+    },
+    "error_case": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"properties": {"type": {"const": "sqli.error"}, "probes": {"$ref": "#/$defs/error_probes"}}}
+      ]
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "url", "allowed_origin", "json_body"],
+      "properties": {
+        "method": {"const": "POST"},
+        "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "allowed_origin": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "json_body": {"type": "string", "minLength": 1, "maxLength": 65536}
+      }
+    },
+    "injection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["location", "pointer", "mode"],
+      "properties": {
+        "location": {"const": "json_body"},
+        "pointer": {"$ref": "#/$defs/pointer"},
+        "mode": {"const": "replace"}
+      }
+    },
+    "boolean_probes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["true_payload", "false_payload"],
+      "properties": {
+        "true_payload": {"type": "string", "minLength": 1, "maxLength": 512},
+        "false_payload": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "time_probes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["delay_payload", "control_payload", "expected_delay_seconds"],
+      "properties": {
+        "delay_payload": {"type": "string", "minLength": 1, "maxLength": 512},
+        "control_payload": {"type": "string", "minLength": 1, "maxLength": 512},
+        "expected_delay_seconds": {"type": "number", "minimum": 0.25, "maximum": 2.0}
+      }
+    },
+    "error_probes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["error_payload"],
+      "properties": {"error_payload": {"type": "string", "minLength": 1, "maxLength": 512}}
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_requests", "requests_per_second", "timeout_seconds"],
+      "properties": {
+        "max_requests": {"type": "integer", "minimum": 1},
+        "requests_per_second": {"type": "number", "minimum": 0.1, "maximum": 10.0},
+        "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 60.0}
+      }
+    },
+    "approval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate_id", "method", "path", "operation_pointer", "request_body_pointer", "operation_definition_sha256", "baseline_body_sha256", "side_effect", "environment_class", "review"],
+      "properties": {
+        "candidate_id": {"type": "string", "pattern": "^post-json-candidate-[0-9a-f]{32}$"},
+        "method": {"const": "POST"},
+        "path": {"type": "string", "pattern": "^/"},
+        "operation_pointer": {"$ref": "#/$defs/pointer"},
+        "request_body_pointer": {"$ref": "#/$defs/pointer"},
+        "operation_definition_sha256": {"$ref": "#/$defs/digest"},
+        "baseline_body_sha256": {"$ref": "#/$defs/digest"},
+        "side_effect": {"const": "no_side_effect"},
+        "environment_class": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "review": {"$ref": "#/$defs/review"}
+      }
+    },
+    "review": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "report_type"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "report_type": {"const": "post_json_discovery_review"}
+      }
+    }
+  }
+}
