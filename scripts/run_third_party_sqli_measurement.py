@@ -1891,6 +1891,7 @@ class _ResponseRecorder:
         self.responses: dict[int, RecordedResponse] = {}
         self.response_condition = threading.Condition()
         self.next_sequence = 0
+        self.terminal_states: dict[int, str] = {}
         self.recording_error: str | None = None
         self.failure: BridgeHandlerFailure | None = None
 
@@ -1898,6 +1899,7 @@ class _ResponseRecorder:
         with self.response_condition:
             sequence = self.next_sequence
             self.next_sequence += 1
+            self.terminal_states[sequence] = "active"
             return sequence
 
     def record_response(self, sequence: int, response: RecordedResponse) -> None:
@@ -1917,6 +1919,14 @@ class _ResponseRecorder:
                 self.response_condition.notify_all()
                 raise MeasurementError(self.recording_error)
             self.responses[sequence] = response
+            if sequence in self.terminal_states:
+                self.terminal_states[sequence] = "response"
+            self.response_condition.notify_all()
+
+    def complete_without_response(self, sequence: int) -> None:
+        with self.response_condition:
+            if self.terminal_states.get(sequence) == "active":
+                self.terminal_states[sequence] = "no_response"
             self.response_condition.notify_all()
 
     def synchronized_response_map(
@@ -1932,11 +1942,16 @@ class _ResponseRecorder:
             raise ValueError(
                 "Expected wire response sequences must be positive integers."
             )
-        expected_zero_based = {sequence - 1 for sequence in expected_sequences}
         with self.response_condition:
             complete = self.response_condition.wait_for(
                 lambda: (
-                    expected_zero_based <= self.responses.keys() or self.handler_failed
+                    (
+                        all(
+                            state != "active" for state in self.terminal_states.values()
+                        )
+                        and (bool(self.terminal_states) or not expected_sequences)
+                    )
+                    or self.handler_failed
                 ),
                 timeout=timeout_seconds,
             )
@@ -1961,6 +1976,8 @@ class _ResponseRecorder:
                     accepted_sequences=tuple(range(self.next_sequence)),
                     completed_sequences=tuple(sorted(self.responses)),
                 )
+            if sequence is not None and sequence in self.terminal_states:
+                self.terminal_states[sequence] = "failed"
             self.response_condition.notify_all()
 
     @property
@@ -2016,7 +2033,9 @@ class _BridgeServer(socketserver.ThreadingTCPServer):
 
     def complete_sequence(self, request: socket.socket) -> None:
         with self.recorder.response_condition:
-            self.accepted_sequences.pop(id(request), None)
+            sequence = self.accepted_sequences.pop(id(request), None)
+        if sequence is not None:
+            self.recorder.complete_without_response(sequence)
 
     def record_response(self, sequence: int, response: RecordedResponse) -> None:
         self.recorder.record_response(sequence, response)
@@ -2027,6 +2046,8 @@ class _BridgeServer(socketserver.ThreadingTCPServer):
         *,
         timeout_seconds: float = _WIRE_RESPONSE_WAIT_SECONDS,
     ) -> dict[int, RecordedResponse]:
+        self.shutdown()
+        self.server_close()
         return self.recorder.synchronized_response_map(
             expected_sequences,
             timeout_seconds=timeout_seconds,
@@ -2041,7 +2062,7 @@ class _BridgeServer(socketserver.ThreadingTCPServer):
         if exception is None:
             exception = RuntimeError("The bridge handler failed without an exception.")
         with self.recorder.response_condition:
-            sequence = self.accepted_sequences.pop(id(request), None)
+            sequence = self.accepted_sequences.get(id(request))
         self.recorder.record_failure(
             sequence,
             type(exception).__name__,
@@ -2089,7 +2110,11 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
                     break
         recorded = _parse_http_response(bytes(response))
         server.record_response(sequence, recorded)
-        server.complete_sequence(self.request)
+
+    def finish(self) -> None:
+        server = self.server
+        if isinstance(server, _BridgeServer) and sys.exception() is None:
+            server.complete_sequence(self.request)
 
 
 def _chunked_body_chunks(body: bytes) -> tuple[tuple[bytes, ...], bytes]:

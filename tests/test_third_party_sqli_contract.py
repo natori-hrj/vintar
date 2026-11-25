@@ -2236,17 +2236,20 @@ def test_bridge_rejects_sequence_gaps_and_duplicates():
     response = runner._recorded_response(200, iter((b"response",)))
     gap_recorder = runner._ResponseRecorder()
     duplicate_recorder = runner._ResponseRecorder()
+    gap_recorder.accept()
+    gap_recorder.accept()
     gap_recorder.record_response(0, response)
     gap_recorder.record_response(2, response)
     with pytest.raises(runner.MeasurementError, match="bounded wait expired"):
         gap_recorder.synchronized_response_map(frozenset({1, 2}), timeout_seconds=0)
 
-    duplicate_recorder.record_response(0, response)
+    duplicate_sequence = duplicate_recorder.accept()
+    duplicate_recorder.record_response(duplicate_sequence, response)
     with pytest.raises(
         runner.MeasurementError,
         match=r"duplicate sequence number 0.*rerun.*one probe twice",
     ):
-        duplicate_recorder.record_response(0, response)
+        duplicate_recorder.record_response(duplicate_sequence, response)
 
 
 def test_synchronized_response_map_reports_handler_failure_without_input_echo(
@@ -2306,13 +2309,85 @@ def test_synchronized_response_map_has_bounded_timeout_and_rejects_extras():
 
     extra_recorder = runner._ResponseRecorder()
     response = runner._recorded_response(200, iter((b"response",)))
-    extra_recorder.record_response(0, response)
-    extra_recorder.record_response(1, response)
+    first_sequence = extra_recorder.accept()
+    second_sequence = extra_recorder.accept()
+    extra_recorder.record_response(first_sequence, response)
+    extra_recorder.record_response(second_sequence, response)
     with pytest.raises(
         runner.MeasurementError,
         match=r"wire response sequences differ.*Check bridge request sequencing.*rerun",
     ):
         extra_recorder.synchronized_response_map(frozenset({1}))
+
+
+def test_synchronized_response_map_waits_for_late_unexpected_response(monkeypatch):
+    runner = load_runner()
+    recorder = runner._ResponseRecorder()
+    response = runner._recorded_response(200, iter((b"response",)))
+    expected_sequence = recorder.accept()
+    unexpected_sequence = recorder.accept()
+    unexpected_handler_waiting = threading.Event()
+    synchronization_waiting = threading.Event()
+    release_unexpected_handler = threading.Event()
+    original_wait = recorder.response_condition.wait
+
+    def observed_wait(timeout=None):
+        synchronization_waiting.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(recorder.response_condition, "wait", observed_wait)
+
+    def record_unexpected() -> None:
+        unexpected_handler_waiting.set()
+        if not release_unexpected_handler.wait(timeout=5):
+            raise RuntimeError("The unexpected handler barrier was not released.")
+        recorder.record_response(unexpected_sequence, response)
+
+    recorder.record_response(expected_sequence, response)
+    handler_thread = threading.Thread(target=record_unexpected)
+    handler_thread.start()
+    assert unexpected_handler_waiting.wait(timeout=5)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            recorder.synchronized_response_map,
+            frozenset({1}),
+            timeout_seconds=5,
+        )
+        assert synchronization_waiting.wait(timeout=5)
+        assert not future.done()
+        release_unexpected_handler.set()
+        with pytest.raises(
+            runner.MeasurementError,
+            match=r"wire response sequences differ.*Check bridge request sequencing.*rerun",
+        ):
+            future.result(timeout=5)
+    handler_thread.join(timeout=5)
+    assert not handler_thread.is_alive()
+
+
+def test_synchronized_response_map_settles_handler_without_response():
+    runner = load_runner()
+    recorder = runner._ResponseRecorder()
+    sequence = recorder.accept()
+    recorder.complete_without_response(sequence)
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"wire response sequences differ.*Check bridge request sequencing.*rerun",
+    ):
+        recorder.synchronized_response_map(frozenset({1}), timeout_seconds=5)
+
+
+def test_synchronized_response_map_times_out_for_unsettled_unexpected_handler():
+    runner = load_runner()
+    recorder = runner._ResponseRecorder()
+    response = runner._recorded_response(200, iter((b"response",)))
+    expected_sequence = recorder.accept()
+    recorder.accept()
+    recorder.record_response(expected_sequence, response)
+
+    with pytest.raises(runner.MeasurementError, match="bounded wait expired"):
+        recorder.synchronized_response_map(frozenset({1}), timeout_seconds=0)
 
 
 def test_report_target_metadata_must_match_declaration():
