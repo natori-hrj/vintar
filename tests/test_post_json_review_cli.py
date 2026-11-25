@@ -72,3 +72,65 @@ def test_review_cli_failures_never_echo_body_values(tmp_path, mutation):
     assert SENTINEL not in result.stderr
     if answer["baseline"]["body_sha256"] == "0" * 64:
         assert result.stderr == f"Error: {STALE_BODY_DIGEST_MESSAGE}\n"
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "diagnostic"),
+    [
+        (
+            None,
+            2,
+            "Draft path review.json already has different content. Use an empty directory or move the existing file.",
+        ),
+        (
+            OSError,
+            2,
+            "cannot complete offline POST JSON review. Check the local spec, current inventory, answers, and writable output path.",
+        ),
+        (
+            KeyboardInterrupt,
+            130,
+            "POST JSON review was interrupted. Rerun to regenerate the review artifact.",
+        ),
+    ],
+)
+def test_review_cli_preserves_output_on_publication_failure(
+    tmp_path, monkeypatch, failure, code, diagnostic
+):
+    spec, inventory, answers, _ = inputs(tmp_path)
+    directory = tmp_path / "output"
+    directory.mkdir()
+    output = directory / "review.json"
+    existing = b"existing review notes\n"
+
+    def fail_sync(_descriptor):
+        # Another writer can publish after the destination check. Exclusive
+        # creation also catches a regression that writes directly to output.
+        with output.open("xb") as stream:
+            stream.write(existing)
+        raise failure("synthetic temporary-file sync failure")
+
+    if failure is None:
+        output.write_bytes(existing)
+    else:
+        monkeypatch.setattr("vintar.regression.discovery_drafts.os.fsync", fail_sync)
+    result = CliRunner().invoke(
+        app,
+        [
+            "review-post-json",
+            "--spec",
+            str(spec),
+            "--inventory",
+            str(inventory),
+            "--answers",
+            str(answers),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == code
+    assert result.stderr == f"Error: {diagnostic}\n"
+    assert result.stdout == ""
+    assert output.read_bytes() == existing
+    assert list(directory.iterdir()) == [output]

@@ -959,3 +959,35 @@ def test_verify_uses_real_local_http_transport(tmp_path):
     assert json.loads(result.stdout)["requests_used"] == 6
     assert len(requests) == 6
     assert all(path.startswith("/products?category=") for path in requests)
+
+
+@pytest.mark.parametrize(
+    "source_kind", ["empty-directory", "wrong-suffix", "nonregular-entry"]
+)
+def test_verify_rejects_invalid_case_sources(tmp_path, source_kind):
+    source = tmp_path
+    if source_kind == "wrong-suffix":
+        source = tmp_path / "notes.txt"
+        source.write_text("example notes", encoding="utf-8")
+    elif source_kind == "nonregular-entry":
+        (tmp_path / "directory.toml").mkdir()
+
+    result = cli.invoke(app, args_for(source), env=ENV)
+
+    assert result.exit_code == 2
+    assert result.stderr == "Error: regression verification could not be completed.\n"
+    assert result.stdout == ""
+
+
+def test_verify_reports_cancellation_during_output(tmp_path, mock_http, monkeypatch):
+    case = write_case(tmp_path)
+
+    def interrupt(_payload):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(regression_cli, "_emit_json", interrupt)
+    result = cli.invoke(app, args_for(case), env=ENV)
+
+    assert result.exit_code == 130
+    assert result.stderr == "Error: regression verification was cancelled.\n"
+    assert result.stdout == ""
