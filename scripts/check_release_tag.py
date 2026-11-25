@@ -12,9 +12,17 @@ def project_version(root: Path) -> str:
 
 
 def validate_release_tag(tag: str, version: str) -> None:
-    if tag != f"v{version}" or not re.fullmatch(
-        r"v(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}", tag, re.ASCII
-    ):
+    stable_version = r"(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}"
+    if not re.fullmatch(f"v{stable_version}", tag, re.ASCII):
+        raise ValueError(
+            f"Release tag {tag!r} is not a stable release tag. Use vMAJOR.MINOR.PATCH."
+        )
+    if not re.fullmatch(stable_version, version, re.ASCII):
+        raise ValueError(
+            f"Package version {version!r} is not a stable release version. "
+            "Set a MAJOR.MINOR.PATCH version before tagging."
+        )
+    if tag != f"v{version}":
         raise ValueError(
             f"Release tag {tag!r} and package version {version!r} disagree. "
             "Tag the merged release commit instead."
