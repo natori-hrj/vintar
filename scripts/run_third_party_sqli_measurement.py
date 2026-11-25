@@ -1935,7 +1935,7 @@ class _ResponseRecorder:
         *,
         timeout_seconds: float = _WIRE_RESPONSE_WAIT_SECONDS,
     ) -> dict[int, RecordedResponse]:
-        """Wait for and return exactly the expected one-based wire responses."""
+        """After acceptance stops, settle handlers and match one-based wire responses."""
         if any(
             type(sequence) is not int or sequence < 1 for sequence in expected_sequences
         ):
@@ -1945,13 +1945,7 @@ class _ResponseRecorder:
         with self.response_condition:
             complete = self.response_condition.wait_for(
                 lambda: (
-                    (
-                        all(
-                            state != "active" for state in self.terminal_states.values()
-                        )
-                        and (bool(self.terminal_states) or not expected_sequences)
-                    )
-                    or self.handler_failed
+                    self.handler_failed or "active" not in self.terminal_states.values()
                 ),
                 timeout=timeout_seconds,
             )

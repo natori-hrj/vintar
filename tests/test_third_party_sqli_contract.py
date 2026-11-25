@@ -2287,6 +2287,7 @@ def test_synchronized_response_map_reports_handler_failure_without_input_echo(
 ):
     runner = load_runner()
     recorder = runner._ResponseRecorder()
+    sequence = recorder.accept()
     synchronization_waiting = threading.Event()
     sentinel = "SENTINEL-SECRET-7f3a"
     original_wait = recorder.response_condition.wait
@@ -2303,7 +2304,7 @@ def test_synchronized_response_map_reports_handler_failure_without_input_echo(
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(synchronize)
         assert synchronization_waiting.wait(timeout=5)
-        recorder.record_failure(0, "RuntimeError", sentinel)
+        recorder.record_failure(sequence, "RuntimeError", sentinel)
         with pytest.raises(
             runner.MeasurementError,
             match=r"handler failed or the bounded wait expired.*Check bridge response framing.*rerun",
@@ -2331,9 +2332,25 @@ def test_loopback_bridge_preserves_fixed_wire_wait_failure():
     assert sentinel not in str(caught.value)
 
 
+def test_loopback_bridge_reports_missing_response_without_waiting(monkeypatch):
+    runner = load_runner()
+    target = SimpleNamespace(target_id="fixed-missing-response", service_port=1)
+
+    def unexpected_wait(timeout=None):
+        pytest.fail("The bridge tried to wait with zero accepted handlers.")
+
+    with runner.loopback_bridge("127.0.0.1", target) as (_, bridge):
+        monkeypatch.setattr(bridge.recorder.response_condition, "wait", unexpected_wait)
+        with pytest.raises(runner.MeasurementError) as caught:
+            bridge.synchronized_response_map(frozenset({1}), timeout_seconds=3600)
+
+    assert str(caught.value) == runner._WIRE_RESPONSE_SET_ERROR
+
+
 def test_synchronized_response_map_has_bounded_timeout_and_rejects_extras():
     runner = load_runner()
     timeout_recorder = runner._ResponseRecorder()
+    timeout_recorder.accept()
     with pytest.raises(runner.MeasurementError, match="bounded wait expired"):
         timeout_recorder.synchronized_response_map(frozenset({1}), timeout_seconds=0)
 
