@@ -352,7 +352,6 @@
                 "anyOf": [
                   { "required": ["verification"] },
                   { "required": ["confirmation"] },
-                  { "required": ["decision_facts"] },
                   { "required": ["timing"] }
                 ]
               }
@@ -647,10 +646,10 @@
       "required": ["category", "stage", "sequence", "probe_kind", "condition"],
       "properties": {
         "category": { "const": "operational" },
-        "stage": { "enum": ["initial", "confirmation", "time"] },
+        "stage": { "enum": ["initial", "confirmation", "time", "error"] },
         "sequence": { "type": "integer", "minimum": 1, "maximum": 18 },
         "probe_kind": {
-          "enum": ["baseline", "true", "false", "control", "delay", "true_1", "false_1", "true_2", "false_2", "baseline_preserving_control"]
+          "enum": ["baseline", "true", "false", "control", "delay", "error", "true_1", "false_1", "true_2", "false_2", "baseline_preserving_control"]
         },
         "condition": {
           "enum": ["timeout", "connection", "response_read", "budget_exceeded", "rate_limit", "cancelled", "unknown", "budget_unavailable", "preflight_failed", "rate_limit_interrupted", "rate_limited", "truncated", "non_success_status", "request_failed", "interrupted", "deadline"]
@@ -917,6 +916,21 @@
         {
           "if": { "properties": { "request_count": { "const": 4 } } },
           "then": { "properties": { "error": { "properties": { "request_count": { "const": 4 } } } } }
+        },
+        {
+          "if": { "required": ["decision_facts"] },
+          "then": {
+            "properties": {
+              "decision_facts": {
+                "properties": {
+                  "category": { "const": "operational" },
+                  "stage": { "const": "error" },
+                  "sequence": { "type": "integer", "minimum": 1, "maximum": 4 },
+                  "probe_kind": { "enum": ["baseline", "error"] }
+                }
+              }
+            }
+          }
         }
       ]
     },

@@ -1,12 +1,11 @@
-import ast
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from vintar.checks.sqli import analyzer as sqli_analyzer
 from vintar.checks.sqli import report as sqli_report
+from vintar.checks.sqli.analyzer import BOOLEAN_ANALYSIS_REASON_CODES
 from vintar.checks.sqli.models import (
     BooleanEvidence,
     Observation,
@@ -111,21 +110,8 @@ def test_reason_code_contracts_do_not_drift():
 
     assert schema_reasons == sqli_report._REPORT_REASON_CODES
 
-    analyzer_path = Path(sqli_analyzer.__file__)
-    tree = ast.parse(analyzer_path.read_text(encoding="utf-8"))
-    analyzer_reasons = {
-        node.args[1].value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "result"
-        and len(node.args) >= 2
-        and isinstance(node.args[1], ast.Constant)
-        and isinstance(node.args[1].value, str)
-    }
-
-    assert analyzer_reasons <= schema_reasons
-    assert "no_boolean_difference_literal_input" in analyzer_reasons
+    assert BOOLEAN_ANALYSIS_REASON_CODES <= schema_reasons
+    assert "no_boolean_difference_literal_input" in BOOLEAN_ANALYSIS_REASON_CODES
 
 
 @pytest.mark.parametrize("reason_code", ["insufficient_evidence", "connection_error"])

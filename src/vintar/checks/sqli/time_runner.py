@@ -17,9 +17,15 @@ from dataclasses import dataclass, field, replace
 import httpx
 
 from vintar.checks.sqli._errors import redact_runtime_errors
-from vintar.checks.sqli.decision_facts import response_operational_condition
+from vintar.checks.sqli.decision_facts import (
+    OperationalCondition,
+    TimeOperationalCondition,
+    response_operational_condition,
+)
 from vintar.checks.sqli.observation_sink import (
+    AttemptOutcome,
     SqliObservationSink,
+    emit_attempt_stop,
     emit_observation,
 )
 from vintar.checks.sqli.time_analyzer import (
@@ -29,11 +35,13 @@ from vintar.checks.sqli.time_analyzer import (
     TimeProbeOutcome,
     analyze_time_probes,
     time_operational_decision_facts,
+    time_response_signature,
 )
 from vintar.checks.sqli.time_plan import (
     TIME_PROBE_ORDER,
     TIME_REQUESTS,
     TimePayloads,
+    TimeProbeKind,
     prepare_time_plan,
 )
 from vintar.core.budget import RequestBudgetExceededError
@@ -159,13 +167,39 @@ def verify_time_based_sqli(
 
     started = _read_clock(clock)
 
-    plan = prepare_time_plan(
-        template=template,
-        point=point,
-        payloads=payloads,
-        expected_delay_seconds=expected_delay_seconds,
-        context=context,
+    budget_is_fresh = (
+        context.budget.max_requests == TIME_REQUESTS
+        and context.budget.used_requests == 0
+        and context.budget.remaining == TIME_REQUESTS
     )
+    if not budget_is_fresh:
+        emit_attempt_stop(
+            observation_sink,
+            family="time",
+            sequence=1,
+            kind=TimeProbeKind.BASELINE.value,
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.BUDGET_UNAVAILABLE,
+        )
+    try:
+        plan = prepare_time_plan(
+            template=template,
+            point=point,
+            payloads=payloads,
+            expected_delay_seconds=expected_delay_seconds,
+            context=context,
+        )
+    except (TypeError, ValueError):
+        if budget_is_fresh:
+            emit_attempt_stop(
+                observation_sink,
+                family="time",
+                sequence=1,
+                kind=TimeProbeKind.BASELINE.value,
+                outcome=AttemptOutcome.NOT_DISPATCHED,
+                failure=OperationalCondition.PREFLIGHT_FAILED,
+            )
+        raise
 
     deadline = started + total_limit
     if not math.isfinite(deadline):
@@ -217,6 +251,14 @@ def verify_time_based_sqli(
 
         if remaining <= 0:
             deadline_exceeded = True
+            emit_attempt_stop(
+                observation_sink,
+                family="time",
+                sequence=sequence,
+                kind=step.kind.value,
+                outcome=AttemptOutcome.NOT_DISPATCHED,
+                failure=TimeOperationalCondition.DEADLINE,
+            )
             return finish()
 
         if context.budget.remaining <= 0:
@@ -262,6 +304,14 @@ def verify_time_based_sqli(
         except ExecutionDeadlineExceededError:
             deadline_exceeded = True
             if context.budget.used_requests == budget_before:
+                emit_attempt_stop(
+                    observation_sink,
+                    family="time",
+                    sequence=sequence,
+                    kind=step.kind.value,
+                    outcome=AttemptOutcome.NOT_DISPATCHED,
+                    failure=TimeOperationalCondition.DEADLINE,
+                )
                 return finish()
             outcome = TimeProbeOutcome.INTERRUPTED
 
@@ -312,7 +362,7 @@ def verify_time_based_sqli(
                         family="time",
                         sequence=sequence,
                         kind=step.kind.value,
-                        observation=observation,
+                        observation=time_response_signature(observation),
                     )
                 except (TypeError, ValueError, OverflowError):
                     raise RuntimeError(
@@ -340,12 +390,15 @@ def verify_time_based_sqli(
                 rate_wait_seconds=rate_wait_seconds,
             )
             observations.append(observation)
-            emit_observation(
+            emit_attempt_stop(
                 observation_sink,
                 family="time",
                 sequence=sequence,
                 kind=step.kind.value,
-                observation=observation,
+                outcome=AttemptOutcome.NO_RESPONSE,
+                failure=(
+                    TimeOperationalCondition.DEADLINE if deadline_exceeded else outcome
+                ),
             )
         except (TypeError, ValueError, OverflowError):
             raise RuntimeError("Time verification observation failed.") from None

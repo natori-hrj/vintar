@@ -13,6 +13,7 @@ from vintar.regression import batch as batch_module
 from vintar.regression import runner as runner_module
 from vintar.regression.batch import run_regression_batch
 from vintar.regression.errors import BatchRequestBudgetError
+from vintar.regression.report import regression_batch_report_dict
 from vintar.regression.runner import (
     ErrorRegressionOutcome,
     RegressionOutcome,
@@ -131,3 +132,22 @@ def test_mixed_boolean_time_error_batch_rejects_short_total_budget_before_http()
         )
 
     assert calls == []
+
+
+def test_error_analyzer_facts_flow_through_batch_report_writer():
+    result = run_regression_batch(
+        [error_case("http://localhost:8000", "safe", "inconclusive")],
+        policy=policy(4),
+        transport=httpx.MockTransport(lambda request: httpx.Response(503)),
+    )
+
+    outcome = regression_batch_report_dict(result)["outcomes"][0]
+    assert outcome["actual_reason_code"] == "non_success_status"
+    assert outcome["decision_facts"] == {
+        "category": "operational",
+        "stage": "error",
+        "sequence": 1,
+        "probe_kind": "baseline",
+        "condition": "non_success_status",
+        "status_code": 503,
+    }

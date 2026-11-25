@@ -29,6 +29,7 @@ from third_party_sqli_contract import (
     validate_service_image_mapping,
 )
 
+from vintar.checks.sqli.analyzer import BooleanResponseSignature
 from vintar.checks.sqli.confirmation import CONFIRMATION_ORDER, ConfirmationKind
 from vintar.checks.sqli.confirmation_runner import ConfirmationObservation
 from vintar.checks.sqli.error_analyzer import (
@@ -43,7 +44,11 @@ from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
 from vintar.checks.sqli.models import Observation
 from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
-from vintar.checks.sqli.time_analyzer import TimeObservation, TimeProbeOutcome
+from vintar.checks.sqli.time_analyzer import (
+    TimeObservation,
+    TimeProbeOutcome,
+    TimeResponseSignature,
+)
 from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER
 from vintar.regression import (
     TrustedExecutionPolicy,
@@ -261,7 +266,13 @@ def sanitized_probe_evidence(
             "wire_body_sha256": response.body_sha256,
         }
         if isinstance(
-            observation, (Observation, ConfirmationObservation, ErrorObservation)
+            observation,
+            (
+                Observation,
+                BooleanResponseSignature,
+                ConfirmationObservation,
+                ErrorObservation,
+            ),
         ):
             item.update(
                 analyzer_status_code=observation.status_code,
@@ -269,15 +280,22 @@ def sanitized_probe_evidence(
                 analyzer_body_sha256=observation.body_digest,
                 truncated=observation.truncated,
             )
-            if isinstance(observation, (Observation, ConfirmationObservation)):
+            if isinstance(
+                observation,
+                (Observation, BooleanResponseSignature, ConfirmationObservation),
+            ):
                 item.update(
                     normalization_applied=observation.normalization_applied,
                     normalized_echo_count=observation.normalized_echo_count,
                 )
-        elif type(observation) is TimeObservation:
+        elif type(observation) in {TimeObservation, TimeResponseSignature}:
             item.update(
                 analyzer_status_code=observation.status_code,
-                outcome=observation.outcome.value,
+                outcome=(
+                    observation.outcome.value
+                    if type(observation) is TimeObservation
+                    else TimeProbeOutcome.COMPLETED.value
+                ),
                 truncated=observation.truncated,
             )
         else:

@@ -98,6 +98,12 @@ values. Operational facts identify the stage, request sequence, probe kind,
 fixed condition, and an HTTP status only when a response exists. A dynamic
 region is computed once and drives both the reason and these facts.
 
+The analyzer first projects normalized responses into immutable status, size,
+digest, and truncation signatures. A pure classifier consumes those signatures
+and repeat-comparison results from the same comparison call. Trusted Python
+orchestration may receive these non-timing signatures and response-less stop
+enums; this sink is not exposed through case files or CLI configuration.
+
 `probe_failed` records the structured probe error separately; its
 reason code does not distinguish the individual transport failure.
 

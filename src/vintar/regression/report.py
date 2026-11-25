@@ -192,19 +192,22 @@ def regression_batch_report_dict(
                     dbms=evidence.dbms,
                     signature_id=evidence.signature_id,
                 )
-            outcomes.append(
-                {
-                    "case_id": outcome.case_id,
-                    "check_type": "sqli.error",
-                    "expected_verdict": outcome.expected_verdict.value,
-                    "actual_verdict": product.verdict.value,
-                    "actual_reason_code": product.reason_code,
-                    "request_count": product.request_count,
-                    "expectation_match": outcome.expectation_match,
-                    "status": outcome.status.value,
-                    "error": error_report,
-                }
-            )
+            outcome_report: dict[str, object] = {
+                "case_id": outcome.case_id,
+                "check_type": "sqli.error",
+                "expected_verdict": outcome.expected_verdict.value,
+                "actual_verdict": product.verdict.value,
+                "actual_reason_code": product.reason_code,
+                "request_count": product.request_count,
+                "expectation_match": outcome.expectation_match,
+                "status": outcome.status.value,
+                "error": error_report,
+            }
+            if outcome.error_run.analysis.decision_facts is not None:
+                outcome_report["decision_facts"] = _decision_facts_dict(
+                    outcome.error_run.analysis.decision_facts
+                )
+            outcomes.append(outcome_report)
             continue
 
         if type(outcome) is TimeRegressionOutcome:

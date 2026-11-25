@@ -51,7 +51,9 @@ from vintar.checks.sqli.models import (
     VerificationResult,
 )
 from vintar.checks.sqli.observation_sink import (
+    AttemptOutcome,
     SqliObservationSink,
+    emit_attempt_stop,
     emit_observation,
 )
 from vintar.checks.sqli.orchestrator import (
@@ -561,7 +563,7 @@ def _predicate_pairs_are_stable(
     ) and _confirmation_signature(false_1) == _confirmation_signature(false_2)
 
 
-def _analyze(
+def classify_confirmation_observations(
     observations: tuple[ConfirmationObservation, ...],
 ) -> tuple[
     ConfirmationStatus,
@@ -751,6 +753,14 @@ def verify_boolean_sqli_with_confirmation(
             context=context,
         )
     except (TypeError, ValueError):
+        emit_attempt_stop(
+            observation_sink,
+            family="boolean",
+            sequence=1,
+            kind="baseline",
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.PREFLIGHT_FAILED,
+        )
         raise ValueError("Invalid or unauthorized confirmation inputs.") from None
 
     initial = verify_boolean_sqli(
@@ -782,6 +792,22 @@ def verify_boolean_sqli_with_confirmation(
             decision_facts=decision_facts,
         )
 
+    def emit_stop(
+        *,
+        sequence: int,
+        kind: ConfirmationKind,
+        outcome: AttemptOutcome,
+        failure: ProbeError | OperationalCondition,
+    ) -> None:
+        emit_attempt_stop(
+            observation_sink,
+            family="confirmation",
+            sequence=sequence,
+            kind=kind.value,
+            outcome=outcome,
+            failure=failure,
+        )
+
     if not confirmation_eligible(initial):
         return finish(
             ConfirmationStatus.SKIPPED,
@@ -792,6 +818,12 @@ def verify_boolean_sqli_with_confirmation(
         context.budget.used_requests != INITIAL_REQUESTS
         or context.budget.remaining != CONFIRMATION_REQUESTS
     ):
+        emit_stop(
+            sequence=7,
+            kind=ConfirmationKind.BASELINE,
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.BUDGET_UNAVAILABLE,
+        )
         return finish(
             ConfirmationStatus.INCONCLUSIVE,
             "confirmation_budget_unavailable",
@@ -813,6 +845,12 @@ def verify_boolean_sqli_with_confirmation(
             context=context,
         )
     except (TypeError, ValueError):
+        emit_stop(
+            sequence=7,
+            kind=ConfirmationKind.BASELINE,
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.PREFLIGHT_FAILED,
+        )
         return finish(
             ConfirmationStatus.INCONCLUSIVE,
             "confirmation_preflight_failed",
@@ -826,6 +864,12 @@ def verify_boolean_sqli_with_confirmation(
         )
 
     if plan is None or plan != preflight_plan:
+        emit_stop(
+            sequence=7,
+            kind=ConfirmationKind.BASELINE,
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.PREFLIGHT_FAILED,
+        )
         return finish(
             ConfirmationStatus.INCONCLUSIVE,
             "confirmation_preflight_failed",
@@ -839,6 +883,12 @@ def verify_boolean_sqli_with_confirmation(
         )
 
     if context.budget.remaining != CONFIRMATION_REQUESTS:
+        emit_stop(
+            sequence=7,
+            kind=ConfirmationKind.BASELINE,
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.BUDGET_UNAVAILABLE,
+        )
         return finish(
             ConfirmationStatus.INCONCLUSIVE,
             "confirmation_budget_unavailable",
@@ -869,6 +919,12 @@ def verify_boolean_sqli_with_confirmation(
             )
         except RequestBudgetExceededError:
             emit_completed(normalize=False)
+            emit_stop(
+                sequence=sequence,
+                kind=step.kind,
+                outcome=AttemptOutcome.NO_RESPONSE,
+                failure=ProbeError.BUDGET_EXCEEDED,
+            )
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_budget_exceeded",
@@ -882,6 +938,12 @@ def verify_boolean_sqli_with_confirmation(
             )
         except RateLimitInterruptedError:
             emit_completed(normalize=False)
+            emit_stop(
+                sequence=sequence,
+                kind=step.kind,
+                outcome=AttemptOutcome.NO_RESPONSE,
+                failure=OperationalCondition.RATE_LIMIT_INTERRUPTED,
+            )
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_rate_limit_interrupted",
@@ -895,6 +957,12 @@ def verify_boolean_sqli_with_confirmation(
             )
         except httpx.TimeoutException:
             emit_completed(normalize=False)
+            emit_stop(
+                sequence=sequence,
+                kind=step.kind,
+                outcome=AttemptOutcome.NO_RESPONSE,
+                failure=ProbeError.TIMEOUT,
+            )
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_timeout",
@@ -908,6 +976,13 @@ def verify_boolean_sqli_with_confirmation(
             )
         except httpx.RequestError as exc:
             emit_completed(normalize=False)
+            failure = classify_probe_error(exc)
+            emit_stop(
+                sequence=sequence,
+                kind=step.kind,
+                outcome=AttemptOutcome.NO_RESPONSE,
+                failure=failure,
+            )
             return finish(
                 ConfirmationStatus.INCONCLUSIVE,
                 "confirmation_request_failed",
@@ -916,7 +991,7 @@ def verify_boolean_sqli_with_confirmation(
                     stage=DecisionStage.CONFIRMATION,
                     sequence=sequence,
                     probe_kind=step.kind,
-                    condition=classify_probe_error(exc),
+                    condition=failure,
                 ),
             )
 
@@ -971,7 +1046,7 @@ def verify_boolean_sqli_with_confirmation(
             )
 
     observations = emit_completed(normalize=True)
-    status, evidence, decision_facts = _analyze(observations)
+    status, evidence, decision_facts = classify_confirmation_observations(observations)
 
     if status is ConfirmationStatus.INCONCLUSIVE:
         return finish(
