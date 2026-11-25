@@ -46,7 +46,7 @@ _CONFIRMATION_REASON_CODES = frozenset(
 )
 
 
-def _decision_facts_dict(facts: object) -> dict[str, object]:
+def decision_facts_report_dict(facts: object) -> dict[str, object]:
     """Serialize only bounded decision facts selected by checks-layer analysis."""
     if isinstance(facts, OperationalDecisionFacts):
         result: dict[str, object] = {
@@ -109,6 +109,9 @@ def _decision_facts_dict(facts: object) -> dict[str, object]:
             )
         return result
     raise TypeError("Unsupported decision facts. Serialize checks-layer facts instead.")
+
+
+_decision_facts_dict = decision_facts_report_dict
 
 
 class CIExitCode(IntEnum):
@@ -204,7 +207,7 @@ def regression_batch_report_dict(
                 "error": error_report,
             }
             if outcome.error_run.analysis.decision_facts is not None:
-                outcome_report["decision_facts"] = _decision_facts_dict(
+                outcome_report["decision_facts"] = decision_facts_report_dict(
                     outcome.error_run.analysis.decision_facts
                 )
             outcomes.append(outcome_report)
@@ -234,7 +237,7 @@ def regression_batch_report_dict(
                     "produced by the current runner instead of constructing report fields."
                 )
             if time_facts is not None:
-                time_report["decision_facts"] = _decision_facts_dict(time_facts)
+                time_report["decision_facts"] = decision_facts_report_dict(time_facts)
             outcomes.append(time_report)
             continue
 
@@ -290,7 +293,9 @@ def regression_batch_report_dict(
                 "produced by the current runner instead of constructing report fields."
             )
         if decision_facts is not None:
-            boolean_report["decision_facts"] = _decision_facts_dict(decision_facts)
+            boolean_report["decision_facts"] = decision_facts_report_dict(
+                decision_facts
+            )
         outcomes.append(boolean_report)
 
     return {

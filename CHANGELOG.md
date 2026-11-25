@@ -23,6 +23,13 @@
 
 **Changed**
 
+- Write manual third-party SQLi measurement reports as schema version 10 with
+  strict per-attempt outcomes, production Boolean repeat comparisons, bounded
+  Time predicates, and re-derived structured decision facts. Public validation
+  now rejects v9 and older output; the exact reviewed v9 fixture remains
+  temporarily bound only to documentation drift until a real v10 measurement
+  replaces it.
+
 - Report `confirmation_unstable` when independently reviewed Boolean TRUE or FALSE
   predicate pairs do not reproduce each other; reserve
   `candidate_confirmation_mismatch` for stable pairs whose remaining relation

@@ -61,28 +61,23 @@ reviewed OpenAPI document contains three GET operations; each record binds its
 own `operation_path`, so discovery evidence remains tied to the actual upstream
 route rather than a fabricated combined operation.
 
-New manual measurement artifacts use schema version 9. They retain the v4
-target-bound records and count trees and add request-ordered evidence. Wire
-provenance uses `sequence`, `role`, `wire_status_code`, `wire_body_size`, and
-`wire_body_sha256`. Exact production observations provide
-`analyzer_status_code` and `truncated`; Boolean, confirmation, and Error also
-provide `analyzer_body_size` and `analyzer_body_sha256`. Every Boolean and
-confirmation entry requires `normalization_applied` and
-`normalized_echo_count`: the boolean says whether context-bound complete-value
-echo normalization changed the analyzer body, and the integer counts the
-normalized echo sites. Time provides
-`outcome`, and Error provides sorted `matches` containing only `dbms` and
-`signature_id`. Relations are derived from analyzer digests. Bodies, payloads,
-headers, cookies, matched text, and query values are never stored. The reviewed
-fixture at `tests/fixtures/third-party-sqli-measurement.json` is a real reviewed
-v9 measurement. The writer and every validator path accept only v9. Version 9 distinguishes unstable
-confirmation predicate pairs from stable relation mismatches; v8 used the
-previous confirmation reason rules and must be remeasured rather than
-reinterpreted.
-Versions 5 and 6 used unreliable wire-derived
-analytical facts, and v7 lacks required Boolean normalization evidence. Versions
-5 through 8 must be regenerated. Error candidates remain `candidate`,
-never `tp` or `vulnerable`.
+New manual measurement artifacts use schema version 10. Each record contains a
+strict `attempts` array whose entries are `response`, `no_response`, or one final
+`not_dispatched` stop. Response entries keep decoded analyzer status,
+truncation, bounded size/digest and normalization facts where applicable, plus
+separately named wire status/size/digest provenance. Failed attempts retain only
+their reviewed failure enum. The second occurrence of each Boolean kind carries
+the exact repeat comparison selected by production analysis; complete Time runs
+carry only the eight boolean decision predicates. Non-decisions copy production
+`decision_facts`, which the validator re-derives from attempts.
+
+Bodies, payloads, URLs with query values, headers, cookies, exception text,
+elapsed/rate-wait values, medians, spans, thresholds, margins, and matched DBMS
+text are never stored. Public tooling rejects v9 and older reports because v9
+lacks per-attempt failures and structured facts; regenerate with the commands
+above. The exact hash-pinned reviewed v9 fixture remains readable only by the
+documentation drift check until a real maintainer-run v10 report replaces it.
+Error candidates remain `candidate`, never `tp` or `vulnerable`.
 
 Docker absence, an unavailable loopback binding, a changed archive, a changed local
 image, source-evidence drift, startup failure, or documentation drift produces an

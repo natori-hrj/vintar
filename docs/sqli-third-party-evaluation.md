@@ -86,7 +86,9 @@ The following block is generated from the actual report format and checked by
 `scripts/run_third_party_sqli_measurement.py`. A run fails after saving its JSON
 artifact if this reviewed summary drifts.
 
-The current reviewed fixture and new measurement runs use schema version 9.
+The current reviewed fixture uses schema version 9. New measurement runs write
+schema version 10; the fixture and binding remain at 9 until a real v10 run is
+reviewed and copied byte-for-byte.
 Versions 2 and 3 introduced
 per-technique records and Error evidence. Version 4 generalizes that contract to
 multiple independently prepared targets:
@@ -135,6 +137,18 @@ as current output.
 Versions 5 and 6 used wire-derived analytical facts that are unreliable under
 content encoding, while v7 lacks required Boolean normalization evidence. All
 older versions and mixed shapes are rejected rather than inferred or upgraded.
+
+Version 10 replaces response-only evidence with a strict request-ordered
+`attempts` union: `response`, `no_response`, or a single trailing
+`not_dispatched` stop. Responses retain separately named analyzer and wire
+facts; Boolean repeats retain the production comparison result; complete Time
+runs retain only eight boolean decision predicates; and every measured
+non-decision retains production `decision_facts`. No bodies, payloads, query
+values, headers, cookies, exception text, elapsed values, medians, spans,
+thresholds, margins, or matched DBMS text are stored. Public validation rejects
+v9 and older reports and tells maintainers to rerun the measurement. During this
+transition only the exact hash-pinned reviewed v9 fixture is accepted by the
+private documentation check.
 
 Reviewed report schema version: `9`.
 

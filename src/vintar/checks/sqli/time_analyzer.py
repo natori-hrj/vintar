@@ -137,6 +137,8 @@ class TimeResponseSignature:
 
     status_code: int
     truncated: bool
+    body_size: int
+    body_digest: str
 
     def __post_init__(self) -> None:
         if type(self.status_code) is not int or not 100 <= self.status_code <= 599:
@@ -147,9 +149,25 @@ class TimeResponseSignature:
             raise TypeError(
                 "Invalid Time truncation flag. Use a completed runner response."
             )
+        if type(self.body_size) is not int or self.body_size < 0:
+            raise ValueError(
+                "Invalid Time response size. Use a completed runner response."
+            )
+        if (
+            type(self.body_digest) is not str
+            or len(self.body_digest) != 64
+            or any(
+                character not in "0123456789abcdef" for character in self.body_digest
+            )
+        ):
+            raise ValueError(
+                "Invalid Time response digest. Use a completed runner response."
+            )
 
 
-def time_response_signature(observation: TimeObservation) -> TimeResponseSignature:
+def time_response_signature(
+    observation: TimeObservation, *, body_size: int, body_digest: str
+) -> TimeResponseSignature:
     """Remove elapsed and rate-wait measurements from a completed observation."""
     if type(observation) is not TimeObservation or (
         observation.outcome is not TimeProbeOutcome.COMPLETED
@@ -158,7 +176,9 @@ def time_response_signature(observation: TimeObservation) -> TimeResponseSignatu
         raise ValueError(
             "Time response signatures require a completed analyzer observation."
         )
-    return TimeResponseSignature(observation.status_code, observation.truncated)
+    return TimeResponseSignature(
+        observation.status_code, observation.truncated, body_size, body_digest
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -641,38 +661,40 @@ def classify_time_decision_inputs(
     )
 
 
+def time_decision_inputs(
+    evidence: TimeEvidence,
+    expected_delay: float,
+) -> TimeDecisionInputs:
+    """Project timing evidence to the bounded predicates used for decisions."""
+    stability_limit = max(0.12, expected_delay * 0.25)
+    candidate_median_limit = expected_delay * 0.75
+    candidate_margin_limit = expected_delay * 0.50
+    no_delay_limit = expected_delay * 0.25
+    return TimeDecisionInputs(
+        baseline_span_exceeded=_greater_than(evidence.baseline_span, stability_limit),
+        control_span_exceeded=_greater_than(evidence.control_span, stability_limit),
+        baseline_control_difference_exceeded=_greater_than(
+            evidence.baseline_control_difference, stability_limit
+        ),
+        drift_exceeded=_greater_than(evidence.drift, stability_limit),
+        delay_span_exceeded=not _delay_stable_enough_to_conclude_absence(
+            evidence, stability_limit
+        ),
+        candidate_median_met=_at_least(evidence.median_excess, candidate_median_limit),
+        candidate_margin_met=_at_least(
+            evidence.minimum_delay_margin, candidate_margin_limit
+        ),
+        no_delay_condition_met=_at_most(evidence.median_excess, no_delay_limit),
+    )
+
+
 def _classify_evidence(
     evidence: TimeEvidence,
     expected_delay: float,
 ) -> tuple[TimeAnalysisStatus, str, TimingDynamicsDecisionFacts | None]:
     # Conservative empirical limits for a laboratory experiment.
     # These thresholds are not production calibrated.
-    stability_limit = max(0.12, expected_delay * 0.25)
-    candidate_median_limit = expected_delay * 0.75
-    candidate_margin_limit = expected_delay * 0.50
-    no_delay_limit = expected_delay * 0.25
-    return classify_time_decision_inputs(
-        TimeDecisionInputs(
-            baseline_span_exceeded=_greater_than(
-                evidence.baseline_span, stability_limit
-            ),
-            control_span_exceeded=_greater_than(evidence.control_span, stability_limit),
-            baseline_control_difference_exceeded=_greater_than(
-                evidence.baseline_control_difference, stability_limit
-            ),
-            drift_exceeded=_greater_than(evidence.drift, stability_limit),
-            delay_span_exceeded=not _delay_stable_enough_to_conclude_absence(
-                evidence, stability_limit
-            ),
-            candidate_median_met=_at_least(
-                evidence.median_excess, candidate_median_limit
-            ),
-            candidate_margin_met=_at_least(
-                evidence.minimum_delay_margin, candidate_margin_limit
-            ),
-            no_delay_condition_met=_at_most(evidence.median_excess, no_delay_limit),
-        )
-    )
+    return classify_time_decision_inputs(time_decision_inputs(evidence, expected_delay))
 
 
 def analyze_time_probes(

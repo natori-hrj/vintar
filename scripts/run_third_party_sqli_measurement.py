@@ -29,33 +29,58 @@ from third_party_sqli_contract import (
     validate_service_image_mapping,
 )
 
-from vintar.checks.sqli.analyzer import BooleanResponseSignature
+from vintar.checks.sqli.analyzer import (
+    BooleanRepeatComparison,
+    BooleanResponseSignature,
+    DynamicRegion,
+    classify_boolean_signatures,
+)
 from vintar.checks.sqli.confirmation import CONFIRMATION_ORDER, ConfirmationKind
-from vintar.checks.sqli.confirmation_runner import ConfirmationObservation
+from vintar.checks.sqli.confirmation_runner import (
+    ConfirmationObservation,
+    ConfirmationStatus,
+    classify_confirmation_observations,
+)
+from vintar.checks.sqli.cross_phase import (
+    CrossPhaseStatus,
+    assess_cross_phase_observations,
+)
+from vintar.checks.sqli.decision_facts import (
+    ConfirmationRelationDecisionFacts,
+    OperationalCondition,
+)
 from vintar.checks.sqli.error_analyzer import (
     ERROR_PROBE_ORDER,
     ErrorMatch,
     ErrorObservation,
     ErrorProbeKind,
     classify_error_observations,
+    error_operational_decision_facts,
+    operational_stop_reason,
 )
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
-from vintar.checks.sqli.models import Observation
-from vintar.checks.sqli.observation_sink import RecordedSqliObservation
+from vintar.checks.sqli.models import Observation, ProbeKind
+from vintar.checks.sqli.observation_sink import AttemptOutcome, RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER
 from vintar.checks.sqli.time_analyzer import (
+    TimeAnalysisStatus,
+    TimeDecisionInputs,
     TimeObservation,
     TimeProbeOutcome,
     TimeResponseSignature,
+    classify_time_decision_inputs,
+    time_decision_inputs,
 )
 from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER
 from vintar.regression import (
+    TimeRegressionOutcome,
     TrustedExecutionPolicy,
     load_regression_case,
     regression_batch_report_dict,
     run_regression_batch,
 )
+from vintar.regression.report import decision_facts_report_dict
 
 ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY = ROOT / "third_party" / "sqli"
@@ -70,8 +95,12 @@ CLASSIFICATIONS = {
     "sqli.time": ("tp", "fn", "fp", "tn", "non_decision"),
     "sqli.error": ("candidate", "fn", "fp", "tn", "non_decision"),
 }
-MEASUREMENT_SCHEMA_VERSION = 9
-UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS = frozenset({5, 6, 7, 8})
+MEASUREMENT_SCHEMA_VERSION = 10
+REVIEWED_FIXTURE_SCHEMA_VERSION = 9
+REVIEWED_FIXTURE = ROOT / "tests" / "fixtures" / "third-party-sqli-measurement.json"
+REVIEWED_FIXTURE_SHA256 = (
+    "72082be03e268b2b9890ec5197f6fa680f8814ab3d8207460fb3dd49b51b33c0"
+)
 PROBE_MODES = {
     "sqli.boolean": {"six": "six_probe", "confirmation": "confirmation"},
     "sqli.time": {"time": "nine_probe"},
@@ -160,6 +189,21 @@ class ObservationCollector:
                 f"The analyzer observation sink has sequence gaps: expected {sorted(expected_sequences)!r}, observed {sorted(observed_sequences)!r}. Check runner emission and rerun the measurement."
             )
         return tuple(self._observations[index] for index in range(1, expected + 1))
+
+    def attempts(self) -> tuple[RecordedSqliObservation, ...]:
+        """Return the complete contiguous attempt prefix, including a stop."""
+        if not self._observations:
+            raise MeasurementError(
+                "The trusted observation sink emitted no attempts. Check runner "
+                "emission and rerun the measurement."
+            )
+        expected = set(range(1, max(self._observations) + 1))
+        if set(self._observations) != expected:
+            raise MeasurementError(
+                "The trusted observation sink contains a sequence gap. Check runner "
+                "emission and rerun the measurement."
+            )
+        return tuple(self._observations[index] for index in sorted(expected))
 
 
 def _confirmation_role(kind: ConfirmationKind) -> str:
@@ -272,6 +316,7 @@ def sanitized_probe_evidence(
                 BooleanResponseSignature,
                 ConfirmationObservation,
                 ErrorObservation,
+                TimeResponseSignature,
             ),
         ):
             item.update(
@@ -311,6 +356,133 @@ def sanitized_probe_evidence(
             )
         evidence.append(item)
     return evidence, derive_relations(evidence)
+
+
+def _repeat_comparison_dict(
+    first: dict[str, object],
+    second: dict[str, object],
+    facts: object,
+) -> dict[str, object]:
+    signature_fields = ("status_code", "body_size", "body_sha256")
+    if all(first.get(field) == second.get(field) for field in signature_fields):
+        return {"equal": True}
+    if type(facts) is dict and facts.get("category") == "response_dynamics":
+        pairs = facts.get("unstable_pairs")
+        if type(pairs) is list:
+            for pair in pairs:
+                if (
+                    type(pair) is dict
+                    and pair.get("probe_kind") == second["probe_kind"]
+                ):
+                    if pair.get("localization") == "localized":
+                        return {
+                            "equal": False,
+                            "localization": "localized",
+                            "prefix_size": pair["prefix_size"],
+                            "suffix_size": pair["suffix_size"],
+                            "first_changed_size": pair["first_changed_size"],
+                            "second_changed_size": pair["second_changed_size"],
+                        }
+                    return {"equal": False, "localization": "unlocalized"}
+    return {"equal": False, "localization": "unlocalized"}
+
+
+def sanitized_attempts(
+    observations: tuple[RecordedSqliObservation, ...],
+    wire_responses: dict[int, RecordedResponse],
+    *,
+    decision_facts: object,
+) -> list[dict[str, object]]:
+    """Serialize only trusted attempts and bounded wire provenance."""
+    attempts: list[dict[str, object]] = []
+    prior_by_identity: dict[tuple[str, str], dict[str, object]] = {}
+    for recorded in observations:
+        item: dict[str, object] = {
+            "sequence": recorded.sequence,
+            "stage": recorded.family,
+            "probe_kind": recorded.kind,
+            "outcome": recorded.outcome.value,
+        }
+        if recorded.outcome is not AttemptOutcome.RESPONSE:
+            if recorded.failure is None:
+                raise MeasurementError(
+                    "A response-less trusted attempt omitted its failure kind. Check "
+                    "runner emission and rerun the measurement."
+                )
+            item["failure_kind"] = recorded.failure.value
+            if recorded.sequence in wire_responses:
+                raise MeasurementError(
+                    "A response-less analyzer attempt has completed wire evidence. "
+                    "Check terminal request handling and rerun the measurement."
+                )
+            attempts.append(item)
+            continue
+        wire = wire_responses.get(recorded.sequence)
+        if wire is None:
+            raise MeasurementError(
+                "A completed analyzer attempt has no matching wire response. Check "
+                "bridge sequencing and rerun the measurement."
+            )
+        observation = recorded.observation
+        status = getattr(observation, "status_code", None)
+        truncated = getattr(observation, "truncated", None)
+        if status != wire.status_code or type(truncated) is not bool:
+            raise MeasurementError(
+                "Wire and analyzer response facts disagree. Check the bridge and "
+                "trusted observation sink, then rerun the measurement."
+            )
+        item.update(
+            status_code=status,
+            truncated=truncated,
+            wire_status_code=wire.status_code,
+            wire_body_size=wire.body_size,
+            wire_body_sha256=wire.body_sha256,
+        )
+        if isinstance(
+            observation,
+            (
+                Observation,
+                BooleanResponseSignature,
+                ConfirmationObservation,
+                ErrorObservation,
+                TimeResponseSignature,
+            ),
+        ):
+            item.update(
+                body_size=observation.body_size,
+                body_sha256=observation.body_digest,
+            )
+        if isinstance(
+            observation,
+            (Observation, BooleanResponseSignature, ConfirmationObservation),
+        ):
+            item.update(
+                normalization_applied=observation.normalization_applied,
+                normalized_echo_count=observation.normalized_echo_count,
+            )
+            identity = (recorded.family, recorded.kind)
+            first = prior_by_identity.get(identity)
+            if first is None:
+                prior_by_identity[identity] = item
+            else:
+                item["repeat_comparison"] = _repeat_comparison_dict(
+                    first, item, decision_facts
+                )
+        if isinstance(observation, ErrorObservation):
+            item["matches"] = [
+                {"dbms": match.dbms, "signature_id": match.signature_id}
+                for match in observation.matches
+            ]
+        attempts.append(item)
+    unused_wire = set(wire_responses) - {
+        item["sequence"] for item in attempts if item["outcome"] == "response"
+    }
+    if unused_wire:
+        raise MeasurementError(
+            "The bridge recorded wire responses without matching analyzer attempts. "
+            "Check request sequencing and rerun the measurement."
+        )
+    return attempts
 
 
 def _boolean_relation_is_stable(relations: dict[str, object]) -> bool:
@@ -821,12 +993,12 @@ _NON_OBJECT_REPORT_MESSAGE = (
 )
 
 
-def _validate_measurement_report(report: object) -> dict[str, object]:
+def _validate_v9_measurement_report(report: object) -> dict[str, object]:
     """Validate current schema v9 output."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
     version = report.get("schema_version")
-    if type(version) is int and version in UNRELIABLE_EVIDENCE_SCHEMA_VERSIONS:
+    if type(version) is int and version in {5, 6, 7, 8}:
         detail = (
             "v8 used the previous confirmation reason rules and cannot be interpreted under the v9 predicate-pair stability precedence"
             if version == 8
@@ -839,7 +1011,7 @@ def _validate_measurement_report(report: object) -> dict[str, object]:
         raise MeasurementError(
             f"Unsupported third-party measurement report schema version {version}: {detail}. Re-run scripts/run_third_party_sqli_measurement.py on current main to produce schema version 9 with the current confirmation reason contract."
         )
-    if type(version) is not int or version != MEASUREMENT_SCHEMA_VERSION:
+    if type(version) is not int or version != 9:
         raise MeasurementError(
             f"Unsupported third-party measurement report schema_version: observed JSON type {_json_type(version)}. Expected the integer 9. Older report reason rules and shapes cannot be reinterpreted; re-run scripts/run_third_party_sqli_measurement.py on current main."
         )
@@ -968,7 +1140,7 @@ def _validate_measurement_report(report: object) -> dict[str, object]:
 
     recomputed_records: list[dict[str, object]] = []
     for record_index, record in enumerate(records):
-        if version in {7, 8, MEASUREMENT_SCHEMA_VERSION} and record.keys() != {
+        if version in {7, 8, 9} and record.keys() != {
             "actual_verdict",
             "check_type",
             "classification",
@@ -1045,9 +1217,661 @@ def _validate_measurement_report(report: object) -> dict[str, object]:
     return report
 
 
+def _v10_error(message: str) -> MeasurementError:
+    return MeasurementError(
+        f"{message} Rerun scripts/run_third_party_sqli_measurement.py with the "
+        "current tooling; do not hand-edit report evidence."
+    )
+
+
+def _strict_int(value: object, field: str, *, minimum: int = 0) -> int:
+    if type(value) is not int or value < minimum:
+        raise _v10_error(
+            f"Invalid v10 {field}: expected a JSON integer of at least {minimum}."
+        )
+    return value
+
+
+def _strict_digest(value: object, field: str) -> str:
+    if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise _v10_error(f"Invalid v10 {field}: expected a lowercase SHA-256 digest.")
+    return value
+
+
+def _attempt_plan(check_type: str, mode: str) -> tuple[tuple[str, str], ...]:
+    kinds = OBSERVATION_KIND_ORDERS[(check_type, mode)]
+    if check_type == "sqli.boolean":
+        return tuple(
+            ("boolean" if index <= 6 else "confirmation", kind)
+            for index, kind in enumerate(kinds, start=1)
+        )
+    return tuple((check_type.removeprefix("sqli."), kind) for kind in kinds)
+
+
+def _parse_v10_attempts(
+    record: dict[str, object], check_type: str, mode: str
+) -> list[dict[str, object]]:
+    attempts = record.get("attempts")
+    if type(attempts) is not list or not attempts:
+        raise _v10_error("Invalid v10 attempts: expected a nonempty attempt array.")
+    plan = _attempt_plan(check_type, mode)
+    seen_terminal = False
+    response_count = 0
+    counted = 0
+    prior: dict[tuple[str, str], dict[str, object]] = {}
+    for index, item in enumerate(attempts, start=1):
+        if type(item) is not dict:
+            raise _v10_error(f"Invalid v10 attempts[{index - 1}]: expected an object.")
+        if seen_terminal:
+            raise _v10_error(
+                "Invalid v10 attempts: no attempt may follow a terminal no_response or not_dispatched entry."
+            )
+        if index > len(plan):
+            raise _v10_error(
+                "Invalid v10 attempts: entries exceed the fixed production plan."
+            )
+        stage, kind = plan[index - 1]
+        if (
+            _strict_int(item.get("sequence"), "attempt sequence", minimum=1) != index
+            or item.get("stage") != stage
+            or item.get("probe_kind") != kind
+        ):
+            raise _v10_error(
+                f"Invalid v10 attempt identity at sequence {index}: expected the fixed production stage and probe kind."
+            )
+        outcome = item.get("outcome")
+        common = {"sequence", "stage", "probe_kind", "outcome"}
+        if outcome == "no_response" or outcome == "not_dispatched":
+            if (
+                item.keys() != common | {"failure_kind"}
+                or type(item.get("failure_kind")) is not str
+            ):
+                raise _v10_error(
+                    f"Invalid v10 {outcome} attempt fields: store only the fixed failure_kind and request identity."
+                )
+            seen_terminal = True
+            if outcome == "no_response":
+                counted += 1
+            continue
+        if outcome != "response":
+            raise _v10_error(
+                "Invalid v10 attempt outcome: use response, no_response, or not_dispatched."
+            )
+        response_count += 1
+        counted += 1
+        base = common | {
+            "status_code",
+            "truncated",
+            "wire_status_code",
+            "wire_body_size",
+            "wire_body_sha256",
+        }
+        family_fields: set[str] = {"body_size", "body_sha256"}
+        if stage in {"boolean", "confirmation"}:
+            family_fields |= {"normalization_applied", "normalized_echo_count"}
+        if stage == "error":
+            family_fields.add("matches")
+        identity = (stage, kind)
+        repeated = identity in prior and stage in {"boolean", "confirmation"}
+        if repeated:
+            family_fields.add("repeat_comparison")
+        expected_fields = base | family_fields
+        if item.keys() != expected_fields:
+            raise _v10_error(
+                f"Invalid v10 response fields at sequence {index}: fields do not match its check family and repeat position."
+            )
+        status = _strict_int(item.get("status_code"), "status_code", minimum=100)
+        if status > 599 or item.get("wire_status_code") != status:
+            raise _v10_error(
+                f"Invalid v10 status evidence at sequence {index}: wire and analyzer status must agree."
+            )
+        if type(item.get("truncated")) is not bool:
+            raise _v10_error("Invalid v10 truncated field: expected a JSON boolean.")
+        _strict_int(item.get("wire_body_size"), "wire_body_size")
+        _strict_digest(item.get("wire_body_sha256"), "wire_body_sha256")
+        size = _strict_int(item.get("body_size"), "body_size")
+        _strict_digest(item.get("body_sha256"), "body_sha256")
+        if stage in {"boolean", "confirmation"}:
+            applied = item.get("normalization_applied")
+            echo_count = item.get("normalized_echo_count")
+            if (
+                type(applied) is not bool
+                or type(echo_count) is not int
+                or echo_count < 0
+            ):
+                raise _v10_error(
+                    "Invalid v10 Boolean normalization evidence: expected a boolean and nonnegative integer."
+                )
+            if applied != (echo_count > 0):
+                raise _v10_error(
+                    "Invalid v10 Boolean normalization evidence: applied must equal whether the echo count is positive."
+                )
+        if repeated:
+            comparison = item.get("repeat_comparison")
+            if (
+                type(comparison) is not dict
+                or type(comparison.get("equal")) is not bool
+            ):
+                raise _v10_error(
+                    f"Invalid v10 repeat comparison at sequence {index}: expected a discriminated comparison object."
+                )
+            if comparison["equal"]:
+                if comparison.keys() != {"equal"}:
+                    raise _v10_error(
+                        "Equal repeat comparisons cannot contain localization sizes."
+                    )
+            elif comparison.get("localization") == "unlocalized":
+                if comparison.keys() != {"equal", "localization"}:
+                    raise _v10_error(
+                        "Unlocalized repeat comparisons cannot contain sizes."
+                    )
+            elif comparison.get("localization") == "localized":
+                required = {
+                    "equal",
+                    "localization",
+                    "prefix_size",
+                    "suffix_size",
+                    "first_changed_size",
+                    "second_changed_size",
+                }
+                if comparison.keys() != required:
+                    raise _v10_error(
+                        "Localized repeat comparisons require all four sizes."
+                    )
+                prefix = _strict_int(comparison["prefix_size"], "prefix_size")
+                suffix = _strict_int(comparison["suffix_size"], "suffix_size")
+                first_changed = _strict_int(
+                    comparison["first_changed_size"], "first_changed_size"
+                )
+                second_changed = _strict_int(
+                    comparison["second_changed_size"], "second_changed_size"
+                )
+                first = prior[identity]
+                if prefix + suffix + first_changed != first["body_size"] or (
+                    prefix + suffix + second_changed != size
+                ):
+                    raise _v10_error(
+                        "Localized repeat comparison sizes do not sum to both analyzer body sizes."
+                    )
+            else:
+                raise _v10_error(
+                    "Invalid v10 repeat localization: use localized or unlocalized."
+                )
+            equal = all(
+                prior[identity][field] == item[field]
+                for field in ("status_code", "body_size", "body_sha256")
+            )
+            if comparison["equal"] != equal:
+                raise _v10_error(
+                    "The stored repeat comparison contradicts analyzer response signatures."
+                )
+        else:
+            prior[identity] = item
+        if stage == "error":
+            matches = item.get("matches")
+            if type(matches) is not list:
+                raise _v10_error("Invalid v10 Error matches: expected a sorted array.")
+            for match in matches:
+                if type(match) is not dict or match.keys() != {"dbms", "signature_id"}:
+                    raise _v10_error("Invalid v10 Error match fields.")
+                signature_id = match["signature_id"]
+                signature = (
+                    ERROR_SIGNATURES.get(signature_id)
+                    if type(signature_id) is str
+                    else None
+                )
+                if signature is None or signature.dbms != match.get("dbms"):
+                    raise _v10_error("Invalid v10 Error DBMS/signature pair.")
+        prior.setdefault(identity, item)
+    request_count = _strict_int(record.get("request_count"), "request_count")
+    if counted != request_count:
+        raise _v10_error(
+            "v10 request_count disagrees with response and no_response attempts; not_dispatched is not counted."
+        )
+    if response_count != len(
+        [item for item in attempts if item.get("outcome") == "response"]
+    ):
+        raise _v10_error("Invalid v10 response accounting.")
+    return attempts
+
+
+def _comparison_object(
+    item: dict[str, object], kind: ProbeKind
+) -> BooleanRepeatComparison:
+    value = item["repeat_comparison"]
+    if type(value) is not dict:
+        raise _v10_error("Invalid Boolean repeat comparison object.")
+    region = None
+    if value.get("localization") == "localized":
+        region = DynamicRegion(
+            value["prefix_size"],
+            value["suffix_size"],
+            value["first_changed_size"],
+            value["second_changed_size"],
+        )
+    return BooleanRepeatComparison(kind, value["equal"], region)
+
+
+def _derive_complete_v10_record(
+    record: dict[str, object], attempts: list[dict[str, object]]
+) -> tuple[str, str, object | None]:
+    check_type = record["check_type"]
+    mode = record["mode"]
+    terminal = attempts[-1]
+    response_condition = None
+    if terminal["outcome"] == "response":
+        response_condition = (
+            "rate_limited"
+            if terminal["status_code"] == 429
+            else "truncated"
+            if terminal["truncated"]
+            else "non_success_status"
+            if terminal["stage"] != "error" and not 200 <= terminal["status_code"] < 300
+            else None
+        )
+    if terminal["outcome"] != "response" or response_condition is not None:
+        condition = (
+            terminal["failure_kind"]
+            if terminal["outcome"] != "response"
+            else response_condition
+        )
+        stage = terminal["stage"]
+        if stage == "time":
+            reason = {
+                "deadline": "incomplete_probes"
+                if terminal["outcome"] == "not_dispatched"
+                else "probe_interrupted",
+                "timeout": "probe_timeout",
+                "request_failed": "probe_failed",
+                "interrupted": "probe_interrupted",
+                "rate_limited": "rate_limited",
+                "truncated": "truncated_response",
+                "non_success_status": "non_success_status",
+            }.get(condition)
+        elif stage == "error":
+            reason = {
+                "timeout": "probe_timeout",
+                "connection": "probe_failed",
+                "response_read": "probe_failed",
+                "unknown": "probe_failed",
+                "rate_limit": "probe_interrupted",
+                "cancelled": "probe_interrupted",
+                "rate_limited": "rate_limited",
+                "truncated": "truncated_response",
+                "non_success_status": "non_success_status",
+            }.get(condition)
+        elif stage == "confirmation":
+            reason = {
+                "budget_unavailable": "confirmation_budget_unavailable",
+                "preflight_failed": "confirmation_preflight_failed",
+                "budget_exceeded": "confirmation_budget_exceeded",
+                "rate_limit_interrupted": "confirmation_rate_limit_interrupted",
+                "timeout": "confirmation_timeout",
+                "connection": "confirmation_request_failed",
+                "response_read": "confirmation_request_failed",
+                "unknown": "confirmation_request_failed",
+                "rate_limited": "confirmation_rate_limited",
+                "truncated": "confirmation_truncated",
+                "non_success_status": "confirmation_non_success_status",
+            }.get(condition)
+        else:
+            reason = (
+                "budget_unavailable"
+                if condition == "budget_unavailable"
+                else "rate_limited"
+                if condition == "rate_limited"
+                else "truncated_response"
+                if condition == "truncated"
+                else "non_success_status"
+                if condition == "non_success_status"
+                else "probe_failed"
+            )
+        if reason is None:
+            raise _v10_error("Unsupported terminal failure kind in v10 attempts.")
+        probe_kind = terminal["probe_kind"]
+        if stage == "error" and probe_kind == "probe":
+            probe_kind = "error"
+        facts: dict[str, object] = {
+            "category": "operational",
+            "stage": "initial" if stage == "boolean" else stage,
+            "sequence": terminal["sequence"],
+            "probe_kind": probe_kind,
+            "condition": condition,
+        }
+        if terminal["outcome"] == "response":
+            facts["status_code"] = terminal["status_code"]
+        return "inconclusive", reason, facts
+    if check_type == "sqli.boolean":
+        initial = attempts[:6]
+        signatures = tuple(
+            BooleanResponseSignature(
+                ProbeKind(item["probe_kind"]),
+                item["status_code"],
+                item["body_size"],
+                item["body_sha256"],
+                item["truncated"],
+                item["normalization_applied"],
+                item["normalized_echo_count"],
+            )
+            for item in initial
+        )
+        second_by_kind = {
+            kind: next(
+                item for item in reversed(initial) if item["probe_kind"] == kind.value
+            )
+            for kind in ProbeKind
+        }
+        comparison = tuple(
+            _comparison_object(second_by_kind[kind], kind) for kind in ProbeKind
+        )
+        classification = classify_boolean_signatures(
+            signatures=signatures,
+            repeat_comparisons=comparison,
+            normalization_applied=any(
+                item["normalization_applied"] for item in initial
+            ),
+            normalized_echo_count=sum(
+                item["normalized_echo_count"] for item in initial
+            ),
+        )
+        facts = classification.decision_facts
+        if mode == "six_probe" or classification.reason_code != "boolean_candidate":
+            return (
+                classification.verdict.value,
+                classification.reason_code,
+                None if facts is None else decision_facts_report_dict(facts),
+            )
+        confirmation_attempts = attempts[6:]
+        confirmation = tuple(
+            ConfirmationObservation(
+                ConfirmationKind(item["probe_kind"]),
+                item["status_code"],
+                item["body_size"],
+                item["body_sha256"],
+                item["truncated"],
+                item["normalization_applied"],
+                item["normalized_echo_count"],
+            )
+            for item in confirmation_attempts
+        )
+        status, evidence, confirmation_facts = classify_confirmation_observations(
+            confirmation
+        )
+        if status is ConfirmationStatus.CANDIDATE and evidence is not None:
+            initial_observations = tuple(
+                Observation(
+                    ProbeKind(item["probe_kind"]),
+                    item["status_code"],
+                    item["body_size"],
+                    0.0,
+                    item["body_sha256"],
+                    item["truncated"],
+                    item["normalization_applied"],
+                    item["normalized_echo_count"],
+                )
+                for item in initial
+            )
+            cross = assess_cross_phase_observations(
+                initial=initial_observations, confirmation=confirmation
+            )
+            if cross.status is CrossPhaseStatus.MATCH:
+                return "inconclusive", "boolean_candidate", None
+            cross_facts = ConfirmationRelationDecisionFacts(
+                reason_code="confirmation_cross_phase_mismatch",
+                cross_phase_mismatched_kinds=cross.mismatched_kinds,
+            )
+            return (
+                "inconclusive",
+                "confirmation_cross_phase_mismatch",
+                decision_facts_report_dict(cross_facts),
+            )
+        return (
+            "inconclusive",
+            "confirmation_unstable"
+            if status is ConfirmationStatus.INCONCLUSIVE
+            else "candidate_confirmation_mismatch",
+            None
+            if confirmation_facts is None
+            else decision_facts_report_dict(confirmation_facts),
+        )
+    if check_type == "sqli.time":
+        predicates = record.get("time_predicates")
+        if type(predicates) is not dict or predicates.keys() != set(
+            TimeDecisionInputs.__dataclass_fields__
+        ):
+            raise _v10_error(
+                "Complete Time records require exactly the eight production decision predicates."
+            )
+        inputs = TimeDecisionInputs(**predicates)
+        status, reason, facts = classify_time_decision_inputs(inputs)
+        verdict = (
+            "not_detected"
+            if status is TimeAnalysisStatus.NOT_CONFIRMED
+            else "inconclusive"
+        )
+        return (
+            verdict,
+            reason,
+            None if facts is None else decision_facts_report_dict(facts),
+        )
+    try:
+        observations = tuple(
+            ErrorObservation(
+                ErrorProbeKind(item["probe_kind"]),
+                item["sequence"],
+                item["status_code"],
+                item["body_size"],
+                item["body_sha256"],
+                item["truncated"],
+                tuple(
+                    ErrorMatch(match["dbms"], match["signature_id"])
+                    for match in item["matches"]
+                ),
+            )
+            for item in attempts
+        )
+        _, reason, _ = classify_error_observations(observations)
+    except (TypeError, ValueError):
+        raise _v10_error(
+            "Invalid v10 Error attempts: expected a valid ordered analyzer sequence."
+        ) from None
+    verdict = ERROR_RESULT_RULES[reason].product_verdict.value
+    facts = None
+    for observation in observations:
+        stop_reason = operational_stop_reason(observation)
+        if stop_reason is not None:
+            condition = (
+                OperationalCondition.RATE_LIMITED
+                if stop_reason == "rate_limited"
+                else OperationalCondition.TRUNCATED
+                if stop_reason == "truncated_response"
+                else OperationalCondition.NON_SUCCESS_STATUS
+            )
+            facts = decision_facts_report_dict(
+                error_operational_decision_facts(
+                    reason_code=stop_reason,
+                    sequence=observation.sequence,
+                    kind=observation.kind,
+                    condition=condition,
+                    status_code=observation.status_code,
+                )
+            )
+            break
+    if facts is None and reason == "non_success_status":
+        observation = next(
+            item for item in observations if not 200 <= item.status_code < 300
+        )
+        facts = decision_facts_report_dict(
+            error_operational_decision_facts(
+                reason_code=reason,
+                sequence=observation.sequence,
+                kind=observation.kind,
+                condition=OperationalCondition.NON_SUCCESS_STATUS,
+                status_code=observation.status_code,
+            )
+        )
+    return verdict, reason, facts
+
+
+def _validate_v10_measurement_report(report: object) -> dict[str, object]:
+    if type(report) is not dict:
+        raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
+    if report.keys() != {"counts", "records", "schema_version", "targets"}:
+        raise _v10_error("Invalid v10 top-level fields.")
+    if report.get("schema_version") != 10:
+        raise _v10_error("Invalid v10 schema version.")
+    records = report.get("records")
+    if type(records) is not list:
+        raise _v10_error("Invalid v10 records array.")
+    targets, declarations = load_declarations()
+    planned = list(plan_measurements(targets, declarations))
+    declaration_by_key = {item.key: item.declaration for item in planned}
+    expected_keys = set(declaration_by_key)
+    observed_keys: set[tuple[str, str, str, str]] = set()
+    recomputed_records: list[dict[str, object]] = []
+    for record in records:
+        if type(record) is not dict:
+            raise _v10_error("Invalid v10 record: expected an object.")
+        base_fields = {
+            "actual_verdict",
+            "attempts",
+            "check_type",
+            "classification",
+            "detail",
+            "endpoint_id",
+            "expected_label",
+            "expected_verdict",
+            "mode",
+            "reason_code",
+            "request_count",
+            "target_id",
+        }
+        allowed = base_fields | {"decision_facts", "time_predicates"}
+        if not base_fields <= record.keys() or record.keys() - allowed:
+            raise _v10_error("Invalid v10 record fields.")
+        key = tuple(
+            record[field]
+            for field in ("target_id", "endpoint_id", "check_type", "mode")
+        )
+        if any(type(part) is not str for part in key):
+            raise _v10_error("Invalid v10 record identity: expected declared strings.")
+        if key not in expected_keys or key in observed_keys:
+            raise _v10_error("A v10 record is undeclared or duplicated.")
+        observed_keys.add(key)
+        declaration = declaration_by_key[key]
+        label = required_text(declaration, "label", "record declaration")
+        if record.get("expected_label") != label or record.get(
+            "expected_verdict"
+        ) != expected_verdict_for_label(label):
+            raise _v10_error("A v10 record contradicts reviewed ground truth.")
+        attempts = _parse_v10_attempts(record, key[2], key[3])
+        verdict, reason, facts = _derive_complete_v10_record(record, attempts)
+        if (
+            record.get("actual_verdict") != verdict
+            or record.get("reason_code") != reason
+        ):
+            raise _v10_error(
+                "The stored v10 verdict or reason contradicts classifier-derived attempt evidence."
+            )
+        if record.get("decision_facts") != facts:
+            raise _v10_error(
+                "Stored v10 decision_facts contradict classifier-derived attempt evidence."
+            )
+        detail = record.get("detail")
+        if type(detail) is not dict:
+            raise _v10_error("A v10 record requires its product detail object.")
+        if key[2] in {"sqli.time", "sqli.error"} and (
+            detail.get("reason_code") != reason
+            or detail.get("request_count") != record.get("request_count")
+        ):
+            raise _v10_error(
+                "The v10 product detail contradicts the derived reason or request count."
+            )
+        if key[2] == "sqli.error":
+            _validate_error_detail(record, records.index(record))
+        classification = classify(key[2], label, verdict, reason)
+        if classification == "non_decision" and facts is None:
+            raise _v10_error(
+                "A v10 non-decision lacks classifier-derived structured decision_facts."
+            )
+        if record.get("classification") != classification:
+            raise _v10_error(
+                "Stored v10 classification contradicts ground truth and result."
+            )
+        recomputed_records.append({**record, "classification": classification})
+    if observed_keys != expected_keys:
+        raise _v10_error("The v10 measurement plan is incomplete.")
+    if _first_difference(report.get("counts"), counts(recomputed_records)) is not None:
+        raise _v10_error("v10 aggregate counts disagree with records.")
+    metadata = report.get("targets")
+    if type(metadata) is not dict or metadata.keys() != targets.keys():
+        raise _v10_error("v10 target metadata does not match declared targets.")
+    for target_id, target in targets.items():
+        value = metadata[target_id]
+        required = {
+            "archive_sha256",
+            "commit",
+            "dbms",
+            "image_ids",
+            "license",
+            "name",
+            "repository",
+            "service_images",
+            "source_manifest_sha256",
+        }
+        if type(value) is not dict or value.keys() != required:
+            raise _v10_error(f"v10 target metadata for {target_id!r} is incomplete.")
+        for field in (
+            "archive_sha256",
+            "commit",
+            "dbms",
+            "license",
+            "name",
+            "repository",
+        ):
+            if value[field] != target[field]:
+                raise _v10_error(
+                    f"v10 target metadata for {target_id!r} differs from prepared provenance at field {field}. Rerun preparation and measurement."
+                )
+        image_ids = value["image_ids"]
+        if (
+            type(image_ids) is not dict
+            or image_ids.keys() != {"app"}
+            or not is_image_digest(image_ids.get("app"))
+            or not is_sha256(value["source_manifest_sha256"])
+        ):
+            raise _v10_error(
+                f"v10 target metadata for {target_id!r} cannot be identified. Rerun prepare before measurement."
+            )
+        try:
+            validate_service_image_mapping(
+                target_id, value["service_images"], target.get("service_images")
+            )
+        except ServiceImageMismatch:
+            raise _v10_error(
+                f"targets.{target_id}.service_images observed JSON type object with invalid entries. Expected only declared digest-pinned images. Rerun preparation."
+            ) from None
+    return report
+
+
+_V9_REMEASURE_MESSAGE = (
+    "Schema v9 lacks per-attempt evidence and structured decision facts required "
+    "by schema v10. Re-run: uv run --locked python "
+    "scripts/run_third_party_sqli_measurement.py --workspace "
+    "/tmp/vintar-third-party-sqli --output "
+    "/tmp/vintar-third-party-sqli-report.json"
+)
+
+
 def validate_measurement_report(report: object) -> dict[str, object]:
-    """Accept only current schema v9 output."""
-    return _validate_measurement_report(report)
+    """Accept only current schema v10 output."""
+    if (
+        type(report) is dict
+        and type(report.get("schema_version")) is int
+        and report.get("schema_version") <= 9
+    ):
+        raise MeasurementError(_V9_REMEASURE_MESSAGE)
+    return _validate_v10_measurement_report(report)
 
 
 class _ResponseRecorder:
@@ -1104,6 +1928,15 @@ class _ResponseRecorder:
                     f"The loopback recorder has sequence gaps: expected {sorted(expected_sequences)!r}, observed {sorted(observed_sequences)!r}. Check response framing and handler completion, then rerun the measurement instead of pairing roles by completion order."
                 )
             return tuple(self.responses[index] for index in range(expected))
+
+    def recorded_response_map(self) -> dict[int, RecordedResponse]:
+        """Return completed wire responses keyed by one-based request sequence."""
+        with self.response_condition:
+            if self.recording_error is not None:
+                raise MeasurementError(self.recording_error)
+            return {
+                sequence + 1: response for sequence, response in self.responses.items()
+            }
 
     def record_failure(
         self, sequence: int | None, exception_type: str, cause: str
@@ -1179,6 +2012,9 @@ class _BridgeServer(socketserver.ThreadingTCPServer):
 
     def recorded_responses(self, expected: int) -> tuple[RecordedResponse, ...]:
         return self.recorder.recorded_responses(expected)
+
+    def recorded_response_map(self) -> dict[int, RecordedResponse]:
+        return self.recorder.recorded_response_map()
 
     @property
     def handler_failed(self) -> bool:
@@ -2208,6 +3044,7 @@ def run_pipeline_case(
             f"Verification did not emit exactly one {target_id} outcome. Check the generated case and request budget."
         )
     outcome = outcomes[0]
+    runtime_outcome = result.outcomes[0]
     verdict = required_text(outcome, "actual_verdict", "verification outcome")
     reason = required_text(outcome, "actual_reason_code", "verification outcome")
     request_count = outcome.get("request_count")
@@ -2221,30 +3058,55 @@ def run_pipeline_case(
         raise MeasurementError(
             "Verification omitted request or check evidence. Check the installed Vintar report contract."
         )
-    roles = PROBE_ROLE_ORDERS[(check_type, report_mode)][:request_count]
-    kinds = OBSERVATION_KIND_ORDERS[(check_type, report_mode)][:request_count]
-    evidence, relations = sanitized_probe_evidence(
-        roles,
-        recorder.recorded_responses(request_count),
-        collector.ordered(request_count),
-        check_type=check_type,
-        expected_kinds=kinds,
+    decision_facts = outcome.get("decision_facts")
+    collected = collector.attempts()
+    counted_attempts = sum(
+        item.outcome is not AttemptOutcome.NOT_DISPATCHED for item in collected
     )
-    return {
+    if counted_attempts != request_count:
+        raise MeasurementError(
+            "Trusted attempt accounting contradicts the product request count. "
+            "Check terminal runner emission and rerun the measurement."
+        )
+    attempts = sanitized_attempts(
+        collected,
+        recorder.recorded_response_map(),
+        decision_facts=decision_facts,
+    )
+    classification = classify(check_type, label, verdict, reason)
+    if classification == "non_decision" and decision_facts is None:
+        raise MeasurementError(
+            "A measured non-decision omitted production decision_facts. Add the "
+            "bounded facts where the check chooses its reason, then rerun instead "
+            "of deriving facts in the report layer."
+        )
+    report_record: dict[str, object] = {
         "actual_verdict": verdict,
+        "attempts": attempts,
         "check_type": check_type,
-        "classification": classify(check_type, label, verdict, reason),
+        "classification": classification,
         "detail": detail,
         "endpoint_id": record_id,
-        "evidence": evidence,
         "expected_label": label,
         "expected_verdict": expected_verdict,
         "mode": report_mode,
         "reason_code": reason,
-        "relations": relations,
         "request_count": request_count,
         "target_id": target_id,
     }
+    if decision_facts is not None:
+        report_record["decision_facts"] = decision_facts
+    if type(runtime_outcome) is TimeRegressionOutcome:
+        evidence = runtime_outcome.time_run.analysis.evidence
+        if evidence is not None:
+            predicates = time_decision_inputs(
+                evidence, runtime_outcome.time_run.analysis.expected_delay_seconds
+            )
+            report_record["time_predicates"] = {
+                name: getattr(predicates, name)
+                for name in TimeDecisionInputs.__dataclass_fields__
+            }
+    return report_record
 
 
 def _count_tree(records: list[dict[str, object]]) -> dict[str, object]:
@@ -2470,7 +3332,30 @@ def check_documented_summary(report: object, documentation: Path = DOCS) -> str:
     """Reject actual results that differ from the committed reviewed summary."""
     if type(report) is not dict:
         raise MeasurementError(_NON_OBJECT_REPORT_MESSAGE)
-    validate_measurement_report(report)
+    if (
+        type(report) is dict
+        and report.get("schema_version") == REVIEWED_FIXTURE_SCHEMA_VERSION
+    ):
+        try:
+            fixture_bytes = REVIEWED_FIXTURE.read_bytes()
+            fixture_report = json.loads(fixture_bytes)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise MeasurementError(
+                "The frozen reviewed v9 fixture is unreadable. Restore its exact "
+                "committed bytes before checking documentation."
+            ) from exc
+        if (
+            hashlib.sha256(fixture_bytes).hexdigest() != REVIEWED_FIXTURE_SHA256
+            or report != fixture_report
+        ):
+            raise MeasurementError(
+                "Only the exact hash-pinned reviewed v9 fixture may use the private "
+                "documentation transition path. Remeasure with the current tooling "
+                "to produce schema v10; do not modify legacy evidence."
+            )
+        _validate_v9_measurement_report(report)
+    else:
+        validate_measurement_report(report)
     try:
         text = documentation.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -2497,7 +3382,10 @@ def write_report(path: Path, report: dict[str, object]) -> None:
     validate_measurement_report(report)
     if report.get("schema_version") != MEASUREMENT_SCHEMA_VERSION:
         raise MeasurementError(
-            "New measurement output requires schema version 9 with the current confirmation predicate-pair stability precedence and exact analyzer evidence. Re-run scripts/run_third_party_sqli_measurement.py on current main instead of writing a legacy v4 through v8 fixture."
+            "New measurement output requires schema version 10 with per-attempt "
+            "evidence and structured decision facts. Re-run "
+            "scripts/run_third_party_sqli_measurement.py on current main instead "
+            "of writing a legacy fixture."
         )
     resolved = path.resolve()
     if resolved == ROOT or ROOT in resolved.parents:
