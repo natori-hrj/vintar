@@ -98,7 +98,7 @@ class _CachedSchemaResolution:
     definition: Source
     sites: tuple[Source, ...]
     targets: tuple[Source, ...]
-    siblings: tuple[ReferenceSibling, ...]
+    sibling_steps: tuple[tuple[ReferenceSibling, ...], ...]
     reference_work_cost: int
 
 
@@ -519,7 +519,7 @@ class _Discovery:
         cache_reference: str | None = None
         cache_sites: list[Source] = []
         cache_targets: list[Source] = []
-        cache_sibling_start = 0
+        cache_sibling_steps: list[tuple[ReferenceSibling, ...]] = []
         try:
             while isinstance(value, dict) and "$ref" in value:
                 node = value
@@ -528,17 +528,22 @@ class _Discovery:
                     ReferenceSibling(source.child(key), key)
                     for key in sorted(node.keys() - {"$ref"})
                 )
-                siblings.extend(node_siblings)
                 reference = _string(node["$ref"], site)
                 if cache_reference is None:
                     cache_reference = reference
-                    cache_sibling_start = len(siblings)
+                    cache_sibling_steps.append(())
+                else:
+                    cache_sibling_steps.append(node_siblings)
                 cached = self.schema_resolutions.get(reference)
                 if cached is not None:
                     for index, (cached_site, target) in enumerate(
                         zip(cached.sites, cached.targets, strict=True)
                     ):
                         step_site = site if index == 0 else cached_site
+                        step_siblings = (
+                            node_siblings if index == 0 else cached.sibling_steps[index]
+                        )
+                        siblings.extend(step_siblings)
                         self.reference_work += 1
                         if (
                             self.reference_work > MAX_REFERENCE_WORK
@@ -553,29 +558,34 @@ class _Discovery:
                                 step_site,
                                 "Reference cycle detected. Break the recursive reference chain.",
                             )
+                        get_siblings.extend(step_siblings)
                         trail = (*trail, target)
                         source = target
-                    if len(cached.targets) != cached.reference_work_cost:
+                    if not (
+                        len(cached.targets)
+                        == len(cached.sites)
+                        == len(cached.sibling_steps)
+                        == cached.reference_work_cost
+                    ):
                         raise AssertionError("Invalid cached reference-work cost.")
                     cache_sites.extend((site, *cached.sites[1:]))
                     cache_targets.extend(cached.targets)
-                    siblings.extend(cached.siblings)
-                    get_siblings.extend(node_siblings)
-                    get_siblings.extend(cached.siblings)
                     if cache_reference != reference:
+                        cache_sibling_steps.extend(cached.sibling_steps[1:])
                         self.schema_resolutions[cache_reference] = (
                             _CachedSchemaResolution(
                                 cached.schema,
                                 cached.definition,
                                 tuple(cache_sites),
                                 tuple(cache_targets),
-                                tuple(siblings[cache_sibling_start:]),
+                                tuple(cache_sibling_steps),
                                 len(cache_targets),
                             )
                         )
                     value = cached.schema
                     source = cached.definition
                     break
+                siblings.extend(node_siblings)
                 self.reference_work += 1
                 if (
                     self.reference_work > MAX_REFERENCE_WORK
@@ -609,7 +619,7 @@ class _Discovery:
                 source,
                 tuple(cache_sites),
                 tuple(cache_targets),
-                tuple(siblings[cache_sibling_start:]),
+                tuple(cache_sibling_steps),
                 len(cache_targets),
             )
         if isinstance(value, bool):

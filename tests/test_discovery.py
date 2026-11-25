@@ -356,6 +356,61 @@ def test_get_warm_cache_charges_the_same_work_as_cold_resolution(tmp_path, monke
     )
 
 
+def reference_sibling_chain_spec():
+    return {
+        "schemas": {
+            "Alias": {
+                "$ref": "#/components/schemas/Middle",
+                "not": {"type": "string"},
+            },
+            "Middle": {"$ref": "#/components/schemas/Name"},
+            "Name": {"type": "string"},
+        }
+    }
+
+
+def test_schema_resolution_cache_matches_cold_diagnostics_mid_walk(
+    tmp_path, monkeypatch
+):
+    path = write_spec(tmp_path, components=reference_sibling_chain_spec())
+    schema = {"$ref": "#/components/schemas/Alias"}
+    warm = discovery._load_document(path)
+    warm.resolve_schema_result(schema, Source(path, "/prime"), ())
+    warm.reference_work = 1
+    cold = discovery._load_document(path)
+    cold.reference_work = 1
+    monkeypatch.setattr(discovery, "MAX_REFERENCE_WORK", 2)
+
+    errors = []
+    for document in (cold, warm):
+        with pytest.raises(DiscoveryError) as caught:
+            document.resolve_schema_result(schema, Source(path, "/probe"), ())
+        errors.append(caught.value)
+
+    cold_error, warm_error = errors
+    assert warm_error.source == cold_error.source
+    assert warm_error.reason == cold_error.reason
+    assert warm_error.schema_siblings == cold_error.schema_siblings
+    assert warm_error.get_schema_siblings == cold_error.get_schema_siblings
+    assert warm.reference_work == cold.reference_work == 3
+
+
+def test_schema_resolution_cache_matches_cold_get_output_full_walk(tmp_path):
+    path = write_spec(tmp_path, components=reference_sibling_chain_spec())
+    schema = {"$ref": "#/components/schemas/Alias"}
+    warm = discovery._load_document(path)
+    warm.resolve_schema_result(schema, Source(path, "/prime"), ())
+    warm.reference_work = 0
+    cold = discovery._load_document(path)
+
+    cold_result = cold.resolve_schema(schema, Source(path, "/probe"), ())
+    warm_result = warm.resolve_schema(schema, Source(path, "/probe"), ())
+
+    assert warm_result == cold_result
+    assert warm.held == cold.held
+    assert warm.reference_work == cold.reference_work == 3
+
+
 def test_duplicate_parameters_fail_with_declaration_pointer(tmp_path):
     parameter = {"name": "q", "in": "query"}
     path = write_spec(

@@ -548,6 +548,51 @@ def test_repeated_schema_reference_cache_charges_reference_work(tmp_path, monkey
     assert operation.diagnostics[0].schema_pointer.endswith("/properties/second")
 
 
+def test_cached_post_chain_keeps_siblings_reached_before_work_limit(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("vintar.regression.discovery.MAX_REFERENCE_WORK", 5)
+    request_body = {
+        "requestBody": {
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/Alias"}}
+            }
+        }
+    }
+    document = spec(
+        paths={
+            "/first": {"post": request_body},
+            "/second": {"post": request_body},
+        },
+        components={
+            "schemas": {
+                "Alias": {
+                    "$ref": "#/components/schemas/Middle",
+                    "not": {"type": "string"},
+                },
+                "Middle": {"$ref": "#/components/schemas/Name"},
+                "Name": {"type": "string"},
+            }
+        },
+    )
+
+    first, second = inventory.analyze_post_json(
+        write_spec(tmp_path, document)
+    ).operations
+
+    assert [item.reason for item in first.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED
+    ]
+    assert [item.reason for item in second.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
+        inventory.SchemaDiagnosticReason.REFERENCE_LIMIT_EXCEEDED,
+    ]
+    assert [item.schema_pointer for item in second.diagnostics] == [
+        "/components/schemas/Alias/not",
+        "/paths/~1second/post/requestBody/content/application~1json/schema",
+    ]
+
+
 def test_reference_cycle_preserves_sibling_and_cycle_diagnostics(tmp_path):
     document = spec(
         schema={"$ref": "#/components/schemas/A"},
