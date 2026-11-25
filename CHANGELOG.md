@@ -2,9 +2,9 @@
 
 ## [Unreleased]
 
-## [0.5.1] - 2026-11-25
+## [0.5.2] - 2026-11-25
 
-0.5.0 was not published; its tag points at a pre-release commit and must not be used.
+0.5.0 and 0.5.1 were not published; their tags point at a pre-release commit and must not be used.
 
 **Added**
 
@@ -150,7 +150,7 @@
 - Validate batch reports and verify exit contracts against local fixtures in GitHub Actions.
 - Check CLI output and README examples with deterministic golden tests. CI also checks formatting, architecture, strict types, and Git history for committed secrets.
 
-[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.5.1...HEAD
-[0.5.1]: https://github.com/natori-hrj/vintar/compare/v0.4.0...v0.5.1
+[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/natori-hrj/vintar/compare/v0.4.0...v0.5.2
 [0.4.0]: https://github.com/natori-hrj/vintar/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/natori-hrj/vintar/compare/v0.2.1...v0.3.0
