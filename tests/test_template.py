@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from vintar.core.injector import inject
+from vintar.core.json_body import JsonBody
 from vintar.core.request import (
     InjectionLocation,
     InjectionMode,
@@ -84,6 +85,48 @@ def test_send_template_preserves_headers_and_cookies():
         result = send_template(template, client=client)
 
         assert result.status_code == 200
+
+
+def test_json_body_has_deterministic_bytes_and_content_type():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Content-Type"] == "application/json"
+        assert request.content == b'{"a":1.0,"z":"value"}'
+        return httpx.Response(200, text="ok")
+
+    template = RequestTemplate(
+        method="POST",
+        url="http://localhost/",
+        json_body=JsonBody.from_bytes(b'{"z":"value","a":1.0e0}'),
+    )
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert send_template(template, client=client).status_code == 200
+
+
+@pytest.mark.parametrize("name", ["Content-Type", "content-type", "CONTENT-TYPE"])
+def test_json_body_rejects_case_insensitive_content_type_collision(name):
+    template = RequestTemplate(
+        method="POST",
+        url="http://localhost/",
+        headers=((name, "PRIVATE-SENTINEL"),),
+        json_body=JsonBody.from_bytes(b"{}"),
+    )
+    with pytest.raises(ValueError) as caught:
+        validate_template(template)
+    message = str(caught.value)
+    assert "Content-Type conflicts" in message
+    assert "Remove the user Content-Type header" in message
+    assert "PRIVATE-SENTINEL" not in message
+
+
+def test_raw_and_json_bodies_are_mutually_exclusive():
+    template = RequestTemplate(
+        method="POST",
+        url="http://localhost/",
+        body=b"raw",
+        json_body=JsonBody.from_bytes(b"{}"),
+    )
+    with pytest.raises(ValueError, match="either body or json_body"):
+        validate_template(template)
 
 
 def test_reject_url_with_query():

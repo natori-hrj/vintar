@@ -3,6 +3,7 @@ import re
 import httpx
 
 from vintar.core.http import send_request
+from vintar.core.json_body import JsonBody
 from vintar.core.models import HttpResult
 from vintar.core.request import RequestTemplate
 
@@ -54,6 +55,12 @@ def validate_template(template: RequestTemplate) -> None:
 
     if template.body is not None and type(template.body) is not bytes:
         raise TypeError("template.body must be bytes or None.")
+    if template.json_body is not None and type(template.json_body) is not JsonBody:
+        raise TypeError("template.json_body must be a JsonBody or None.")
+    if template.body is not None and template.json_body is not None:
+        raise ValueError(
+            "Request body is ambiguous. Use either body or json_body, not both."
+        )
 
     url = httpx.URL(template.url)
     if url.query:
@@ -72,6 +79,11 @@ def validate_template(template: RequestTemplate) -> None:
 
         if normalized == "host":
             raise ValueError("The Host header cannot be overridden.")
+
+        if normalized == "content-type" and template.json_body is not None:
+            raise ValueError(
+                "Content-Type conflicts with template.json_body. Remove the user Content-Type header; JSON bodies use application/json."
+            )
 
         if normalized in header_names:
             raise ValueError(f"Duplicate HTTP header: {name}")
@@ -105,12 +117,16 @@ def send_template(
     validate_template(template)
 
     headers = dict(template.headers)
+    body = template.body
+    if template.json_body is not None:
+        headers["Content-Type"] = "application/json"
+        body = template.json_body.to_bytes()
     cookies = dict(template.cookies)
 
     return send_request(
         method=template.method,
         url=template.url,
-        body=template.body,
+        body=body,
         headers=headers or None,
         cookies=cookies or None,
         params=list(template.params) if template.params else None,

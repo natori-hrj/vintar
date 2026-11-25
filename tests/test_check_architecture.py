@@ -61,6 +61,21 @@ def check(client: httpx.Client, other: httpx.AsyncClient):
 
 
 @pytest.mark.parametrize(
+    "path",
+    ["checks/sqli/example.py", "cli.py", "regression/runner.py", "core/executor.py"],
+)
+def test_json_body_injection_is_not_available_to_execution_paths(path):
+    source = """
+from vintar.core.request import InjectionLocation
+
+location = InjectionLocation.JSON_BODY
+"""
+    [diagnostic] = check_source(Path(path), source)
+    assert "request primitive only in PR 1" in diagnostic
+    assert "Do not construct a JSON_BODY injection point" in diagnostic
+
+
+@pytest.mark.parametrize(
     "source",
     [
         "import httpx as hx",
