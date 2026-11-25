@@ -11,6 +11,7 @@ import tarfile
 import threading
 import tomllib
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -33,7 +34,7 @@ from vintar.checks.sqli.error_analyzer import (
     ErrorObservation,
     ErrorProbeKind,
 )
-from vintar.checks.sqli.models import Observation, ProbeKind, Verdict
+from vintar.checks.sqli.models import Observation, ProbeError, ProbeKind, Verdict
 from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER, verify_boolean_sqli
 from vintar.checks.sqli.presets import get_boolean_confirmation_preset
@@ -2026,8 +2027,11 @@ def _run_six_probes_through_bridge(runner, transport):
                 transport=transport,
                 observation_sink=collector,
             )
-            responses = bridge.recorded_responses(6)
             observations = collector.ordered(6)
+            response_map = bridge.synchronized_response_map(
+                frozenset(item.sequence for item in observations)
+            )
+            responses = tuple(response_map[item.sequence] for item in observations)
             return result, bridge, responses, observations, tuple(upstream.requests)
     finally:
         upstream.shutdown()
@@ -2059,6 +2063,76 @@ def test_measurement_transport_records_one_connection_per_probe():
     assert tuple(recorded.kind for recorded in observations) == tuple(
         kind.value for kind in BOOLEAN_PROBE_ORDER
     )
+
+
+def test_delayed_final_wire_response_reaches_v10_writer_and_validator(
+    tmp_path, monkeypatch
+):
+    runner = load_runner()
+    final_recording_started = threading.Event()
+    synchronization_waiting = threading.Event()
+    release_final_recording = threading.Event()
+    original_recorder_init = runner._ResponseRecorder.__init__
+    original_record_response = runner._ResponseRecorder.record_response
+
+    def observed_recorder_init(recorder):
+        original_recorder_init(recorder)
+        original_wait = recorder.response_condition.wait
+
+        def observed_wait(timeout=None):
+            synchronization_waiting.set()
+            return original_wait(timeout)
+
+        recorder.response_condition.wait = observed_wait
+
+    def delayed_record_response(recorder, sequence, response):
+        if sequence == 5:
+            final_recording_started.set()
+            if not release_final_recording.wait(timeout=5):
+                raise RuntimeError("The final wire-response barrier was not released.")
+        return original_record_response(recorder, sequence, response)
+
+    monkeypatch.setattr(runner._ResponseRecorder, "__init__", observed_recorder_init)
+    monkeypatch.setattr(
+        runner._ResponseRecorder, "record_response", delayed_record_response
+    )
+
+    with (
+        runner.measurement_http_transport() as transport,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        future = executor.submit(_run_six_probes_through_bridge, runner, transport)
+        assert final_recording_started.wait(timeout=5)
+        assert synchronization_waiting.wait(timeout=5)
+        release_final_recording.set()
+        result, _, responses, observations, _ = future.result(timeout=5)
+
+    decision_facts = (
+        None
+        if result.decision_facts is None
+        else runner.decision_facts_report_dict(result.decision_facts)
+    )
+    attempts = runner.sanitized_attempts(
+        observations,
+        {
+            observation.sequence: response
+            for observation, response in zip(observations, responses, strict=True)
+        },
+        decision_facts=decision_facts,
+    )
+    report = v10_report_from_legacy_v4(runner)
+    record = next(
+        item
+        for item in report["records"]
+        if item["check_type"] == "sqli.boolean"
+        and item["mode"] == "six_probe"
+        and item["reason_code"] == result.reason_code
+    )
+    record["attempts"] = attempts
+    output = tmp_path / "report.json"
+    runner.write_report(output, report)
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert runner.validate_measurement_report(written) is written
 
 
 def test_keep_alive_transport_fails_closed_on_second_exchange():
@@ -2151,7 +2225,10 @@ def test_bridge_records_responses_by_acceptance_sequence_not_completion_order():
     second_thread.join(timeout=5)
     assert not first_thread.is_alive() and not second_thread.is_alive()
 
-    assert recorder.recorded_responses(2) == (first, second)
+    assert recorder.synchronized_response_map(frozenset({1, 2})) == {
+        1: first,
+        2: second,
+    }
 
 
 def test_bridge_rejects_sequence_gaps_and_duplicates():
@@ -2161,11 +2238,8 @@ def test_bridge_rejects_sequence_gaps_and_duplicates():
     duplicate_recorder = runner._ResponseRecorder()
     gap_recorder.record_response(0, response)
     gap_recorder.record_response(2, response)
-    with pytest.raises(
-        runner.MeasurementError,
-        match=r"sequence gaps.*expected \[0, 1\], observed \[0, 2\].*rerun.*completion order",
-    ):
-        gap_recorder.recorded_responses(2)
+    with pytest.raises(runner.MeasurementError, match="bounded wait expired"):
+        gap_recorder.synchronized_response_map(frozenset({1, 2}), timeout_seconds=0)
 
     duplicate_recorder.record_response(0, response)
     with pytest.raises(
@@ -2173,6 +2247,72 @@ def test_bridge_rejects_sequence_gaps_and_duplicates():
         match=r"duplicate sequence number 0.*rerun.*one probe twice",
     ):
         duplicate_recorder.record_response(0, response)
+
+
+def test_synchronized_response_map_reports_handler_failure_without_input_echo(
+    monkeypatch,
+):
+    runner = load_runner()
+    recorder = runner._ResponseRecorder()
+    synchronization_waiting = threading.Event()
+    sentinel = "SENTINEL-SECRET-7f3a"
+    original_wait = recorder.response_condition.wait
+
+    def observed_wait(timeout=None):
+        synchronization_waiting.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(recorder.response_condition, "wait", observed_wait)
+
+    def synchronize():
+        return recorder.synchronized_response_map(frozenset({1}), timeout_seconds=5)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(synchronize)
+        assert synchronization_waiting.wait(timeout=5)
+        recorder.record_failure(0, "RuntimeError", sentinel)
+        with pytest.raises(
+            runner.MeasurementError,
+            match=r"handler failed or the bounded wait expired.*Check bridge response framing.*rerun",
+        ) as caught:
+            future.result(timeout=5)
+
+    assert sentinel not in str(caught.value)
+
+
+def test_loopback_bridge_preserves_fixed_wire_wait_failure():
+    runner = load_runner()
+    target = SimpleNamespace(target_id="fixed-handler-failure", service_port=1)
+    sentinel = "SENTINEL-SECRET-7f3a"
+
+    with (
+        pytest.raises(
+            runner.MeasurementError,
+            match=r"handler failed or the bounded wait expired.*Check bridge response framing.*rerun",
+        ) as caught,
+        runner.loopback_bridge("127.0.0.1", target) as (_, bridge),
+    ):
+        bridge.recorder.record_failure(0, "RuntimeError", sentinel)
+        bridge.synchronized_response_map(frozenset({1}), timeout_seconds=0)
+
+    assert sentinel not in str(caught.value)
+
+
+def test_synchronized_response_map_has_bounded_timeout_and_rejects_extras():
+    runner = load_runner()
+    timeout_recorder = runner._ResponseRecorder()
+    with pytest.raises(runner.MeasurementError, match="bounded wait expired"):
+        timeout_recorder.synchronized_response_map(frozenset({1}), timeout_seconds=0)
+
+    extra_recorder = runner._ResponseRecorder()
+    response = runner._recorded_response(200, iter((b"response",)))
+    extra_recorder.record_response(0, response)
+    extra_recorder.record_response(1, response)
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"wire response sequences differ.*Check bridge request sequencing.*rerun",
+    ):
+        extra_recorder.synchronized_response_map(frozenset({1}))
 
 
 def test_report_target_metadata_must_match_declaration():
@@ -2840,9 +2980,17 @@ def test_v10_attempt_identity_and_wire_mutations_fail(field, value, message):
 
 def test_v10_terminal_no_response_and_not_dispatched_accounting():
     runner = load_runner()
-    for outcome, failure_kind, counted in (
-        ("no_response", "timeout", 1),
-        ("not_dispatched", "budget_unavailable", 0),
+    for outcome, failure, counted in (
+        (
+            runner.AttemptOutcome.NO_RESPONSE,
+            ProbeError.TIMEOUT,
+            1,
+        ),
+        (
+            runner.AttemptOutcome.NOT_DISPATCHED,
+            runner.OperationalCondition.BUDGET_UNAVAILABLE,
+            0,
+        ),
     ):
         report = v10_report_from_legacy_v4(runner)
         record = next(
@@ -2851,19 +2999,23 @@ def test_v10_terminal_no_response_and_not_dispatched_accounting():
             if item["check_type"] == "sqli.boolean" and item["mode"] == "six_probe"
         )
         later = record["attempts"][0]
-        record["attempts"] = [
-            {
-                "sequence": 1,
-                "stage": "boolean",
-                "probe_kind": "baseline",
-                "outcome": outcome,
-                "failure_kind": failure_kind,
-            }
-        ]
+        terminal = RecordedSqliObservation(
+            family="boolean",
+            sequence=1,
+            kind="baseline",
+            outcome=outcome,
+            failure=failure,
+        )
+        recorder = runner._ResponseRecorder()
+        response_map = recorder.synchronized_response_map(
+            frozenset(), timeout_seconds=0
+        )
         record["request_count"] = counted
         record["actual_verdict"] = "inconclusive"
         record["reason_code"] = (
-            "probe_failed" if outcome == "no_response" else "budget_unavailable"
+            "probe_failed"
+            if outcome is runner.AttemptOutcome.NO_RESPONSE
+            else "budget_unavailable"
         )
         record["classification"] = "non_decision"
         record["decision_facts"] = {
@@ -2871,8 +3023,13 @@ def test_v10_terminal_no_response_and_not_dispatched_accounting():
             "stage": "initial",
             "sequence": 1,
             "probe_kind": "baseline",
-            "condition": failure_kind,
+            "condition": failure.value,
         }
+        record["attempts"] = runner.sanitized_attempts(
+            (terminal,),
+            response_map,
+            decision_facts=record["decision_facts"],
+        )
         record["detail"] = {
             "configured": False,
             "reason_code": None,

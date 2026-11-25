@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+**Fixed**
+
+- Wait for every expected trusted bridge response before pairing wire evidence
+  with analyzer attempts in maintainer SQLi reports.
+
 **Added**
 
 - Add bounded, machine-readable Boolean `decision_facts` to new CI batch
