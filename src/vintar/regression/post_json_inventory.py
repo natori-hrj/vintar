@@ -343,7 +343,7 @@ def _resolve_auth(
             declared,
             "Invalid security declaration. Use an array of requirement objects.",
         )
-    alternatives: list[AuthAlternative] = []
+    alternatives: set[AuthAlternative] = set()
     for index, requirement_value in enumerate(value):
         requirement_source = declared.child(index)
         requirement = _mapping(requirement_value, requirement_source)
@@ -362,7 +362,7 @@ def _resolve_auth(
                     "Invalid security requirement. Use an array of scope names and try again.",
                 )
             selected.append(schemes[name])
-        alternatives.append(AuthAlternative(tuple(selected)))
+        alternatives.add(AuthAlternative(tuple(selected)))
     ordered = tuple(
         sorted(
             alternatives, key=lambda alt: tuple(scheme.name for scheme in alt.schemes)

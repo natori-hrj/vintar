@@ -49,6 +49,7 @@ from vintar.checks.sqli.models import (
 )
 from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
 from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER, TimeProbeKind
+from vintar.core.strict_json import unique_object
 
 _SCHEMA = (
     Path(__file__).resolve().parents[1]
@@ -422,16 +423,6 @@ def _read_report(path: Path) -> bytes:
         os.close(descriptor)
 
 
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    """Reject duplicate JSON member names at every object depth."""
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("Duplicate JSON member name.")
-        result[key] = value
-    return result
-
-
 def _verification_result(item: dict[str, object]) -> VerificationResult:
     verification = item["verification"]
     if not isinstance(verification, dict):
@@ -492,7 +483,7 @@ def _validate(
         raise ValueError("Report is missing.") from None
     report = json.loads(
         raw.decode("utf-8"),
-        object_pairs_hook=_unique_object,
+        object_pairs_hook=unique_object,
     )
 
     if isinstance(report, dict) and isinstance(report.get("outcomes"), list):

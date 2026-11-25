@@ -25,16 +25,27 @@ NAMESPACE = runpy.run_path(str(VALIDATOR))
 validate = NAMESPACE["_validate"]
 
 
-def valid_report(tmp_path: Path) -> dict:
+def valid_report(
+    tmp_path: Path, security: list[dict[str, list[str]]] | None = None
+) -> dict:
     spec = tmp_path / "openapi.json"
     spec.write_text(
         json.dumps(
             {
                 "openapi": "3.1.2",
-                "security": [{"key": []}],
+                "security": [{"key": []}] if security is None else security,
                 "components": {
                     "securitySchemes": {
-                        "key": {"type": "apiKey", "in": "header", "name": "X-Key"}
+                        "key": {"type": "apiKey", "in": "header", "name": "X-Key"},
+                        "oauth": {
+                            "type": "oauth2",
+                            "flows": {
+                                "clientCredentials": {
+                                    "tokenUrl": "https://example.com/token",
+                                    "scopes": {"read": "Read", "write": "Write"},
+                                }
+                            },
+                        },
                     }
                 },
                 "paths": {
@@ -138,6 +149,12 @@ def write_mutation(tmp_path: Path, report: object, name: str) -> Path:
             "pointer",
             lambda r: r["operations"][0].update(operation_pointer="/bad~pointer"),
         ),
+        (
+            "alternative_duplicate",
+            lambda r: r["operations"][1]["auth"]["alternatives"].append(
+                copy.deepcopy(r["operations"][1]["auth"]["alternatives"][0])
+            ),
+        ),
         ("public", lambda r: r["operations"][0]["auth"].update(public=False)),
         (
             "injectable",
@@ -190,3 +207,55 @@ def test_oversized_report_is_rejected_without_reading_value(tmp_path):
     path.write_bytes(b"PRIVATE-SENTINEL" + b" " * 2_097_152)
     completed = run_validator(path, "PRIVATE-SENTINEL")
     assert completed.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "security,expected,public",
+    [
+        ([{"oauth": ["read"]}, {"oauth": ["write"]}], [("oauth",)], False),
+        (
+            [{"oauth": ["read"], "key": []}, {"key": [], "oauth": ["write"]}],
+            [("key", "oauth")],
+            False,
+        ),
+        (
+            [{"oauth": ["read"]}, {}, {"key": []}, {"oauth": ["write"]}, {}],
+            [(), ("key",), ("oauth",)],
+            True,
+        ),
+    ],
+    ids=["oauth-scopes", "combined-schemes", "mixed-with-public"],
+)
+def test_security_alternatives_are_deduplicated_end_to_end(
+    tmp_path, security, expected, public
+):
+    auth = valid_report(tmp_path, security)["operations"][1]["auth"]
+    assert auth["public"] is public
+    assert [
+        tuple(scheme["name"] for scheme in alternative["schemes"])
+        for alternative in auth["alternatives"]
+    ] == expected
+
+
+@pytest.mark.parametrize(
+    "member",
+    ['"schema_version":', '"operations": 2', '"json_pointer": "/a"'],
+    ids=["top-level", "counts", "nested-field"],
+)
+def test_duplicate_json_keys_are_rejected_without_echo(tmp_path, member):
+    report = json.dumps(valid_report(tmp_path))
+    assert report.count(member) == 1
+    key = member.split(":", 1)[0]
+    path = tmp_path / "duplicate.json"
+    path.write_text(
+        report.replace(member, f'{key}: "PRIVATE-SENTINEL", {member}', 1),
+        encoding="utf-8",
+    )
+
+    completed = run_validator(path, "PRIVATE-SENTINEL")
+    assert completed.returncode == 2
+    assert completed.stderr == (
+        "Vintar: POST JSON inventory validation failed. "
+        "Duplicate JSON keys make the report ambiguous across parsers. "
+        "Regenerate the report with vintar inventory-post-json.\n"
+    )

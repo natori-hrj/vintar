@@ -11,12 +11,19 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
+from vintar.core.strict_json import DuplicateJsonKeyError, unique_object
+
 _ROOT = Path(__file__).resolve().parents[1]
 _SCHEMA = _ROOT / "schemas" / "openapi-post-json-inventory-v1.schema.json"
 _MAX_REPORT_BYTES = 2_097_152
 _ERROR_MESSAGE = (
     "Vintar: POST JSON inventory validation failed. "
     "Regenerate the report with the current Vintar version and try again."
+)
+_DUPLICATE_KEY_MESSAGE = (
+    "Vintar: POST JSON inventory validation failed. "
+    "Duplicate JSON keys make the report ambiguous across parsers. "
+    "Regenerate the report with vintar inventory-post-json."
 )
 _POINTER = re.compile(r"(?:/(?:[^~/]|~[01])*)*")
 _BLOCKING_REASONS = (
@@ -162,7 +169,9 @@ def _validate(path: Path) -> None:
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema)
     validator.check_schema(schema)
-    report = json.loads(_read_bounded(path).decode("utf-8"))
+    report = json.loads(
+        _read_bounded(path).decode("utf-8"), object_pairs_hook=unique_object
+    )
     validator.validate(report)
     if not isinstance(report, dict):
         raise TypeError("Invalid report shape.")
@@ -175,6 +184,9 @@ def main() -> int:
             raise ValueError("Invalid arguments.")
         _validate(Path(sys.argv[1]))
         return 0
+    except DuplicateJsonKeyError:
+        print(_DUPLICATE_KEY_MESSAGE, file=sys.stderr)
+        return 2
     except (OSError, UnicodeError, TypeError, ValueError, ValidationError, SchemaError):
         print(_ERROR_MESSAGE, file=sys.stderr)
         return 2
