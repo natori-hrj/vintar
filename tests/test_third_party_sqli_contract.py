@@ -29,13 +29,8 @@ from vintar.checks.sqli.confirmation_runner import (
     ConfirmationStatus,
     verify_boolean_sqli_with_confirmation,
 )
-from vintar.checks.sqli.error_analyzer import (
-    ERROR_PROBE_ORDER,
-    ErrorMatch,
-    ErrorObservation,
-    ErrorProbeKind,
-)
-from vintar.checks.sqli.models import Observation, ProbeKind, Verdict
+from vintar.checks.sqli.error_analyzer import ERROR_PROBE_ORDER
+from vintar.checks.sqli.models import Verdict
 from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER, verify_boolean_sqli
 from vintar.checks.sqli.presets import get_boolean_confirmation_preset
@@ -725,155 +720,14 @@ def legacy_v4_report() -> dict[str, object]:
     }
 
 
-def v10_report_from_legacy_v4(runner):
-    """Construct deterministic v10 attempts for the current reviewed plan."""
-    report = expected_report()
-    report["schema_version"] = 10
-    raw_bodies = {
-        "baseline": b"fixed-baseline-response-body",
-        "true": b"fixed-true-response-body",
-        "false": b"fixed-false-response-body",
-        "control": b"fixed-control-response-body",
-        "true2": b"fixed-true2-response-body",
-        "false2": b"fixed-false2-response-body",
-        "delay": b"fixed-delay-response-body",
-        "error": b"fixed-error-response-body",
-    }
-    for record in report["records"]:
-        record.pop("evidence")
-        record.pop("relations")
-        roles = runner.PROBE_ROLE_ORDERS[(record["check_type"], record["mode"])][
-            : record["request_count"]
-        ]
-        bodies = dict(raw_bodies)
-        statuses = {role: 200 for role in set(roles)}
-        reason = record["reason_code"]
-        if record["check_type"] == "sqli.boolean":
-            if reason == "boolean_candidate":
-                bodies["true"] = bodies["baseline"]
-                if record["detail"]["status"] == "matched":
-                    bodies["control"] = bodies["baseline"]
-                    bodies["true2"] = bodies["baseline"]
-                    bodies["false2"] = bodies["false"]
-            elif reason == "candidate_confirmation_mismatch":
-                bodies["true"] = bodies["baseline"]
-                bodies["control"] = bodies["baseline"]
-                bodies["true2"] = b"fixed-mismatching-confirmation-body"
-                bodies["false2"] = b"fixed-mismatching-confirmation-body"
-            elif reason == "no_boolean_difference_literal_input":
-                bodies["false"] = bodies["true"]
-            elif reason == "no_boolean_difference":
-                bodies["true"] = bodies["baseline"]
-                bodies["false"] = bodies["baseline"]
-        elif record["check_type"] == "sqli.error":
-            if reason == "dbms_error_disclosed":
-                bodies["error"] = {
-                    "sqlite_operational_syntax": (
-                        b"sqlite3.OperationalError: near token syntax error"
-                    ),
-                    "mysql_syntax_error_1064": (
-                        b"You have an error in your SQL syntax; check the manual "
-                        b"that corresponds to your MySQL server version"
-                    ),
-                }[record["detail"]["signature_id"]]
-            elif reason == "dbms_error_not_observed":
-                bodies["error"] = bodies["baseline"]
-            elif reason == "non_success_status":
-                statuses["error"] = 500
-        responses = tuple(
-            runner._recorded_response(statuses[role], iter((bodies[role],)))
-            for role in roles
-        )
-        observations = []
-        kinds = runner.OBSERVATION_KIND_ORDERS[(record["check_type"], record["mode"])][
-            : record["request_count"]
-        ]
-        for sequence, (role, kind) in enumerate(
-            zip(roles, kinds, strict=True), start=1
-        ):
-            body = bodies[role]
-            digest = hashlib.sha256(body).hexdigest()
-            status = statuses[role]
-            if record["check_type"] == "sqli.boolean" and sequence <= 6:
-                observation = Observation(
-                    ProbeKind(kind), status, len(body), 0.01, digest
-                )
-                family = "boolean"
-            elif record["check_type"] == "sqli.boolean":
-                observation = runner.ConfirmationObservation(
-                    runner.ConfirmationKind(kind), status, len(body), digest, False
-                )
-                family = "confirmation"
-            elif record["check_type"] == "sqli.time":
-                observation = runner.TimeResponseSignature(
-                    status,
-                    False,
-                    len(body),
-                    digest,
-                )
-                family = "time"
-            else:
-                matches = ()
-                if role == "error" and reason == "dbms_error_disclosed":
-                    matches = (
-                        ErrorMatch(
-                            record["detail"]["dbms"],
-                            record["detail"]["signature_id"],
-                        ),
-                    )
-                observation = ErrorObservation(
-                    ErrorProbeKind(kind),
-                    sequence,
-                    status,
-                    len(body),
-                    digest,
-                    False,
-                    matches,
-                )
-                family = "error"
-            observations.append(
-                RecordedSqliObservation(family, sequence, kind, observation)
-            )
-        decision_facts = None
-        if record["reason_code"] == "non_success_status":
-            stop = next(
-                item for item in observations if item.observation.status_code == 500
-            )
-            decision_facts = {
-                "category": "operational",
-                "stage": "error",
-                "sequence": stop.sequence,
-                "probe_kind": "error",
-                "condition": "non_success_status",
-                "status_code": 500,
-            }
-            record["decision_facts"] = decision_facts
-        record["attempts"] = runner.sanitized_attempts(
-            tuple(observations),
-            {index: response for index, response in enumerate(responses, start=1)},
-            decision_facts=decision_facts,
-        )
-        if record["check_type"] == "sqli.time":
-            positive = record["reason_code"] == "timing_pattern_matched"
-            record["time_predicates"] = {
-                "baseline_span_exceeded": False,
-                "control_span_exceeded": False,
-                "baseline_control_difference_exceeded": False,
-                "drift_exceeded": False,
-                "delay_span_exceeded": False,
-                "candidate_median_met": positive,
-                "candidate_margin_met": positive,
-                "no_delay_condition_met": not positive,
-            }
-    return report
-
-
-v9_report_from_legacy_v4 = v10_report_from_legacy_v4
+def v10_report_for_mutation_tests():
+    """Load an isolated copy of the reviewed v10 report for mutation tests."""
+    return expected_report()
 
 
 def legacy_v5_report(runner):
     """Build the superseded v5 shape that omitted Error analyzer facts."""
-    report = v9_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     report["schema_version"] = 5
     for record in report["records"]:
         if record["check_type"] == "sqli.error":
@@ -1680,9 +1534,9 @@ def test_error_classification_keeps_candidates_distinct_from_tp(
 
 def test_aggregation_separates_boolean_time_and_error_results():
     runner = load_runner()
-    records = v9_report_from_legacy_v4(runner)["records"]
+    records = v10_report_for_mutation_tests()["records"]
 
-    assert runner.counts(records) == v9_report_from_legacy_v4(runner)["counts"]
+    assert runner.counts(records) == v10_report_for_mutation_tests()["counts"]
     assert set(runner.counts(records)["overall"]) == {
         "sqli.boolean",
         "sqli.time",
@@ -1706,7 +1560,7 @@ def test_reviewed_documentation_matches_the_report_contract():
     for field in ("attempts", "response", "no_response", "not_dispatched"):
         assert f"`{field}`" in documentation
         assert f"`{field}`" in readme
-    assert "Reviewed report schema version: `9`." in documentation
+    assert "Reviewed report schema version: `10`." in documentation
 
 
 @pytest.mark.doc_drift
@@ -2121,7 +1975,7 @@ def test_delayed_final_wire_response_reaches_v10_writer_and_validator(
         },
         decision_facts=decision_facts,
     )
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         item
         for item in report["records"]
@@ -2439,7 +2293,7 @@ def test_synchronized_response_map_times_out_for_unsettled_unexpected_handler():
 
 def test_report_target_metadata_must_match_declaration():
     runner = load_runner()
-    report = v9_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     report["targets"]["dsvw"]["commit"] = "changed"
 
     with pytest.raises(
@@ -2674,7 +2528,7 @@ def test_pre_start_and_report_use_the_same_service_image_rule(
         call = call_pre_start
 
     else:
-        report = v9_report_from_legacy_v4(runner)
+        report = v10_report_for_mutation_tests()
         report["targets"]["dsvw"]["service_images"] = mapping
 
         def call_report():
@@ -2708,7 +2562,7 @@ def test_pre_start_and_report_use_the_same_service_image_rule(
 )
 def test_report_rejects_bad_app_image_ids(bad_image_id):
     runner = load_runner()
-    report = v9_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     report["targets"]["dsvw"]["image_ids"]["app"] = bad_image_id
 
     with pytest.raises(
@@ -3060,7 +2914,7 @@ def test_build_recipe_on_archive_only_target_is_rejected(monkeypatch):
 
 def test_v10_writer_shape_round_trips_through_derive_then_compare_validator():
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     assert report["schema_version"] == runner.MEASUREMENT_SCHEMA_VERSION == 10
     assert runner.validate_measurement_report(report) is report
     for record in report["records"]:
@@ -3073,12 +2927,14 @@ def test_v10_writer_shape_round_trips_through_derive_then_compare_validator():
 
 def test_v10_writer_requires_current_schema_and_round_trips(tmp_path):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     output = tmp_path / "report.json"
     runner.write_report(output, report)
     assert json.loads(output.read_text(encoding="utf-8")) == report
+    legacy = copy.deepcopy(report)
+    legacy["schema_version"] = 9
     with pytest.raises(runner.MeasurementError, match="v9 lacks per-attempt evidence"):
-        runner.write_report(tmp_path / "legacy.json", expected_report())
+        runner.write_report(tmp_path / "legacy.json", legacy)
 
 
 @pytest.mark.parametrize(
@@ -3094,7 +2950,7 @@ def test_v10_writer_requires_current_schema_and_round_trips(tmp_path):
 )
 def test_v10_attempt_identity_and_wire_mutations_fail(field, value, message):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     report["records"][0]["attempts"][0][field] = value
     with pytest.raises(runner.MeasurementError, match=message):
         runner.validate_measurement_report(report)
@@ -3131,7 +2987,7 @@ def test_v10_terminal_no_response_and_not_dispatched_accounting(eof_upstream):
     for terminal, counted in ((no_response, 1), (not_dispatched, 0)):
         outcome = terminal.outcome
         failure = terminal.failure
-        report = v10_report_from_legacy_v4(runner)
+        report = v10_report_for_mutation_tests()
         record = next(
             item
             for item in report["records"]
@@ -3173,7 +3029,7 @@ def test_v10_terminal_no_response_and_not_dispatched_accounting(eof_upstream):
 
 def test_v10_repeat_digest_relation_is_rederived():
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         item
         for item in report["records"]
@@ -3199,7 +3055,7 @@ def test_v10_repeat_digest_relation_is_rederived():
 )
 def test_v10_time_predicate_mutations_change_the_derived_result(predicate):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         item
         for item in report["records"]
@@ -3213,18 +3069,18 @@ def test_v10_time_predicate_mutations_change_the_derived_result(predicate):
 
 def test_v10_rejects_relabelled_facts_and_reason():
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(item for item in report["records"] if "decision_facts" in item)
     record["decision_facts"]["sequence"] = 1
     with pytest.raises(runner.MeasurementError, match="decision_facts contradict"):
         runner.validate_measurement_report(report)
 
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(item for item in report["records"] if "decision_facts" in item)
     record.pop("decision_facts")
     with pytest.raises(runner.MeasurementError, match="decision_facts contradict"):
         runner.validate_measurement_report(report)
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     report["records"][0]["reason_code"] = "unexpected_difference"
     with pytest.raises(runner.MeasurementError, match="verdict or reason contradicts"):
         runner.validate_measurement_report(report)
@@ -3232,7 +3088,7 @@ def test_v10_rejects_relabelled_facts_and_reason():
 
 def test_v10_boolean_response_dynamics_are_derived_from_repeat_comparison():
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         item
         for item in report["records"]
@@ -3265,7 +3121,7 @@ def test_v10_boolean_response_dynamics_are_derived_from_repeat_comparison():
 
 def test_v10_confirmation_relation_facts_are_derived_from_attempts():
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         item
         for item in report["records"]
@@ -3307,7 +3163,7 @@ def test_v10_confirmation_relation_facts_are_derived_from_attempts():
 
 def test_v10_time_dynamics_facts_are_derived_from_predicates():
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         item
         for item in report["records"]
@@ -3339,25 +3195,8 @@ def test_v10_time_dynamics_facts_are_derived_from_predicates():
     assert runner.validate_measurement_report(report) is report
 
 
-@pytest.mark.doc_drift
-def test_public_v9_rejection_and_exact_docs_bound_transition():
-    runner = load_runner()
-    reviewed = expected_report()
-    with pytest.raises(
-        runner.MeasurementError,
-        match=r"v9 lacks per-attempt evidence.*uv run --locked python.*--workspace.*--output",
-    ):
-        runner.validate_measurement_report(reviewed)
-    assert runner.check_documented_summary(reviewed)
-    mutated = copy.deepcopy(reviewed)
-    mutated["records"][0]["request_count"] += 1
-    with pytest.raises(runner.MeasurementError, match="exact hash-pinned reviewed v9"):
-        runner.check_documented_summary(mutated)
-
-
 def test_v10_report_privacy_is_recursive():
-    runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     serialized = json.dumps(report, sort_keys=True)
     prohibited = {
         "body",
@@ -3419,7 +3258,7 @@ def test_v10_public_read_and_write_require_remeasurement_of_older_reports(
 )
 def test_v10_health_requires_the_full_declared_plan(mutation, message):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     records = report["records"]
     if mutation == "missing":
         records[:] = [
@@ -3442,7 +3281,7 @@ def test_v10_health_requires_the_full_declared_plan(mutation, message):
 )
 def test_v10_recomputes_each_count_tree(scope, mutation):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     tree = report["counts"][scope]
     if scope == "by_target":
         tree = tree[next(iter(tree))]
@@ -3477,7 +3316,7 @@ def test_v10_recomputes_each_count_tree(scope, mutation):
 )
 def test_v10_rejects_invalid_record_fields_without_echoing_input(field, value, message):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         record
         for record in report["records"]
@@ -3499,7 +3338,7 @@ INVALID_ATTEMPT_OUTCOME = "invalid attempt outcome"
 )
 def test_v10_rejects_unknown_attempt_outcomes_without_echoing_input(value):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     report["records"][0]["attempts"][0]["outcome"] = value
     with pytest.raises(
         runner.MeasurementError, match=r"attempt outcome.*use response"
@@ -3512,7 +3351,7 @@ def test_v10_non_decisions_keep_the_manual_runner_exit_one(
     tmp_path, monkeypatch, capsys
 ):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     monkeypatch.setattr(runner, "measure", lambda workspace, output: report)
     monkeypatch.setattr(
         runner.sys,
@@ -3551,7 +3390,7 @@ def test_v10_non_decisions_keep_the_manual_runner_exit_one(
 )
 def test_v10_validates_boolean_response_evidence(field, value, message):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         record for record in report["records"] if record["mode"] == "six_probe"
     )
@@ -3567,7 +3406,7 @@ def test_v10_validates_boolean_response_evidence(field, value, message):
 @pytest.mark.parametrize("check_type", ["sqli.boolean", "sqli.error"])
 def test_v10_derives_results_from_analyzer_evidence_not_wire_digests(check_type):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         record
         for record in report["records"]
@@ -3581,14 +3420,23 @@ def test_v10_derives_results_from_analyzer_evidence_not_wire_digests(check_type)
 
 
 @pytest.mark.doc_drift
-def test_v10_valid_report_cannot_use_the_reviewed_v9_documentation_binding():
+def test_v10_valid_report_rejects_an_outdated_documentation_binding(tmp_path):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = expected_report()
+    current = runner.DOCS.read_text(encoding="utf-8")
+    outdated = tmp_path / "outdated.md"
+    outdated.write_text(
+        current.replace(
+            "Reviewed report schema version: `10`.",
+            "Reviewed report schema version: `9`.",
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(
         runner.MeasurementError,
         match="update the documented schema binding and fixture together",
     ):
-        runner.check_documented_summary(report)
+        runner.check_documented_summary(report, outdated)
 
 
 @pytest.mark.parametrize(
@@ -3605,7 +3453,7 @@ def test_v10_valid_report_cannot_use_the_reviewed_v9_documentation_binding():
 )
 def test_v10_error_response_evidence_requires_reviewed_fields(field, value, message):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         record
         for record in report["records"]
@@ -3628,7 +3476,7 @@ def test_v10_error_response_evidence_requires_reviewed_fields(field, value, mess
 )
 def test_v10_validates_error_detail_contract(field, value):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     record = next(
         record
         for record in report["records"]
@@ -3644,7 +3492,7 @@ def test_v10_validates_error_detail_contract(field, value):
 
 def test_v10_error_attempt_diagnostic_redacts_classifier_exception(monkeypatch):
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
 
     def fail_classification(observations):
         raise ValueError("SENTINEL-SECRET-7f3a")
@@ -3661,7 +3509,7 @@ def test_v10_error_attempt_diagnostic_redacts_classifier_exception(monkeypatch):
 
 def test_v10_renderer_does_not_depend_on_wire_digest():
     runner = load_runner()
-    report = v10_report_from_legacy_v4(runner)
+    report = v10_report_for_mutation_tests()
     expected = runner.render_summary(report)
     report["records"][0]["attempts"][0]["wire_body_sha256"] = "f" * 64
     assert runner.render_summary(report) == expected
