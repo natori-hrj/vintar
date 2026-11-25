@@ -12,6 +12,7 @@ import threading
 import tomllib
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -34,7 +35,7 @@ from vintar.checks.sqli.error_analyzer import (
     ErrorObservation,
     ErrorProbeKind,
 )
-from vintar.checks.sqli.models import Observation, ProbeError, ProbeKind, Verdict
+from vintar.checks.sqli.models import Observation, ProbeKind, Verdict
 from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER, verify_boolean_sqli
 from vintar.checks.sqli.presets import get_boolean_confirmation_preset
@@ -1976,6 +1977,36 @@ class _KeepAliveHandler(BaseHTTPRequestHandler):
         return
 
 
+def _run_boolean_probes(origin, transport, collector):
+    context = ExecutionContext(
+        scope=ScopePolicy(
+            allowed_origins=frozenset(
+                {AllowedOrigin("http", "127.0.0.1", int(origin.rsplit(":", 1)[1]))}
+            )
+        ),
+        budget=RequestBudget(6),
+        rate_limiter=RateLimiter(requests_per_second=100),
+    )
+    return verify_boolean_sqli(
+        check_id="fixed-keep-alive-six-probe",
+        template=RequestTemplate(
+            method="GET",
+            url=origin + "/lookup",
+            params=(("id", "2"),),
+        ),
+        point=InjectionPoint(
+            location=InjectionLocation.QUERY,
+            name="id",
+            mode=InjectionMode.APPEND,
+        ),
+        true_payload=" AND 1=1-- ",
+        false_payload=" AND 1=2-- ",
+        context=context,
+        transport=transport,
+        observation_sink=collector,
+    )
+
+
 def _run_six_probes_through_bridge(runner, transport):
     upstream = _KeepAliveUpstream()
     started = threading.Event()
@@ -1996,37 +2027,7 @@ def _run_six_probes_through_bridge(runner, transport):
     collector = runner.ObservationCollector()
     try:
         with runner.loopback_bridge("127.0.0.1", target) as (origin, bridge):
-            context = ExecutionContext(
-                scope=ScopePolicy(
-                    allowed_origins=frozenset(
-                        {
-                            AllowedOrigin(
-                                "http", "127.0.0.1", int(origin.rsplit(":", 1)[1])
-                            )
-                        }
-                    )
-                ),
-                budget=RequestBudget(6),
-                rate_limiter=RateLimiter(requests_per_second=100),
-            )
-            result = verify_boolean_sqli(
-                check_id="fixed-keep-alive-six-probe",
-                template=RequestTemplate(
-                    method="GET",
-                    url=origin + "/lookup",
-                    params=(("id", "2"),),
-                ),
-                point=InjectionPoint(
-                    location=InjectionLocation.QUERY,
-                    name="id",
-                    mode=InjectionMode.APPEND,
-                ),
-                true_payload=" AND 1=1-- ",
-                false_payload=" AND 1=2-- ",
-                context=context,
-                transport=transport,
-                observation_sink=collector,
-            )
+            result = _run_boolean_probes(origin, transport, collector)
             observations = collector.ordered(6)
             response_map = bridge.synchronized_response_map(
                 frozenset(item.sequence for item in observations)
@@ -2165,28 +2166,57 @@ def test_measurement_transport_factory_disables_keep_alive(monkeypatch):
     assert limits.max_keepalive_connections == 0
 
 
-def test_bridge_handler_parse_failure_preserves_redacted_cause_and_sequence():
+@pytest.fixture
+def eof_upstream():
+    def start(response):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if response:
+                    self.wfile.write(response)
+
+        with socketserver.TCPServer(("127.0.0.1", 0), Handler) as upstream:
+            upstream.timeout = 5
+            started = threading.Event()
+
+            def serve():
+                started.set()
+                upstream.handle_request()
+
+            thread = threading.Thread(target=serve)
+            thread.start()
+            try:
+                assert started.wait(timeout=5)
+                yield SimpleNamespace(
+                    target_id="fixed-eof", service_port=upstream.server_address[1]
+                )
+            finally:
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+
+    return contextmanager(start)
+
+
+def test_bridge_handler_parse_failure_preserves_redacted_cause_and_sequence(
+    eof_upstream,
+):
     runner = load_runner()
-    target = SimpleNamespace(target_id="fixed-diagnostic", service_port=1)
     sentinel = "SENTINEL-SECRET-7f3a"
-    malformed = (
-        b"HTTP/1.1 200 OK\r\nContent-Length: " + sentinel.encode() + b"\r\n\r\nbody"
-    )
+    truncated = b"HTTP/1.1 200 OK\r\nX-Test: " + sentinel.encode()
 
     with (
+        eof_upstream(truncated) as target,
         pytest.raises(
             runner.MeasurementError,
             match=r"handler failed at sequence 0 with MeasurementError.*rejected invalid HTTP framing or request sequencing.*Accepted sequences: \[0\]; completed sequences: \[\]",
         ) as caught,
-        runner.loopback_bridge("127.0.0.1", target) as (_, bridge),
+        runner.loopback_bridge("127.0.0.1", target) as (origin, bridge),
+        runner.measurement_http_transport() as transport,
     ):
-        request = object()
-        sequence = bridge.recorder.accept()
-        bridge.accepted_sequences[id(request)] = sequence
-        try:
-            runner._parse_http_response(malformed)
-        except runner.MeasurementError:
-            bridge.handle_error(request, ("127.0.0.1", 1))
+        collector = runner.ObservationCollector()
+        _run_boolean_probes(origin, transport, collector)
+        with pytest.raises(runner.MeasurementError, match="handler failed"):
+            bridge.synchronized_response_map(frozenset())
+        assert bridge.recorder.terminal_states == {0: "failed"}
 
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
@@ -3053,20 +3083,37 @@ def test_v10_attempt_identity_and_wire_mutations_fail(field, value, message):
         runner.validate_measurement_report(report)
 
 
-def test_v10_terminal_no_response_and_not_dispatched_accounting():
+def test_v10_terminal_no_response_and_not_dispatched_accounting(eof_upstream):
     runner = load_runner()
-    for outcome, failure, counted in (
-        (
-            runner.AttemptOutcome.NO_RESPONSE,
-            ProbeError.TIMEOUT,
-            1,
-        ),
-        (
-            runner.AttemptOutcome.NOT_DISPATCHED,
-            runner.OperationalCondition.BUDGET_UNAVAILABLE,
-            0,
-        ),
+    with (
+        eof_upstream(b"") as target,
+        runner.loopback_bridge("127.0.0.1", target) as (origin, bridge),
+        runner.measurement_http_transport() as transport,
     ):
+        collector = runner.ObservationCollector()
+        result = _run_boolean_probes(origin, transport, collector)
+        (no_response,) = collector.ordered(result.request_count)
+        assert no_response.outcome is runner.AttemptOutcome.NO_RESPONSE
+        response_map = bridge.synchronized_response_map(
+            frozenset(
+                item.sequence
+                for item in (no_response,)
+                if item.outcome is runner.AttemptOutcome.RESPONSE
+            )
+        )
+        assert response_map == {}
+        assert bridge.recorder.terminal_states == {0: "no_response"}
+
+    not_dispatched = RecordedSqliObservation(
+        family="boolean",
+        sequence=1,
+        kind="baseline",
+        outcome=runner.AttemptOutcome.NOT_DISPATCHED,
+        failure=runner.OperationalCondition.BUDGET_UNAVAILABLE,
+    )
+    for terminal, counted in ((no_response, 1), (not_dispatched, 0)):
+        outcome = terminal.outcome
+        failure = terminal.failure
         report = v10_report_from_legacy_v4(runner)
         record = next(
             item
@@ -3074,17 +3121,6 @@ def test_v10_terminal_no_response_and_not_dispatched_accounting():
             if item["check_type"] == "sqli.boolean" and item["mode"] == "six_probe"
         )
         later = record["attempts"][0]
-        terminal = RecordedSqliObservation(
-            family="boolean",
-            sequence=1,
-            kind="baseline",
-            outcome=outcome,
-            failure=failure,
-        )
-        recorder = runner._ResponseRecorder()
-        response_map = recorder.synchronized_response_map(
-            frozenset(), timeout_seconds=0
-        )
         record["request_count"] = counted
         record["actual_verdict"] = "inconclusive"
         record["reason_code"] = (

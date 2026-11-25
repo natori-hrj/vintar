@@ -2108,8 +2108,9 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
                     destination.sendall(content)
                 if finished:
                     break
-        recorded = _parse_http_response(bytes(response))
-        server.record_response(sequence, recorded)
+        if response:
+            recorded = _parse_http_response(bytes(response))
+            server.record_response(sequence, recorded)
 
     def finish(self) -> None:
         server = self.server
