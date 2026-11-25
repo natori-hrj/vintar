@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-11-25
+## [0.5.1] - 2026-11-25
 
-### Added
+0.5.0 was not published; its tag points at a pre-release commit and must not be used.
+
+**Added**
 
 - Add offline `vintar inventory-post-json` to inventory POST JSON body fields,
   unsupported schema constructs, and resolved authentication declarations.
@@ -18,7 +20,7 @@
   Lab to the pinned-source third-party SQLi evaluation, with reviewed
   positive and non-SQL negative records.
 
-### Changed
+**Changed**
 
 - Write maintainer SQLi measurement reports in schema v10 with target-bound
   provenance, overall and per-target aggregates, per-attempt outcomes,
@@ -44,7 +46,7 @@
   responses. Delayed-sample variance still prevents a `NOT_DETECTED` verdict
   when the candidate relation is absent.
 
-### Fixed
+**Fixed**
 
 - Honor HTTP 429 when deriving operational stop reasons and enforce response
   precedence when validating Boolean CI reports.
@@ -148,7 +150,7 @@
 - Validate batch reports and verify exit contracts against local fixtures in GitHub Actions.
 - Check CLI output and README examples with deterministic golden tests. CI also checks formatting, architecture, strict types, and Git history for committed secrets.
 
-[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/natori-hrj/vintar/compare/v0.4.0...v0.5.0
+[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/natori-hrj/vintar/compare/v0.4.0...v0.5.1
 [0.4.0]: https://github.com/natori-hrj/vintar/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/natori-hrj/vintar/compare/v0.2.1...v0.3.0
