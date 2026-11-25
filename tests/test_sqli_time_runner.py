@@ -11,8 +11,11 @@ from vintar.checks.sqli.decision_facts import (
     OperationalDecisionFacts,
     TimeOperationalCondition,
 )
-from vintar.checks.sqli.observation_sink import RecordedSqliObservation
-from vintar.checks.sqli.time_analyzer import TimeAnalysisStatus
+from vintar.checks.sqli.observation_sink import (
+    AttemptOutcome,
+    RecordedSqliObservation,
+)
+from vintar.checks.sqli.time_analyzer import TimeAnalysisStatus, TimeProbeOutcome
 from vintar.checks.sqli.time_plan import (
     TimePayloads,
     TimeProbeKind,
@@ -170,6 +173,8 @@ def test_trusted_sink_receives_time_observations_in_request_order():
         "control",
     ]
     assert all(item.family == "time" for item in recorded)
+    assert all(not hasattr(item.observation, "elapsed_seconds") for item in recorded)
+    assert all(not hasattr(item.observation, "rate_wait_seconds") for item in recorded)
 
 
 def test_controlled_delay_produces_experimental_candidate(monkeypatch):
@@ -250,10 +255,12 @@ def test_unsafe_status_stops_immediately(status, reason):
 
 
 def test_timeout_does_not_become_candidate():
+    recorded: list[RecordedSqliObservation] = []
+
     def handler(request):
         raise httpx.ReadTimeout("simulated timeout")
 
-    report, context = run_with_transport(handler)
+    report, context = run_with_transport(handler, observation_sink=recorded.append)
 
     assert report.analysis.status is TimeAnalysisStatus.INCONCLUSIVE
     assert report.analysis.reason_code == "probe_timeout"
@@ -265,6 +272,9 @@ def test_timeout_does_not_become_candidate():
     assert report.analysis.decision_facts.condition is TimeOperationalCondition.TIMEOUT
     assert report.analysis.decision_facts.sequence == 1
     assert report.analysis.decision_facts.probe_kind is TimeProbeKind.BASELINE
+    assert len(recorded) == 1
+    assert recorded[0].outcome is AttemptOutcome.NO_RESPONSE
+    assert recorded[0].failure is TimeProbeOutcome.TIMEOUT
 
 
 def test_request_failure_does_not_become_candidate():
@@ -402,10 +412,12 @@ def test_deadline_before_budget_reservation_records_no_attempt():
     clock = TickingClock()
     calls = []
 
+    recorded: list[RecordedSqliObservation] = []
     report, context = run_with_transport(
         lambda request: calls.append(request) or httpx.Response(200),
         total_seconds=0.015,
         clock=clock,
+        observation_sink=recorded.append,
     )
 
     assert report.deadline_exceeded
@@ -419,6 +431,9 @@ def test_deadline_before_budget_reservation_records_no_attempt():
     assert report.analysis.decision_facts.condition is TimeOperationalCondition.DEADLINE
     assert report.analysis.decision_facts.sequence == 1
     assert report.analysis.decision_facts.probe_kind is TimeProbeKind.BASELINE
+    assert len(recorded) == 1
+    assert recorded[0].outcome is AttemptOutcome.NOT_DISPATCHED
+    assert recorded[0].failure is TimeOperationalCondition.DEADLINE
 
 
 def test_rate_limiter_interruption_records_budget_without_dispatch():
@@ -487,14 +502,18 @@ def test_invalid_budget_rejected_before_http():
 
     context = make_context(requests=8)
 
+    recorded: list[RecordedSqliObservation] = []
     with pytest.raises(ValueError, match="budget"):
         run_with_transport(
             handler,
             context=context,
+            observation_sink=recorded.append,
         )
 
     assert context.budget.used_requests == 0
     assert not calls
+    assert len(recorded) == 1
+    assert recorded[0].outcome is AttemptOutcome.NOT_DISPATCHED
 
 
 def test_secrets_are_not_retained():

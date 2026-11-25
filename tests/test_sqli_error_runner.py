@@ -5,10 +5,20 @@ from dataclasses import replace
 import httpx
 import pytest
 
+from vintar.checks.sqli.decision_facts import (
+    DecisionStage,
+    ErrorDecisionProbeKind,
+    OperationalCondition,
+    OperationalDecisionFacts,
+)
 from vintar.checks.sqli.error_analyzer import ErrorAnalysis
 from vintar.checks.sqli.error_contract import ErrorAnalysisStatus
 from vintar.checks.sqli.error_runner import ErrorRunReport, verify_error_based_sqli
-from vintar.checks.sqli.observation_sink import RecordedSqliObservation
+from vintar.checks.sqli.models import ProbeError
+from vintar.checks.sqli.observation_sink import (
+    AttemptOutcome,
+    RecordedSqliObservation,
+)
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -78,6 +88,72 @@ def test_trusted_sink_receives_error_observations_in_request_order():
         "probe",
     ]
     assert all(item.family == "error" for item in recorded)
+    assert all(not hasattr(item.observation, "body") for item in recorded)
+    assert all(not hasattr(item.observation, "elapsed") for item in recorded)
+
+
+@pytest.mark.parametrize(
+    ("response", "reason", "condition", "status"),
+    [
+        (httpx.Response(429), "rate_limited", OperationalCondition.RATE_LIMITED, 429),
+        (
+            httpx.Response(503),
+            "non_success_status",
+            OperationalCondition.NON_SUCCESS_STATUS,
+            503,
+        ),
+    ],
+)
+def test_error_response_stop_emits_matching_facts_and_attempt(
+    response, reason, condition, status
+):
+    recorded: list[RecordedSqliObservation] = []
+
+    report = run(lambda request: response, observation_sink=recorded.append)
+
+    assert report.analysis.reason_code == reason
+    assert report.analysis.decision_facts == OperationalDecisionFacts(
+        reason_code=reason,
+        stage=DecisionStage.ERROR,
+        sequence=1,
+        probe_kind=ErrorDecisionProbeKind.BASELINE,
+        condition=condition,
+        status_code=status,
+    )
+    expected_count = 1 if reason == "rate_limited" else 4
+    assert [item.sequence for item in recorded] == list(range(1, expected_count + 1))
+    assert all(item.outcome is AttemptOutcome.RESPONSE for item in recorded)
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason", "condition"),
+    [
+        (httpx.ReadTimeout("SENTINEL"), "probe_timeout", ProbeError.TIMEOUT),
+        (httpx.ConnectError("SENTINEL"), "probe_failed", ProbeError.CONNECTION),
+    ],
+)
+def test_error_no_response_stop_emits_sanitized_attempt_and_facts(
+    failure, reason, condition
+):
+    recorded: list[RecordedSqliObservation] = []
+
+    def fail(request):
+        raise failure
+
+    report = run(fail, observation_sink=recorded.append)
+
+    assert report.analysis.reason_code == reason
+    assert report.analysis.decision_facts == OperationalDecisionFacts(
+        reason_code=reason,
+        stage=DecisionStage.ERROR,
+        sequence=1,
+        probe_kind=ErrorDecisionProbeKind.BASELINE,
+        condition=condition,
+    )
+    assert len(recorded) == 1
+    assert recorded[0].outcome is AttemptOutcome.NO_RESPONSE
+    assert recorded[0].failure is condition
+    assert "SENTINEL" not in repr(recorded[0])
 
 
 def verification_inputs() -> dict[str, object]:
@@ -144,11 +220,15 @@ def test_runner_rejects_less_than_four_unused_requests():
         rate_limiter=RateLimiter(100.0, _sleep=lambda _: None),
     )
 
+    recorded: list[RecordedSqliObservation] = []
+    inputs["observation_sink"] = recorded.append
     with pytest.raises(
         ValueError,
         match=r"four unused request slots.*fresh four-request budget",
     ):
         verify_error_based_sqli(**inputs)
+    assert len(recorded) == 1
+    assert recorded[0].outcome is AttemptOutcome.NOT_DISPATCHED
 
 
 def test_error_run_report_rejects_invalid_accounting():

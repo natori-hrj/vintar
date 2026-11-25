@@ -648,6 +648,59 @@ def test_error_schema_and_validator_derive_contract_tables():
     assert _VALIDATOR_MODULE["ERROR_RESULT_RULES"] is ERROR_RESULT_RULES
 
 
+@pytest.mark.parametrize(
+    ("reason", "condition", "status_code"),
+    [
+        ("probe_timeout", "timeout", None),
+        ("probe_failed", "connection", None),
+        ("rate_limited", "rate_limited", 429),
+        ("truncated_response", "truncated", 200),
+        ("non_success_status", "non_success_status", 503),
+    ],
+)
+def test_error_operational_facts_validate_end_to_end(
+    tmp_path, reason, condition, status_code
+):
+    report = make_error_report(reason)
+    facts = {
+        "category": "operational",
+        "stage": "error",
+        "sequence": 1,
+        "probe_kind": "baseline",
+        "condition": condition,
+    }
+    if status_code is not None:
+        facts["status_code"] = status_code
+    report["outcomes"][0]["decision_facts"] = facts
+
+    _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sequence", 2),
+        ("probe_kind", "error"),
+        ("condition", "non_success_status"),
+        ("status_code", 503),
+    ],
+)
+def test_error_operational_fact_mutations_are_rejected(tmp_path, field, value):
+    report = make_error_report("rate_limited")
+    report["outcomes"][0]["decision_facts"] = {
+        "category": "operational",
+        "stage": "error",
+        "sequence": 1,
+        "probe_kind": "baseline",
+        "condition": "rate_limited",
+        "status_code": 429,
+    }
+    report["outcomes"][0]["decision_facts"][field] = value
+
+    with pytest.raises((ValueError, ValidationError), match=r"(?i)(decision|fact)"):
+        _validate(write_report(tmp_path, report), report["exit_code"])
+
+
 def test_error_signature_schema_pairs_match_registry():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 

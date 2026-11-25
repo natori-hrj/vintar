@@ -13,11 +13,18 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import overload
 
+from vintar.checks.sqli.decision_facts import (
+    DecisionStage,
+    ErrorDecisionProbeKind,
+    OperationalCondition,
+    OperationalDecisionFacts,
+)
 from vintar.checks.sqli.error_contract import (
     ERROR_RESULT_RULES,
     ErrorAnalysisStatus,
 )
 from vintar.checks.sqli.error_signatures import ERROR_SCAN_LIMIT, ERROR_SIGNATURES
+from vintar.checks.sqli.models import ProbeError
 from vintar.core.models import HttpResult
 
 
@@ -246,6 +253,7 @@ class ErrorAnalysis:
     observations: tuple[ErrorObservation, ...] = field(repr=False)
     failures: tuple[ErrorProbeFailure, ...] = field(default=(), repr=False)
     evidence: ErrorEvidence | None = None
+    decision_facts: OperationalDecisionFacts | None = None
 
     def __post_init__(self) -> None:
         if type(self.status) is not ErrorAnalysisStatus:
@@ -301,6 +309,28 @@ class ErrorAnalysis:
             raise ValueError(
                 "Error analysis evidence disagrees with its reason. Supply evidence only for a reproducible disclosed signature."
             )
+        if self.decision_facts is not None:
+            if not isinstance(self.decision_facts, OperationalDecisionFacts):
+                raise TypeError(
+                    "Invalid Error decision facts. Use operational facts produced by "
+                    "the Error analyzer or runner."
+                )
+            if self.decision_facts.reason_code != self.reason_code:
+                raise ValueError(
+                    "Error decision facts contradict the reason. Use facts produced "
+                    "by the same Error decision."
+                )
+            fact_kind = (
+                ErrorDecisionProbeKind.BASELINE
+                if attempts[self.decision_facts.sequence - 1].kind
+                is ErrorProbeKind.BASELINE
+                else ErrorDecisionProbeKind.ERROR
+            )
+            if self.decision_facts.probe_kind is not fact_kind:
+                raise ValueError(
+                    "Error decision facts identify the wrong fixed-plan kind. Use the "
+                    "kind at the stopping sequence."
+                )
         expected: tuple[ErrorAnalysisStatus, str, ErrorEvidence | None]
         if implied_reason is not None:
             if rule.requires_complete_four:
@@ -339,6 +369,52 @@ class ErrorAnalysis:
     @property
     def request_count(self) -> int:
         return len(self.observations) + len(self.failures)
+
+
+def error_operational_decision_facts(
+    *,
+    reason_code: str,
+    sequence: int,
+    kind: ErrorProbeKind,
+    condition: ProbeError | OperationalCondition,
+    status_code: int | None = None,
+) -> OperationalDecisionFacts:
+    """Build bounded Error operational facts from one classified stop."""
+    return OperationalDecisionFacts(
+        reason_code=reason_code,
+        stage=DecisionStage.ERROR,
+        sequence=sequence,
+        probe_kind=(
+            ErrorDecisionProbeKind.BASELINE
+            if kind is ErrorProbeKind.BASELINE
+            else ErrorDecisionProbeKind.ERROR
+        ),
+        condition=condition,
+        status_code=status_code,
+    )
+
+
+def error_probe_failure_reason(condition: ProbeError) -> str:
+    """Map one sanitized runner failure through Error operational precedence."""
+    if not isinstance(condition, ProbeError):
+        raise TypeError(
+            "Invalid Error probe failure. Use the failure enum produced by the "
+            "bounded runner."
+        )
+    if condition is ProbeError.TIMEOUT:
+        return "probe_timeout"
+    if condition in {
+        ProbeError.CONNECTION,
+        ProbeError.RESPONSE_READ,
+        ProbeError.UNKNOWN,
+    }:
+        return "probe_failed"
+    if condition in {ProbeError.RATE_LIMIT, ProbeError.CANCELLED}:
+        return "probe_interrupted"
+    raise ValueError(
+        "Unsupported Error probe failure. Use a terminal failure handled by the "
+        "Error request plan."
+    )
 
 
 def match_error_signatures(body: bytes) -> tuple[ErrorMatch, ...]:
@@ -423,9 +499,38 @@ def analyze_error_responses(
         )
     )
     status, reason_code, evidence = classify_error_observations(observations)
+    decision_facts = None
+    if reason_code in {"rate_limited", "truncated_response"}:
+        stopping = next(
+            item for item in observations if operational_stop_reason(item) is not None
+        )
+        condition = (
+            OperationalCondition.RATE_LIMITED
+            if reason_code == "rate_limited"
+            else OperationalCondition.TRUNCATED
+        )
+        decision_facts = error_operational_decision_facts(
+            reason_code=reason_code,
+            sequence=stopping.sequence,
+            kind=stopping.kind,
+            condition=condition,
+            status_code=stopping.status_code,
+        )
+    elif reason_code == "non_success_status":
+        stopping = next(
+            item for item in observations if not 200 <= item.status_code < 300
+        )
+        decision_facts = error_operational_decision_facts(
+            reason_code=reason_code,
+            sequence=stopping.sequence,
+            kind=stopping.kind,
+            condition=OperationalCondition.NON_SUCCESS_STATUS,
+            status_code=stopping.status_code,
+        )
     return ErrorAnalysis(
         status=status,
         reason_code=reason_code,
         observations=observations,
         evidence=evidence,
+        decision_facts=decision_facts,
     )

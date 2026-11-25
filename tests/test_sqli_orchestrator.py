@@ -2,7 +2,10 @@ import httpx
 import pytest
 
 from vintar.checks.sqli.models import ProbeError, ProbeKind, Verdict
-from vintar.checks.sqli.observation_sink import RecordedSqliObservation
+from vintar.checks.sqli.observation_sink import (
+    AttemptOutcome,
+    RecordedSqliObservation,
+)
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
@@ -110,6 +113,8 @@ def test_trusted_sink_receives_boolean_observations_in_request_order():
     ]
     assert all(item.family == "boolean" for item in recorded)
     assert all(item.observation.status_code == 200 for item in recorded)
+    assert all(not hasattr(item.observation, "elapsed") for item in recorded)
+    assert all(not hasattr(item.observation, "body") for item in recorded)
 
 
 def test_identical_responses_are_not_detected():
@@ -132,13 +137,21 @@ def test_insufficient_budget_sends_nothing():
         calls.append(request)
         return httpx.Response(200)
 
-    result = verify(context, httpx.MockTransport(handler))
+    recorded: list[RecordedSqliObservation] = []
+    result = verify(
+        context,
+        httpx.MockTransport(handler),
+        observation_sink=recorded.append,
+    )
 
     assert result.verdict is Verdict.INCONCLUSIVE
     assert result.reason_code == "budget_unavailable"
     assert result.request_count == 0
     assert context.budget.used_requests == 0
     assert calls == []
+    assert len(recorded) == 1
+    assert recorded[0].outcome is AttemptOutcome.NOT_DISPATCHED
+    assert recorded[0].sequence == 1
 
 
 def test_scope_rejection_occurs_before_http():
@@ -155,15 +168,19 @@ def test_scope_rejection_occurs_before_http():
         params=(("id", "1"),),
     )
 
+    recorded: list[RecordedSqliObservation] = []
     with pytest.raises(ValueError, match="outside the allowed scope"):
         verify(
             context,
             httpx.MockTransport(handler),
             template=invalid,
+            observation_sink=recorded.append,
         )
 
     assert calls == []
     assert context.budget.used_requests == 0
+    assert len(recorded) == 1
+    assert recorded[0].outcome is AttemptOutcome.NOT_DISPATCHED
 
 
 def test_timeout_stops_remaining_probes():
@@ -178,7 +195,12 @@ def test_timeout_stops_remaining_probes():
 
         return httpx.Response(200, content=b"ok")
 
-    result = verify(context, httpx.MockTransport(handler))
+    recorded: list[RecordedSqliObservation] = []
+    result = verify(
+        context,
+        httpx.MockTransport(handler),
+        observation_sink=recorded.append,
+    )
 
     assert received == ["1", "true-probe"]
     assert result.verdict is Verdict.INCONCLUSIVE
@@ -189,6 +211,11 @@ def test_timeout_stops_remaining_probes():
     assert result.failures[0].kind is ProbeKind.TRUE
     assert result.failures[0].error is ProbeError.TIMEOUT
     assert context.budget.used_requests == 2
+    assert [(item.sequence, item.outcome) for item in recorded] == [
+        (1, AttemptOutcome.RESPONSE),
+        (2, AttemptOutcome.NO_RESPONSE),
+    ]
+    assert recorded[-1].failure is ProbeError.TIMEOUT
 
 
 @pytest.mark.parametrize(

@@ -132,6 +132,36 @@ class TimeObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class TimeResponseSignature:
+    """Non-timing response facts exposed to trusted attempt orchestration."""
+
+    status_code: int
+    truncated: bool
+
+    def __post_init__(self) -> None:
+        if type(self.status_code) is not int or not 100 <= self.status_code <= 599:
+            raise ValueError(
+                "Invalid Time response status. Use a completed runner response."
+            )
+        if type(self.truncated) is not bool:
+            raise TypeError(
+                "Invalid Time truncation flag. Use a completed runner response."
+            )
+
+
+def time_response_signature(observation: TimeObservation) -> TimeResponseSignature:
+    """Remove elapsed and rate-wait measurements from a completed observation."""
+    if type(observation) is not TimeObservation or (
+        observation.outcome is not TimeProbeOutcome.COMPLETED
+        or observation.status_code is None
+    ):
+        raise ValueError(
+            "Time response signatures require a completed analyzer observation."
+        )
+    return TimeResponseSignature(observation.status_code, observation.truncated)
+
+
+@dataclass(frozen=True, slots=True)
 class _CompletedObservation:
     kind: TimeProbeKind
     elapsed_seconds: float
@@ -315,6 +345,39 @@ class TimeEvidence:
             abs_tol=_COMPARISON_TOLERANCE,
         ):
             raise ValueError("Inconsistent timing evidence.")
+
+
+@dataclass(frozen=True, slots=True)
+class TimeDecisionInputs:
+    """Non-sensitive boolean predicates consumed by timing classification."""
+
+    baseline_span_exceeded: bool
+    control_span_exceeded: bool
+    baseline_control_difference_exceeded: bool
+    drift_exceeded: bool
+    delay_span_exceeded: bool
+    candidate_median_met: bool
+    candidate_margin_met: bool
+    no_delay_condition_met: bool
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not bool
+            for value in (
+                self.baseline_span_exceeded,
+                self.control_span_exceeded,
+                self.baseline_control_difference_exceeded,
+                self.drift_exceeded,
+                self.delay_span_exceeded,
+                self.candidate_median_met,
+                self.candidate_margin_met,
+                self.no_delay_condition_met,
+            )
+        ):
+            raise TypeError(
+                "Time decision inputs require booleans produced by timing evidence "
+                "comparison."
+            )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -512,6 +575,72 @@ def _delay_stable_enough_to_conclude_absence(
     return not _greater_than(evidence.delay_span, stability_limit)
 
 
+def classify_time_decision_inputs(
+    inputs: TimeDecisionInputs,
+) -> tuple[TimeAnalysisStatus, str, TimingDynamicsDecisionFacts | None]:
+    """Classify only bounded boolean predicates, without timing measurements."""
+    if type(inputs) is not TimeDecisionInputs:
+        raise TypeError(
+            "Invalid Time decision inputs. Use predicates produced by the timing "
+            "analyzer."
+        )
+    instability_causes = tuple(
+        cause
+        for cause, unstable in (
+            (
+                TimingInstabilityCause.BASELINE_SPAN,
+                inputs.baseline_span_exceeded and not inputs.drift_exceeded,
+            ),
+            (
+                TimingInstabilityCause.CONTROL_SPAN,
+                inputs.control_span_exceeded and not inputs.drift_exceeded,
+            ),
+            (
+                TimingInstabilityCause.BASELINE_CONTROL_DIFFERENCE,
+                inputs.baseline_control_difference_exceeded,
+            ),
+            (TimingInstabilityCause.DRIFT, inputs.drift_exceeded),
+            (TimingInstabilityCause.DELAY_SPAN, inputs.delay_span_exceeded),
+        )
+        if unstable
+    )
+    baseline_control_unstable = any(
+        cause is not TimingInstabilityCause.DELAY_SPAN for cause in instability_causes
+    )
+    if baseline_control_unstable:
+        return (
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "unstable_timing",
+            TimingDynamicsDecisionFacts(
+                reason_code="unstable_timing",
+                instability_causes=instability_causes,
+            ),
+        )
+    if inputs.candidate_median_met and inputs.candidate_margin_met:
+        return TimeAnalysisStatus.CANDIDATE, "timing_pattern_matched", None
+    if inputs.delay_span_exceeded:
+        return (
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "unstable_timing",
+            TimingDynamicsDecisionFacts(
+                reason_code="unstable_timing",
+                instability_causes=instability_causes,
+            ),
+        )
+    if inputs.no_delay_condition_met:
+        return TimeAnalysisStatus.NOT_CONFIRMED, "timing_pattern_not_matched", None
+    return (
+        TimeAnalysisStatus.INCONCLUSIVE,
+        "ambiguous_timing",
+        TimingDynamicsDecisionFacts(
+            reason_code="ambiguous_timing",
+            candidate_median_met=inputs.candidate_median_met,
+            candidate_margin_met=inputs.candidate_margin_met,
+            no_delay_condition_met=inputs.no_delay_condition_met,
+        ),
+    )
+
+
 def _classify_evidence(
     evidence: TimeEvidence,
     expected_delay: float,
@@ -522,83 +651,27 @@ def _classify_evidence(
     candidate_median_limit = expected_delay * 0.75
     candidate_margin_limit = expected_delay * 0.50
     no_delay_limit = expected_delay * 0.25
-    drift_unstable = _greater_than(evidence.drift, stability_limit)
-
-    instability_causes = tuple(
-        cause
-        for cause, unstable in (
-            (
-                TimingInstabilityCause.BASELINE_SPAN,
-                _greater_than(evidence.baseline_span, stability_limit)
-                and not drift_unstable,
+    return classify_time_decision_inputs(
+        TimeDecisionInputs(
+            baseline_span_exceeded=_greater_than(
+                evidence.baseline_span, stability_limit
             ),
-            (
-                TimingInstabilityCause.CONTROL_SPAN,
-                _greater_than(evidence.control_span, stability_limit)
-                and not drift_unstable,
+            control_span_exceeded=_greater_than(evidence.control_span, stability_limit),
+            baseline_control_difference_exceeded=_greater_than(
+                evidence.baseline_control_difference, stability_limit
             ),
-            (
-                TimingInstabilityCause.BASELINE_CONTROL_DIFFERENCE,
-                _greater_than(
-                    evidence.baseline_control_difference,
-                    stability_limit,
-                ),
+            drift_exceeded=_greater_than(evidence.drift, stability_limit),
+            delay_span_exceeded=not _delay_stable_enough_to_conclude_absence(
+                evidence, stability_limit
             ),
-            (
-                TimingInstabilityCause.DRIFT,
-                drift_unstable,
+            candidate_median_met=_at_least(
+                evidence.median_excess, candidate_median_limit
             ),
-            (
-                TimingInstabilityCause.DELAY_SPAN,
-                not _delay_stable_enough_to_conclude_absence(evidence, stability_limit),
+            candidate_margin_met=_at_least(
+                evidence.minimum_delay_margin, candidate_margin_limit
             ),
+            no_delay_condition_met=_at_most(evidence.median_excess, no_delay_limit),
         )
-        if unstable
-    )
-    baseline_control_unstable = any(
-        cause is not TimingInstabilityCause.DELAY_SPAN for cause in instability_causes
-    )
-    candidate_median_met = _at_least(evidence.median_excess, candidate_median_limit)
-    candidate_margin_met = _at_least(
-        evidence.minimum_delay_margin, candidate_margin_limit
-    )
-    no_delay_condition_met = _at_most(evidence.median_excess, no_delay_limit)
-
-    if baseline_control_unstable:
-        return (
-            TimeAnalysisStatus.INCONCLUSIVE,
-            "unstable_timing",
-            TimingDynamicsDecisionFacts(
-                reason_code="unstable_timing",
-                instability_causes=instability_causes,
-            ),
-        )
-
-    if candidate_median_met and candidate_margin_met:
-        return TimeAnalysisStatus.CANDIDATE, "timing_pattern_matched", None
-
-    if TimingInstabilityCause.DELAY_SPAN in instability_causes:
-        return (
-            TimeAnalysisStatus.INCONCLUSIVE,
-            "unstable_timing",
-            TimingDynamicsDecisionFacts(
-                reason_code="unstable_timing",
-                instability_causes=instability_causes,
-            ),
-        )
-
-    if no_delay_condition_met:
-        return TimeAnalysisStatus.NOT_CONFIRMED, "timing_pattern_not_matched", None
-
-    return (
-        TimeAnalysisStatus.INCONCLUSIVE,
-        "ambiguous_timing",
-        TimingDynamicsDecisionFacts(
-            reason_code="ambiguous_timing",
-            candidate_median_met=candidate_median_met,
-            candidate_margin_met=candidate_margin_met,
-            no_delay_condition_met=no_delay_condition_met,
-        ),
     )
 
 

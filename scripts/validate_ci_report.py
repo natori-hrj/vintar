@@ -23,6 +23,7 @@ from vintar.checks.sqli.decision_facts import (
     ConfirmationRelation,
     ConfirmationRelationDecisionFacts,
     DecisionStage,
+    ErrorDecisionProbeKind,
     OperationalCondition,
     OperationalDecisionFacts,
     PairLocalization,
@@ -34,6 +35,13 @@ from vintar.checks.sqli.decision_facts import (
     TimingInstabilityCause,
     UnstablePairFacts,
     select_initial_response_stop,
+)
+from vintar.checks.sqli.error_analyzer import (
+    ERROR_PROBE_ORDER,
+    ErrorObservation,
+    ErrorProbeKind,
+    error_probe_failure_reason,
+    operational_stop_reason,
 )
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
 from vintar.checks.sqli.error_signatures import ERROR_SIGNATURES
@@ -235,6 +243,7 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
                 DecisionStage.INITIAL: ProbeKind,
                 DecisionStage.CONFIRMATION: ConfirmationKind,
                 DecisionStage.TIME: TimeProbeKind,
+                DecisionStage.ERROR: ErrorDecisionProbeKind,
             }[stage](kind_value)
             condition_value = facts["condition"]
             if stage is DecisionStage.TIME:
@@ -312,6 +321,62 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
             "Decision facts contradict the final reason. Use facts produced by the "
             "same checks-layer decision."
         )
+    if item.get("check_type") == "sqli.error":
+        if not isinstance(parsed, OperationalDecisionFacts) or (
+            parsed.stage is not DecisionStage.ERROR
+        ):
+            raise ValueError(
+                "Error decision facts require Error operational facts. Use facts "
+                "emitted by the Error analyzer or runner."
+            )
+        request_count = item.get("request_count")
+        if type(request_count) is not int or parsed.sequence > request_count:
+            raise _ContradictoryDecisionFacts(
+                "Error decision facts identify an unrecorded request. Regenerate the "
+                "report with the bounded Error runner."
+            )
+        expected_kind = (
+            ErrorDecisionProbeKind.BASELINE
+            if ERROR_PROBE_ORDER[parsed.sequence - 1] is ErrorProbeKind.BASELINE
+            else ErrorDecisionProbeKind.ERROR
+        )
+        if parsed.probe_kind is not expected_kind:
+            raise _ContradictoryDecisionFacts(
+                "Error decision facts contradict the fixed request-plan kind. "
+                "Regenerate the report with the bounded Error runner."
+            )
+        if isinstance(parsed.condition, ProbeError):
+            try:
+                derived_reason = error_probe_failure_reason(parsed.condition)
+            except ValueError:
+                derived_reason = None
+        else:
+            status = parsed.status_code
+            if type(status) is not int:
+                derived_reason = None
+            else:
+                kind = ERROR_PROBE_ORDER[parsed.sequence - 1]
+                synthetic = ErrorObservation(
+                    kind=kind,
+                    sequence=parsed.sequence,
+                    status_code=status,
+                    body_size=0,
+                    body_digest="0" * 64,
+                    truncated=parsed.condition is OperationalCondition.TRUNCATED,
+                )
+                derived_reason = operational_stop_reason(synthetic)
+                if (
+                    derived_reason is None
+                    and parsed.condition is OperationalCondition.NON_SUCCESS_STATUS
+                    and not 200 <= status < 300
+                ):
+                    derived_reason = "non_success_status"
+        if derived_reason != reason:
+            raise _ContradictoryDecisionFacts(
+                "Error decision facts contradict the condition selected by shared "
+                "operational precedence. Regenerate the report with Vintar."
+            )
+        return
     if item.get("check_type") == "sqli.time" and isinstance(
         parsed, OperationalDecisionFacts
     ):

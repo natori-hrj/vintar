@@ -10,9 +10,11 @@ from vintar.checks.sqli.decision_facts import (
 )
 from vintar.checks.sqli.time_analyzer import (
     TimeAnalysisStatus,
+    TimeDecisionInputs,
     TimeObservation,
     TimeProbeOutcome,
     analyze_time_probes,
+    classify_time_decision_inputs,
 )
 from vintar.checks.sqli.time_plan import (
     TIME_PROBE_ORDER,
@@ -102,6 +104,47 @@ def make_observations(
         )
 
     return tuple(result)
+
+
+@pytest.mark.parametrize(
+    ("inputs", "status", "reason"),
+    [
+        (
+            TimeDecisionInputs(False, False, False, False, False, True, True, False),
+            TimeAnalysisStatus.CANDIDATE,
+            "timing_pattern_matched",
+        ),
+        (
+            TimeDecisionInputs(False, False, False, False, False, False, False, True),
+            TimeAnalysisStatus.NOT_CONFIRMED,
+            "timing_pattern_not_matched",
+        ),
+        (
+            TimeDecisionInputs(True, False, False, False, False, True, True, False),
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "unstable_timing",
+        ),
+        (
+            TimeDecisionInputs(False, False, False, False, False, True, False, False),
+            TimeAnalysisStatus.INCONCLUSIVE,
+            "ambiguous_timing",
+        ),
+    ],
+)
+def test_pure_time_classifier_covers_fixed_decision_precedence(inputs, status, reason):
+    actual_status, actual_reason, _ = classify_time_decision_inputs(inputs)
+
+    assert (actual_status, actual_reason) == (status, reason)
+
+
+def test_time_analyzer_delegates_to_boolean_predicates():
+    observations = make_observations()
+    analysis = analyze_time_probes(plan=make_plan(), observations=observations)
+    direct = classify_time_decision_inputs(
+        TimeDecisionInputs(False, False, False, False, False, True, True, False)
+    )
+
+    assert (analysis.status, analysis.reason_code, analysis.decision_facts) == direct
 
 
 def run_analysis(**kwargs):

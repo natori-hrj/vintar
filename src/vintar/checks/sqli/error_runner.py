@@ -4,6 +4,10 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from vintar.checks.sqli.decision_facts import (
+    OperationalCondition,
+    OperationalDecisionFacts,
+)
 from vintar.checks.sqli.error_analyzer import (
     ERROR_PROBE_ORDER,
     ErrorAnalysis,
@@ -12,14 +16,20 @@ from vintar.checks.sqli.error_analyzer import (
     ErrorProbeKind,
     analyze_error_responses,
     error_observation,
+    error_operational_decision_facts,
+    error_probe_failure_reason,
     operational_stop_reason,
     validate_error_probe_payload,
 )
 from vintar.checks.sqli.error_contract import ErrorAnalysisStatus
+from vintar.checks.sqli.models import ProbeError
 from vintar.checks.sqli.observation_sink import (
+    AttemptOutcome,
     SqliObservationSink,
+    emit_attempt_stop,
     emit_observation,
 )
+from vintar.checks.sqli.orchestrator import classify_probe_error
 from vintar.core.executor import ExecutionContext
 from vintar.core.injector import inject
 from vintar.core.models import HttpResult
@@ -69,12 +79,14 @@ def _operational_analysis(
     observations: list[ErrorObservation],
     failures: list[ErrorProbeFailure],
     reason_code: str,
+    decision_facts: OperationalDecisionFacts,
 ) -> ErrorAnalysis:
     return ErrorAnalysis(
         status=ErrorAnalysisStatus.INCONCLUSIVE,
         reason_code=reason_code,
         observations=tuple(observations),
         failures=tuple(failures),
+        decision_facts=decision_facts,
     )
 
 
@@ -104,16 +116,35 @@ def verify_error_based_sqli(
         raise TypeError(
             "Invalid error execution transport. Supply an httpx BaseTransport or omit it."
         )
-    payload = validate_error_probe_payload(error_payload)
-    probe = inject(template, point, payload)
-    if probe == template:
-        raise ValueError(
-            "Error probe matches the baseline. Check the query injection target, occurrence, mode, and explicit payload."
+    try:
+        payload = validate_error_probe_payload(error_payload)
+        probe = inject(template, point, payload)
+        if probe == template:
+            raise ValueError(
+                "Error probe matches the baseline. Check the query injection target, occurrence, mode, and explicit payload."
+            )
+        for planned in (template, probe):
+            validate_template(planned)
+            validate_scope(planned.url, context.scope)
+    except (TypeError, ValueError):
+        emit_attempt_stop(
+            observation_sink,
+            family="error",
+            sequence=1,
+            kind=ErrorProbeKind.BASELINE.value,
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.PREFLIGHT_FAILED,
         )
-    for planned in (template, probe):
-        validate_template(planned)
-        validate_scope(planned.url, context.scope)
+        raise
     if context.budget.remaining < ERROR_REQUESTS:
+        emit_attempt_stop(
+            observation_sink,
+            family="error",
+            sequence=1,
+            kind=ErrorProbeKind.BASELINE.value,
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.BUDGET_UNAVAILABLE,
+        )
         raise ValueError(
             "Error SQLi requires four unused request slots. Supply a fresh four-request budget."
         )
@@ -137,8 +168,28 @@ def verify_error_based_sqli(
             transport_attempts=transport_attempts,
         )
 
-    def finish_operational(reason_code: str) -> ErrorRunReport:
-        return finish(_operational_analysis(observations, failures, reason_code))
+    def finish_operational(
+        reason_code: str,
+        *,
+        sequence: int,
+        kind: ErrorProbeKind,
+        condition: ProbeError | OperationalCondition,
+        status_code: int | None = None,
+    ) -> ErrorRunReport:
+        return finish(
+            _operational_analysis(
+                observations,
+                failures,
+                reason_code,
+                error_operational_decision_facts(
+                    reason_code=reason_code,
+                    sequence=sequence,
+                    kind=kind,
+                    condition=condition,
+                    status_code=status_code,
+                ),
+            )
+        )
 
     for sequence, (kind, planned) in enumerate(plan, start=1):
 
@@ -153,17 +204,60 @@ def verify_error_based_sqli(
                 on_dispatch=observe_dispatch,
             )
         except RateLimitInterruptedError:
-            failure = ErrorProbeFailure(kind, sequence, "probe_interrupted")
+            failure_reason = error_probe_failure_reason(ProbeError.RATE_LIMIT)
+            failure = ErrorProbeFailure(kind, sequence, failure_reason)
             failures.append(failure)
-            return finish_operational(operational_stop_reason(failure))
+            emit_attempt_stop(
+                observation_sink,
+                family="error",
+                sequence=sequence,
+                kind=kind.value,
+                outcome=AttemptOutcome.NO_RESPONSE,
+                failure=ProbeError.RATE_LIMIT,
+            )
+            return finish_operational(
+                operational_stop_reason(failure),
+                sequence=sequence,
+                kind=kind,
+                condition=ProbeError.RATE_LIMIT,
+            )
         except httpx.TimeoutException:
-            failure = ErrorProbeFailure(kind, sequence, "probe_timeout")
+            failure_reason = error_probe_failure_reason(ProbeError.TIMEOUT)
+            failure = ErrorProbeFailure(kind, sequence, failure_reason)
             failures.append(failure)
-            return finish_operational(operational_stop_reason(failure))
-        except httpx.RequestError:
-            failure = ErrorProbeFailure(kind, sequence, "probe_failed")
+            emit_attempt_stop(
+                observation_sink,
+                family="error",
+                sequence=sequence,
+                kind=kind.value,
+                outcome=AttemptOutcome.NO_RESPONSE,
+                failure=ProbeError.TIMEOUT,
+            )
+            return finish_operational(
+                operational_stop_reason(failure),
+                sequence=sequence,
+                kind=kind,
+                condition=ProbeError.TIMEOUT,
+            )
+        except httpx.RequestError as exc:
+            condition = classify_probe_error(exc)
+            failure_reason = error_probe_failure_reason(condition)
+            failure = ErrorProbeFailure(kind, sequence, failure_reason)
             failures.append(failure)
-            return finish_operational(operational_stop_reason(failure))
+            emit_attempt_stop(
+                observation_sink,
+                family="error",
+                sequence=sequence,
+                kind=kind.value,
+                outcome=AttemptOutcome.NO_RESPONSE,
+                failure=condition,
+            )
+            return finish_operational(
+                operational_stop_reason(failure),
+                sequence=sequence,
+                kind=kind,
+                condition=condition,
+            )
 
         observation = error_observation(kind, sequence, response)
         observations.append(observation)
@@ -177,7 +271,18 @@ def verify_error_based_sqli(
         responses[kind].append(response)
         stop_reason = operational_stop_reason(observation)
         if stop_reason is not None:
-            return finish_operational(stop_reason)
+            response_condition = (
+                OperationalCondition.RATE_LIMITED
+                if stop_reason == "rate_limited"
+                else OperationalCondition.TRUNCATED
+            )
+            return finish_operational(
+                stop_reason,
+                sequence=sequence,
+                kind=kind,
+                condition=response_condition,
+                status_code=observation.status_code,
+            )
 
     analysis = analyze_error_responses(
         (

@@ -110,6 +110,26 @@ def assess_cross_phase_consistency(
     if not confirmation_eligible(initial):
         raise ValueError("Initial result is not eligible.")
 
+    return assess_cross_phase_observations(
+        initial=initial.observations,
+        confirmation=confirmation.observations,
+    )
+
+
+def assess_cross_phase_observations(
+    *,
+    initial: tuple[Observation, ...],
+    confirmation: tuple[ConfirmationObservation, ...],
+) -> CrossPhaseAssessment:
+    """Compare complete sanitized initial and confirmation observations."""
+    if type(initial) is not tuple or any(
+        type(item) is not Observation for item in initial
+    ):
+        raise TypeError("Invalid initial observations.")
+    if type(confirmation) is not tuple or any(
+        type(item) is not ConfirmationObservation for item in confirmation
+    ):
+        raise TypeError("Invalid confirmation observations.")
     mapping = (
         (ProbeKind.BASELINE, ConfirmationKind.BASELINE),
         (ProbeKind.TRUE, ConfirmationKind.TRUE_1),
@@ -119,13 +139,17 @@ def assess_cross_phase_consistency(
     mismatches: list[ProbeKind] = []
 
     for initial_kind, confirmation_kind in mapping:
-        initial_items = tuple(
-            item for item in initial.observations if item.kind is initial_kind
-        )
+        initial_items = tuple(item for item in initial if item.kind is initial_kind)
 
         confirmation_items = tuple(
-            item for item in confirmation.observations if item.kind is confirmation_kind
+            item for item in confirmation if item.kind is confirmation_kind
         )
+
+        if len(initial_items) != 2 or len(confirmation_items) != 2:
+            raise ValueError(
+                "Cross-phase comparison requires two observations for each mapped "
+                "kind. Use complete analyzer-produced observations."
+            )
 
         # Both pairs were already checked for internal stability
         # by confirmation_eligible and ConfirmationEvidence.

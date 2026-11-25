@@ -371,6 +371,12 @@ runner from the same predicates that select the reason; the report layer only
 serializes them. Constructors, JSON Schema, and the Python report validator
 reject a fact category or shape that contradicts the reason.
 
+Timing classification delegates to a pure input object containing only the
+eight threshold predicates. The trusted attempt sink exposes completed status
+and truncation or a response-less failure enum, but never elapsed values,
+rate-wait values, medians, spans, thresholds, or margins. It is available only
+to Python orchestration and cannot be configured by a case or CLI input.
+
 The CI report has no per-probe Time observation array. Its validator can bind
 an operational fact to the fixed plan and `request_count`, but cannot compare
 the reported HTTP status against a second per-probe field.

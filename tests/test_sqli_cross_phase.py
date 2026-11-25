@@ -17,6 +17,7 @@ from vintar.checks.sqli.cross_phase import (
     CrossPhaseAssessment,
     CrossPhaseStatus,
     assess_cross_phase_consistency,
+    assess_cross_phase_observations,
 )
 from vintar.checks.sqli.models import (
     BooleanEvidence,
@@ -99,6 +100,19 @@ def make_initial(
             baseline_false_similarity=0.0,
             true_false_similarity=0.0,
         ),
+    )
+
+
+def test_observation_level_cross_phase_helper_matches_public_assessor():
+    initial = make_initial()
+    confirmation = make_confirmation()
+
+    assert assess_cross_phase_observations(
+        initial=initial.observations,
+        confirmation=confirmation.observations,
+    ) == assess_cross_phase_consistency(
+        initial=initial,
+        confirmation=confirmation,
     )
 
 

@@ -1,5 +1,6 @@
 """end-to-end confirmation orchestration with MockTransport."""
 
+import hashlib
 import sqlite3
 from dataclasses import replace
 
@@ -9,7 +10,9 @@ import pytest
 from vintar.checks.sqli import confirmation_runner
 from vintar.checks.sqli.confirmation import ConfirmationKind
 from vintar.checks.sqli.confirmation_runner import (
+    ConfirmationObservation,
     ConfirmationStatus,
+    classify_confirmation_observations,
     verify_boolean_sqli_with_confirmation,
 )
 from vintar.checks.sqli.decision_facts import (
@@ -18,7 +21,10 @@ from vintar.checks.sqli.decision_facts import (
     PredicatePair,
 )
 from vintar.checks.sqli.models import Verdict
-from vintar.checks.sqli.observation_sink import RecordedSqliObservation
+from vintar.checks.sqli.observation_sink import (
+    AttemptOutcome,
+    RecordedSqliObservation,
+)
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter
@@ -115,6 +121,53 @@ def sqlite_body(category: str, *, vulnerable: bool) -> bytes:
     return "\n".join(sorted(row[0] for row in rows)).encode()
 
 
+def fixed_confirmation_observations(
+    *, true_2: bytes = b"baseline", control: bytes = b"baseline"
+):
+    bodies = {
+        ConfirmationKind.BASELINE: b"baseline",
+        ConfirmationKind.TRUE_1: b"baseline",
+        ConfirmationKind.FALSE_1: b"false",
+        ConfirmationKind.BASELINE_PRESERVING_CONTROL: control,
+        ConfirmationKind.TRUE_2: true_2,
+        ConfirmationKind.FALSE_2: b"false",
+    }
+    return tuple(
+        ConfirmationObservation(
+            kind=kind,
+            status_code=200,
+            body_size=len(bodies[kind]),
+            body_digest=hashlib.sha256(bodies[kind]).hexdigest(),
+            truncated=False,
+        )
+        for kind in confirmation_runner.CONFIRMATION_ORDER
+    )
+
+
+@pytest.mark.parametrize(
+    ("observations", "reason"),
+    [
+        (fixed_confirmation_observations(), "confirmation_pattern_matched"),
+        (
+            fixed_confirmation_observations(true_2=b"different"),
+            "confirmation_unstable",
+        ),
+        (
+            fixed_confirmation_observations(control=b"different"),
+            "candidate_confirmation_mismatch",
+        ),
+    ],
+)
+def test_pure_confirmation_classifier_covers_relation_precedence(observations, reason):
+    status, _, facts = classify_confirmation_observations(observations)
+
+    assert (
+        "confirmation_pattern_matched"
+        if status is ConfirmationStatus.CANDIDATE
+        else facts.reason_code
+    ) == reason
+
+
 def test_vulnerable_sqlite_runs_eighteen_requests():
     received = []
 
@@ -161,6 +214,25 @@ def test_vulnerable_sqlite_runs_eighteen_requests():
     assert received[15] == "Pets" + BASELINE_PRESERVING_CONTROL
 
 
+def test_public_confirmation_classifier_matches_runner_result():
+    def handler(request):
+        category = request.url.params["category"]
+        return httpx.Response(200, content=sqlite_body(category, vulnerable=True))
+
+    result, _ = run_check(handler)
+    assert result.evidence is not None
+
+    status, evidence, facts = classify_confirmation_observations(
+        result.evidence.observations
+    )
+
+    assert (status, evidence, facts) == (
+        result.status,
+        result.evidence,
+        result.decision_facts,
+    )
+
+
 def test_confirmation_uses_context_bound_echo_normalization() -> None:
     def handler(request):
         category = request.url.params["category"]
@@ -205,6 +277,8 @@ def test_trusted_sink_receives_initial_and_confirmation_observations_in_order():
     assert [item.kind for item in recorded[6:]] == [
         kind.value for kind in confirmation_runner.CONFIRMATION_ORDER
     ]
+    assert all(not hasattr(item.observation, "body") for item in recorded)
+    assert all(not hasattr(item.observation, "elapsed") for item in recorded)
 
     assert result.evidence is not None
     assert result.evidence.baseline_matches_true
@@ -415,9 +489,11 @@ def test_confirmation_stops_on_first_bad_response(
         body = b"B" if category == "Pets" + FALSE_1 else b"A"
         return httpx.Response(200, content=body)
 
+    recorded: list[RecordedSqliObservation] = []
     result, context = run_check(
         handler,
         context=context,
+        observation_sink=recorded.append,
     )
 
     assert result.initial.reason_code == "boolean_candidate"
@@ -429,6 +505,14 @@ def test_confirmation_stops_on_first_bad_response(
     assert context.budget.used_requests == 7
     assert len(received) == 7
     assert result.evidence is None
+    assert len(recorded) == 7
+    assert recorded[-1].sequence == 7
+    assert recorded[-1].outcome is (
+        AttemptOutcome.NO_RESPONSE
+        if failure in {"timeout", "disconnect"}
+        else AttemptOutcome.RESPONSE
+    )
+    assert all(item.sequence < 8 for item in recorded)
 
 
 def test_unstable_confirmation_does_not_become_candidate():
@@ -755,10 +839,15 @@ def test_all_confirmation_requests_are_preflighted_before_initial_http(
         received.append(request)
         return httpx.Response(200, content=b"unused")
 
+    recorded: list[RecordedSqliObservation] = []
     with pytest.raises(
         ValueError,
         match="Invalid or unauthorized confirmation inputs",
     ):
-        run_check(handler)
+        run_check(handler, observation_sink=recorded.append)
 
     assert received == []
+    assert len(recorded) == 1
+    assert recorded[0].outcome is AttemptOutcome.NOT_DISPATCHED
+    assert recorded[0].sequence == 1
+    assert recorded[0].kind == "baseline"
