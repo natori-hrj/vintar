@@ -2,73 +2,56 @@
 
 ## [Unreleased]
 
-**Fixed**
+## [0.5.1] - 2026-11-25
 
-- Wait for every expected trusted bridge response before pairing wire evidence
-  with analyzer attempts in maintainer SQLi reports.
+0.5.0 was not published; its tag points at a pre-release commit and must not be used.
 
 **Added**
 
-- Add an offline `inventory-post-json` command with a privacy-bounded,
-  versioned report of POST JSON body fields, unsupported schema constructs,
-  and resolved authentication declarations, plus a strict report validator.
-
-- Add bounded, machine-readable Boolean `decision_facts` to new CI batch
-  reports for operational, response-dynamics, and confirmation-relation
-  non-decisions while legacy schema-v1 reports may omit the additive field.
-- Add bounded Time SQLi `decision_facts` to new CI batch reports for
-  operational stops, timing-instability causes, and ambiguous timing
-  predicates without exposing elapsed values, thresholds, or margins.
+- Add offline `vintar inventory-post-json` to inventory POST JSON body fields,
+  unsupported schema constructs, and resolved authentication declarations.
+  The command emits a privacy-bounded, versioned report with a strict validator.
+- Add bounded, machine-readable Boolean, Time, and Error `decision_facts` to
+  CI batch reports. Legacy schema v1 reports may omit these facts.
 - Add a trusted Python-only SQLi attempt sink for completed, failed, and
-  undispatched plan positions, pure Boolean/confirmation/Time decision
-  classifiers, and bounded Error operational `decision_facts` in CI reports.
-
-- Extend the pinned-source third-party SQLi evaluation with the independent
-  MySQL 8-backed sqli-dojo-docker target, including reviewed positive and
-  non-SQL negative records for Boolean, Time, and Error checks.
-- Add the PostgreSQL 16-backed OWASP Training Lab to the pinned-source
-  third-party SQLi corpus, with reviewed GET-only positive and non-SQL negative
-  records for Boolean, Time, and Error checks.
+  undispatched plan positions, plus pure Boolean, confirmation, and Time
+  decision classifiers.
+- Add MySQL 8-backed sqli-dojo-docker and PostgreSQL 16-backed OWASP Training
+  Lab to the pinned-source third-party SQLi evaluation, with reviewed
+  positive and non-SQL negative records.
 
 **Changed**
 
-- Adopt the real maintainer-run schema-v10 third-party SQLi fixture and remove
-  the temporary documentation-only v9 acceptance path.
+- Write maintainer SQLi measurement reports in schema v10 with target-bound
+  provenance, overall and per-target aggregates, per-attempt outcomes,
+  request-ordered wire evidence, exact analyzer observations, production
+  Boolean repeat comparisons, bounded Time predicates, and re-derived
+  decision facts. Validators reject v9 and older reports. Regenerate them with:
 
-- Write manual third-party SQLi measurement reports as schema version 10 with
-  strict per-attempt outcomes, production Boolean repeat comparisons, bounded
-  Time predicates, and re-derived structured decision facts. Public validation
-  now rejects v9 and older output.
+  ```sh
+  uv run --locked python scripts/run_third_party_sqli_measurement.py --workspace /tmp/vintar-third-party-sqli --output /tmp/vintar-third-party-sqli-report.json
+  ```
 
-- Report `confirmation_unstable` when independently reviewed Boolean TRUE or FALSE
-  predicate pairs do not reproduce each other; reserve
-  `candidate_confirmation_mismatch` for stable pairs whose remaining relation
-  differs. Manual third-party measurement reports now use schema version 9 so
-  reports written under the previous v8 confirmation precedence must be
-  remeasured rather than reinterpreted. Replace the reviewed fixture with the
-  real v9 measurement and remove the temporary docs-bound v8 compatibility path.
-- Normalize only context-bound echoes of complete Boolean SQLi probe values
-  before response comparison, preserving status codes and unrelated response
-  differences while reducing reflection-only non-decisions. Manual third-party
-  measurement reports require per-probe Boolean
-  normalization status and echo counts.
-- Replace the reviewed third-party SQLi evaluation fixture with a real schema
-  version 9 measurement containing request-ordered wire and analyzer evidence,
-  including the observed Boolean echo-normalization and confirmation results.
-- Retain request-ordered wire provenance separately from exact analyzer
-  observations, truncation, and reviewed Error signature-match evidence in
-  version 7 of the manual third-party SQLi measurement report.
-- Use sqli-dojo confirmation payloads that avoid characters filtered by the fixture target.
-- Render a cross-target DBMS and technique matrix with observed non-decisions
-  from the validated report. Select documentation drift tests with `-m doc_drift`.
+- Adopt the real maintainer-run schema v10 third-party SQLi fixture and render
+  a cross-target DBMS and technique matrix from the validated report. Run
+  documentation drift checks with `pytest -m doc_drift`.
+- Report `confirmation_unstable` when repeated Boolean predicate pairs disagree
+  and `candidate_confirmation_mismatch` when stable pairs differ in their
+  confirmation relation.
+- Normalize context-bound echoes of complete Boolean probe values before
+  response comparison and record per-probe normalization status and echo counts.
+- Use sqli-dojo confirmation payloads that avoid characters filtered by the
+  target.
+- Classify Time candidates by their relation to stable baseline and control
+  responses. Delayed-sample variance still prevents a `NOT_DETECTED` verdict
+  when the candidate relation is absent.
 
-- Generalize the manual third-party SQLi evaluation harness to declaration
-  version 2 and report version 4, with target-bound provenance and both overall
-  and per-target aggregates. DSVW remains the only target in this phase.
-- Classify `sqli.time` candidates by their relation to stable Baseline and Control
-  responses. Delayed-sample variance no longer blocks a clearly separated
-  candidate, but it still prevents a `NOT_DETECTED` verdict when the candidate
-  relation is absent.
+**Fixed**
+
+- Honor HTTP 429 when deriving operational stop reasons and enforce response
+  precedence when validating Boolean CI reports.
+- Wait for every expected trusted bridge response before pairing wire evidence
+  with analyzer attempts in maintainer SQLi reports.
 
 ## [0.4.0] - 2026-11-21
 
@@ -167,6 +150,7 @@
 - Validate batch reports and verify exit contracts against local fixtures in GitHub Actions.
 - Check CLI output and README examples with deterministic golden tests. CI also checks formatting, architecture, strict types, and Git history for committed secrets.
 
-[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/natori-hrj/vintar/compare/v0.4.0...v0.5.1
 [0.4.0]: https://github.com/natori-hrj/vintar/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/natori-hrj/vintar/compare/v0.2.1...v0.3.0
