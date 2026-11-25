@@ -24,6 +24,8 @@ HTTPX_SEND_APIS = {
     )
 }
 SEND_TEMPLATE = "vintar.core.template.send_template"
+JSON_BODY_LOCATION = "vintar.core.request.InjectionLocation.JSON_BODY"
+JSON_BODY_PRIMITIVE_FILES = {Path("core/request.py"), Path("core/injector.py")}
 DISCOVERY_IMPORTS = {
     "__future__",
     "collections.abc",
@@ -169,10 +171,19 @@ def check_source(path: Path, source: str) -> list[str]:
             and SEND_TEMPLATE in qualified_names(node, imports)
         ):
             violations.add((node.lineno, SEND_TEMPLATE))
+        if path not in JSON_BODY_PRIMITIVE_FILES:
+            for name in qualified_names(node, imports):
+                if name == JSON_BODY_LOCATION:
+                    violations.add((node.lineno, name))
 
     return [
-        f"{path}:{line}: {name} bypasses scope, request budgets, and rate limits. "
-        "Use vintar.core.executor.ExecutionContext."
+        (
+            f"{path}:{line}: JSON body injection is a request primitive only in PR 1. "
+            "Do not construct a JSON_BODY injection point in checks, CLI, regression, or execution paths."
+            if name == JSON_BODY_LOCATION
+            else f"{path}:{line}: {name} bypasses scope, request budgets, and rate limits. "
+            "Use vintar.core.executor.ExecutionContext."
+        )
         for line, name in sorted(violations)
     ]
 

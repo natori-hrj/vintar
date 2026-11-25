@@ -2,6 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from vintar.core.json_body import JsonBody, JsonPointer
 from vintar.core.request import (
     InjectionLocation,
     InjectionMode,
@@ -46,6 +47,26 @@ def test_injection_mode():
     assert InjectionMode.APPEND.value == "append"
 
 
+def test_json_body_injection_point():
+    point = InjectionPoint(
+        location=InjectionLocation.JSON_BODY,
+        pointer=JsonPointer.parse("/items/0/name"),
+    )
+    assert point.name == ""
+    assert point.pointer == JsonPointer.parse("/items/0/name")
+    assert point.mode is InjectionMode.REPLACE
+
+
+def test_request_template_accepts_immutable_json_body():
+    body = JsonBody.from_bytes(b'{"name":"value"}')
+    assert (
+        RequestTemplate(
+            method="POST", url="http://localhost/", json_body=body
+        ).json_body
+        is body
+    )
+
+
 def test_request_template_is_frozen():
     template = RequestTemplate(
         method="GET",
@@ -80,3 +101,34 @@ def test_invalid_injection_point(name: str, occurrence: int):
             name=name,
             occurrence=occurrence,
         )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"location": InjectionLocation.JSON_BODY},
+        {
+            "location": InjectionLocation.JSON_BODY,
+            "name": "query-name",
+            "pointer": JsonPointer.parse("/value"),
+        },
+        {
+            "location": InjectionLocation.JSON_BODY,
+            "pointer": JsonPointer.parse("/value"),
+            "occurrence": 1,
+        },
+        {
+            "location": InjectionLocation.JSON_BODY,
+            "pointer": JsonPointer.parse("/value"),
+            "mode": InjectionMode.APPEND,
+        },
+        {
+            "location": InjectionLocation.QUERY,
+            "name": "query-name",
+            "pointer": JsonPointer.parse("/value"),
+        },
+    ],
+)
+def test_rejects_ambiguous_json_body_injection_point(kwargs):
+    with pytest.raises(ValueError):
+        InjectionPoint(**kwargs)

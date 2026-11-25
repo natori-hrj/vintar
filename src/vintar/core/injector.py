@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from vintar.core.json_body import replace_json_leaf
 from vintar.core.request import (
     InjectionLocation,
     InjectionMode,
@@ -19,8 +20,24 @@ def inject(
     The original template is never modified.
     """
 
-    if point.location != InjectionLocation.QUERY:
-        raise ValueError("Unsupported injection location.")
+    if point.location is InjectionLocation.JSON_BODY:
+        if template.json_body is None:
+            raise ValueError(
+                "JSON body injection requires a JSON body. Supply template.json_body."
+            )
+        if point.pointer is None:
+            raise ValueError(
+                "JSON body injection requires a JSON Pointer. Use JsonPointer.parse()."
+            )
+        return replace(
+            template,
+            json_body=replace_json_leaf(template.json_body, point.pointer, payload),
+        )
+
+    if point.location is not InjectionLocation.QUERY:
+        raise ValueError(
+            "Unsupported injection location. Use query or json_body injection."
+        )
 
     params = list(template.params)
     occurrence = 0
