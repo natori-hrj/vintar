@@ -528,6 +528,80 @@ def test_unresolvable_reference_object_uses_existing_fixed_message(tmp_path):
     assert str(caught.value) == STALE_INVENTORY_MESSAGE
 
 
+def test_named_entry_extensions_are_opaque_and_sibling_references_resolve(tmp_path):
+    spec, inventory, answers, answer = inputs(tmp_path)
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    path_item = document["paths"]["/items"]
+    operation = path_item["post"]
+    media = operation["requestBody"]["content"]
+    literal = {"$ref": "order-123"}
+    path_item["x-path-metadata"] = literal
+    operation["x-operation-metadata"] = literal
+    media["x-content-metadata"] = literal
+    operation["responses"] = {
+        "200": {"$ref": "#/components/responses/Ok"},
+        "x-response-metadata": literal,
+    }
+    operation["callbacks"] = {
+        "completed": {"$ref": "#/components/callbacks/Completed"},
+        "x-callback-metadata": literal,
+    }
+    document["components"] = {
+        "headers": {"Trace": {"schema": {"type": "string"}}},
+        "responses": {
+            "Ok": {
+                "description": "ok",
+                "headers": {
+                    "X-Trace": {"$ref": "#/components/headers/Trace"},
+                    "x-header-metadata": literal,
+                },
+            }
+        },
+        "callbacks": {
+            "Completed": {
+                "{$request.body#/callbackUrl}": {
+                    "post": {"responses": {"204": {"description": "done"}}}
+                }
+            }
+        },
+    }
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    candidate = refresh_inventory_and_answer(spec, inventory, answers, answer)
+
+    material = resolve_post_json_review(spec, inventory, answers)
+
+    assert material.report["candidate_id"] == candidate.candidate_id
+    mutations = (
+        lambda doc: doc["paths"]["/items"]["x-path-metadata"].update(
+            {"$ref": "order-456"}
+        ),
+        lambda doc: doc["paths"]["/items"]["post"]["x-operation-metadata"].update(
+            {"$ref": "order-456"}
+        ),
+        lambda doc: doc["paths"]["/items"]["post"]["requestBody"]["content"][
+            "x-content-metadata"
+        ].update({"$ref": "order-456"}),
+        lambda doc: doc["paths"]["/items"]["post"]["responses"][
+            "x-response-metadata"
+        ].update({"$ref": "order-456"}),
+        lambda doc: doc["components"]["responses"]["Ok"]["headers"][
+            "x-header-metadata"
+        ].update({"$ref": "order-456"}),
+        lambda doc: doc["paths"]["/items"]["post"]["callbacks"][
+            "x-callback-metadata"
+        ].update({"$ref": "order-456"}),
+    )
+    for mutate in mutations:
+        edited = json.loads(json.dumps(document))
+        mutate(edited)
+        spec.write_text(json.dumps(edited), encoding="utf-8")
+        changed = analyze_post_json(spec).operations[0].review_candidates[0]
+        assert changed.candidate_id == candidate.candidate_id
+        assert (
+            changed.operation_definition_sha256 != candidate.operation_definition_sha256
+        )
+
+
 @pytest.mark.parametrize(
     "pointer",
     [

@@ -207,9 +207,35 @@ def _definition_map(
     if not isinstance(value, dict):
         return value
     return {
-        key: _definition_child(document, child, source.child(key), trail, kind, key)
+        key: _openapi_entry(
+            document,
+            key,
+            child,
+            source.child(key),
+            trail,
+            kind,
+            named=False,
+        )
         for key, child in sorted(value.items())
     }
+
+
+def _openapi_entry(
+    document: _Discovery,
+    key: str,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+    *,
+    named: bool,
+) -> JSON:
+    """Keep extension entry values opaque in every OpenAPI named-entry map."""
+    if key.lower().startswith("x-"):
+        return value
+    if named:
+        return _definition_value(document, value, source, trail, kind)
+    return _definition_child(document, value, source, trail, kind, key)
 
 
 def _definition_list(
@@ -227,7 +253,7 @@ def _definition_list(
     ]
 
 
-def _definition_entries(
+def _openapi_entries(
     document: _Discovery,
     value: JSON,
     source: Source,
@@ -237,7 +263,29 @@ def _definition_entries(
     if not isinstance(value, dict):
         return value
     return {
-        key: _definition_value(document, child, source.child(key), trail, kind)
+        key: _openapi_entry(
+            document,
+            key,
+            child,
+            source.child(key),
+            trail,
+            kind,
+            named=True,
+        )
+        for key, child in sorted(value.items())
+    }
+
+
+def _schema_entries(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+) -> JSON:
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _definition_value(document, child, source.child(key), trail, "schema")
         for key, child in sorted(value.items())
     }
 
@@ -282,7 +330,7 @@ def _schema_child(
     trail: tuple[Source, ...],
     key: str,
 ) -> JSON:
-    if key.startswith("x-") or key in {
+    if key in {
         "example",
         "examples",
         "default",
@@ -297,7 +345,7 @@ def _schema_child(
         "$defs",
         "definitions",
     }:
-        return _definition_entries(document, value, source, trail, "schema")
+        return _schema_entries(document, value, source, trail)
     if key in {"allOf", "anyOf", "oneOf", "prefixItems"}:
         return _definition_list(document, value, source, trail, "schema")
     if key in {
@@ -324,8 +372,6 @@ def _definition_child(
     kind: str,
     key: str,
 ) -> JSON:
-    if key.startswith("x-"):
-        return value
     if kind == "schema":
         return _schema_child(document, value, source, trail, key)
     if kind in {"operation", "path_item"}:
@@ -337,9 +383,9 @@ def _definition_child(
         if key == "requestBody":
             return _definition_value(document, value, source, trail, "request_body")
         if key == "responses":
-            return _definition_entries(document, value, source, trail, "response")
+            return _openapi_entries(document, value, source, trail, "response")
         if key == "callbacks":
-            return _definition_entries(document, value, source, trail, "callback")
+            return _openapi_entries(document, value, source, trail, "callback")
         return value
     if kind == "path_item":
         if key.lower() in {
@@ -358,37 +404,37 @@ def _definition_child(
         if key == "schema":
             return _definition_value(document, value, source, trail, "schema")
         if key == "content":
-            return _definition_entries(document, value, source, trail, "media")
+            return _openapi_entries(document, value, source, trail, "media")
         if key == "examples":
-            return _definition_entries(document, value, source, trail, "example")
+            return _openapi_entries(document, value, source, trail, "example")
         if key == "example":
             return value
         return value
     if kind == "request_body":
         if key == "content":
-            return _definition_entries(document, value, source, trail, "media")
+            return _openapi_entries(document, value, source, trail, "media")
         return value
     if kind == "media":
         if key == "schema":
             return _definition_value(document, value, source, trail, "schema")
         if key == "examples":
-            return _definition_entries(document, value, source, trail, "example")
+            return _openapi_entries(document, value, source, trail, "example")
         if key == "example":
             return value
         if key == "encoding":
-            return _definition_entries(document, value, source, trail, "encoding")
+            return _openapi_entries(document, value, source, trail, "encoding")
         return value
     if kind == "encoding":
         if key == "headers":
-            return _definition_entries(document, value, source, trail, "header")
+            return _openapi_entries(document, value, source, trail, "header")
         return value
     if kind == "response":
         if key == "headers":
-            return _definition_entries(document, value, source, trail, "header")
+            return _openapi_entries(document, value, source, trail, "header")
         if key == "content":
-            return _definition_entries(document, value, source, trail, "media")
+            return _openapi_entries(document, value, source, trail, "media")
         if key == "links":
-            return _definition_entries(document, value, source, trail, "link")
+            return _openapi_entries(document, value, source, trail, "link")
         return value
     if kind == "callback":
         return _definition_value(document, value, source, trail, "path_item")
@@ -431,6 +477,17 @@ def _operation_definition_sha256(
             "parameter",
         ),
         "path_servers": path_item.get("servers", []),
+        "path_extensions": _openapi_entries(
+            document,
+            {
+                key: child
+                for key, child in path_item.items()
+                if key.lower().startswith("x-")
+            },
+            path_source,
+            trail,
+            "path_item",
+        ),
     }
     encoded = json.dumps(
         definition,

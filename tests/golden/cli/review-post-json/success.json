@@ -22,7 +22,7 @@
     "operation": {
       "approved": true,
       "method": "POST",
-      "operation_definition_sha256": "3f6be9ed047ae0987fec8ab4ca6b96423b4f58014fb50b64401494ab09a1d731",
+      "operation_definition_sha256": "268e7c17172e2d18d999782168cfd032a4b5d4eca1ad0c62c9fa5f7bb399059e",
       "operation_pointer": "/paths/~1items/post",
       "path": "/items",
       "request_body_pointer": "/paths/~1items/post/requestBody/content/application~1json"
