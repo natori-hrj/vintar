@@ -526,7 +526,7 @@ def test_reference_depth_limit_stops_before_reading_the_next_target(tmp_path):
     assert operation.diagnostics[0].schema_pointer.endswith("/schema")
 
 
-def test_repeated_schema_reference_uses_analysis_cache(tmp_path, monkeypatch):
+def test_repeated_schema_reference_cache_charges_reference_work(tmp_path, monkeypatch):
     monkeypatch.setattr("vintar.regression.discovery.MAX_REFERENCE_WORK", 1)
     document = spec(
         schema={
@@ -541,11 +541,11 @@ def test_repeated_schema_reference_uses_analysis_cache(tmp_path, monkeypatch):
 
     [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
 
-    assert operation.diagnostics == ()
-    assert {item.json_pointer_pattern for item in operation.review_candidates} == {
-        "/first",
-        "/second",
-    }
+    assert operation.review_candidates == ()
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_LIMIT_EXCEEDED
+    ]
+    assert operation.diagnostics[0].schema_pointer.endswith("/properties/second")
 
 
 def test_reference_cycle_preserves_sibling_and_cycle_diagnostics(tmp_path):

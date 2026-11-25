@@ -96,8 +96,10 @@ class SchemaResolution:
 class _CachedSchemaResolution:
     schema: JSON
     definition: Source
+    sites: tuple[Source, ...]
     targets: tuple[Source, ...]
     siblings: tuple[ReferenceSibling, ...]
+    reference_work_cost: int
 
 
 @dataclass(frozen=True)
@@ -515,6 +517,7 @@ class _Discovery:
         siblings: list[ReferenceSibling] = []
         get_siblings: list[ReferenceSibling] = []
         cache_reference: str | None = None
+        cache_sites: list[Source] = []
         cache_targets: list[Source] = []
         cache_sibling_start = 0
         try:
@@ -532,19 +535,29 @@ class _Discovery:
                     cache_sibling_start = len(siblings)
                 cached = self.schema_resolutions.get(reference)
                 if cached is not None:
-                    for target in cached.targets:
-                        if len(trail) >= MAX_REFERENCE_DEPTH:
+                    for index, (cached_site, target) in enumerate(
+                        zip(cached.sites, cached.targets, strict=True)
+                    ):
+                        step_site = site if index == 0 else cached_site
+                        self.reference_work += 1
+                        if (
+                            self.reference_work > MAX_REFERENCE_WORK
+                            or len(trail) >= MAX_REFERENCE_DEPTH
+                        ):
                             raise ReferenceLimitError(
-                                site,
+                                step_site,
                                 "Reference work limit exceeded. Simplify or split the spec.",
                             )
                         if target == source or target in trail:
                             raise DiscoveryError(
-                                site,
+                                step_site,
                                 "Reference cycle detected. Break the recursive reference chain.",
                             )
                         trail = (*trail, target)
                         source = target
+                    if len(cached.targets) != cached.reference_work_cost:
+                        raise AssertionError("Invalid cached reference-work cost.")
+                    cache_sites.extend((site, *cached.sites[1:]))
                     cache_targets.extend(cached.targets)
                     siblings.extend(cached.siblings)
                     get_siblings.extend(node_siblings)
@@ -554,8 +567,10 @@ class _Discovery:
                             _CachedSchemaResolution(
                                 cached.schema,
                                 cached.definition,
+                                tuple(cache_sites),
                                 tuple(cache_targets),
                                 tuple(siblings[cache_sibling_start:]),
+                                len(cache_targets),
                             )
                         )
                     value = cached.schema
@@ -579,6 +594,7 @@ class _Discovery:
                 get_siblings.extend(node_siblings)
                 trail = (*trail, target)
                 source = target
+                cache_sites.append(site)
                 cache_targets.append(target)
         except DiscoveryError as exc:
             exc.schema_siblings = tuple(siblings)
@@ -591,8 +607,10 @@ class _Discovery:
             self.schema_resolutions[cache_reference] = _CachedSchemaResolution(
                 value,
                 source,
+                tuple(cache_sites),
                 tuple(cache_targets),
                 tuple(siblings[cache_sibling_start:]),
+                len(cache_targets),
             )
         if isinstance(value, bool):
             if self.version.startswith("3.0."):

@@ -301,6 +301,61 @@ def test_get_shared_schema_chain_matches_pre_pr_golden(tmp_path, version, revers
     ]
 
 
+def shared_reference_work_spec(operation_count, chain_length):
+    schemas = {
+        f"Node{index}": (
+            {"type": "string"}
+            if index == chain_length - 1
+            else {"$ref": f"#/components/schemas/Node{index + 1}"}
+        )
+        for index in range(chain_length)
+    }
+    paths = {
+        f"/op{index:03d}": {
+            "get": {
+                "parameters": [
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "schema": {"$ref": "#/components/schemas/Node0"},
+                    }
+                ]
+            }
+        }
+        for index in range(operation_count)
+    }
+    return paths, {"schemas": schemas}
+
+
+def test_get_cached_reference_work_limit_matches_pre_pr_golden(tmp_path):
+    paths, schemas = shared_reference_work_spec(200, 22)
+    path = write_spec(tmp_path, paths=paths, components=schemas)
+
+    with pytest.raises(DiscoveryError) as caught:
+        load_inventory(path)
+
+    assert caught.value.reason == (
+        "Reference work limit exceeded. Simplify or split the spec."
+    )
+    assert caught.value.source == Source(path, "/components/schemas/Node3/$ref")
+
+
+def test_get_warm_cache_charges_the_same_work_as_cold_resolution(tmp_path, monkeypatch):
+    monkeypatch.setattr(discovery, "MAX_REFERENCE_WORK", 1)
+    paths, schemas = shared_reference_work_spec(2, 1)
+    path = write_spec(tmp_path, paths=paths, components=schemas)
+
+    with pytest.raises(DiscoveryError) as caught:
+        load_inventory(path)
+
+    assert caught.value.reason == (
+        "Reference work limit exceeded. Simplify or split the spec."
+    )
+    assert caught.value.source == Source(
+        path, "/paths/~1op001/get/parameters/0/schema/$ref"
+    )
+
+
 def test_duplicate_parameters_fail_with_declaration_pointer(tmp_path):
     parameter = {"name": "q", "in": "query"}
     path = write_spec(
