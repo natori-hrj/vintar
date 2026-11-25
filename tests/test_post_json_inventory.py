@@ -69,13 +69,12 @@ def test_simple_nested_and_array_object_fields_are_inventory_only(tmp_path):
     assert operation.case_generation == "unsupported"
     assert operation.blocking_reasons == tuple(inventory.BlockingReason)
     assert [
-        (field.json_pointer, field.type_name, field.required)
-        for field in operation.fields
+        (field.json_pointer, field.types, field.required) for field in operation.fields
     ] == [
-        ("/children", "array", True),
-        ("/children/*", "object", False),
-        ("/children/*/x~1y", "integer", False),
-        ("/name", "string", True),
+        ("/children", ("array",), True),
+        ("/children/*", ("object",), False),
+        ("/children/*/x~1y", ("integer",), False),
+        ("/name", ("string",), True),
     ]
     assert all(not field.injectable for field in operation.fields)
     assert operation.diagnostics == ()
@@ -102,11 +101,107 @@ def test_scalar_root_uses_empty_pointer_and_body_required(
     [operation] = report.operations
     [field] = operation.fields
     assert field.json_pointer == ""
-    assert field.type_name == schema_type
+    assert field.types == (schema_type,)
     assert field.required is (required is True)
     assert field.schema_definition_pointer == "/components/schemas/Scalar"
     assert report.counts.fields == report.counts.unsupported_inputs == 1
     assert operation.diagnostics == ()
+
+
+@pytest.mark.parametrize(
+    "types", [["string", "null"], ["integer", "null"], ["string", "integer"]]
+)
+def test_scalar_root_union_uses_empty_pointer(tmp_path, types):
+    document = spec(schema={"type": types})
+    report = inventory.analyze_post_json(write_spec(tmp_path, document))
+    [operation] = report.operations
+    [field] = operation.fields
+    assert (field.json_pointer, field.types, field.required) == (
+        "",
+        tuple(sorted(types)),
+        True,
+    )
+    assert report.counts.fields == report.counts.unsupported_inputs == 1
+    [serialized] = inventory.report_data(report)["operations"][0]["fields"]
+    assert serialized["types"] == sorted(types)
+    assert "type_name" not in serialized
+
+
+def test_nested_schema_types_are_normalized_for_properties_and_items(tmp_path):
+    document = spec(
+        schema={
+            "properties": {
+                "name": {"type": ["string", "null"]},
+                "tags": {
+                    "type": ["string", "array"],
+                    "items": {"type": ["string", "null"]},
+                },
+                "untyped": {},
+            }
+        }
+    )
+    report = inventory.analyze_post_json(write_spec(tmp_path, document))
+    assert [
+        (field.json_pointer, field.types) for field in report.operations[0].fields
+    ] == [
+        ("/name", ("null", "string")),
+        ("/tags", ("array", "string")),
+        ("/tags/*", ("null", "string")),
+        ("/untyped", ()),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        (
+            {"type": ["object", "null"], "properties": {"x": {"type": "integer"}}},
+            [("", ("null", "object")), ("/x", ("integer",))],
+        ),
+        (
+            {"type": ["array", "null"], "items": {"type": "boolean"}},
+            [("", ("array", "null")), ("/*", ("boolean",))],
+        ),
+    ],
+)
+def test_mixed_structural_root_keeps_types_and_traverses(tmp_path, schema, expected):
+    report = inventory.analyze_post_json(write_spec(tmp_path, spec(schema=schema)))
+    assert [
+        (field.json_pointer, field.types) for field in report.operations[0].fields
+    ] == expected
+
+
+@pytest.mark.parametrize(
+    "bad_type",
+    [
+        [],
+        ["string", "string"],
+        ["string", "private-sentinel"],
+        ["string", 1],
+        "private-sentinel",
+        None,
+    ],
+)
+def test_invalid_schema_types_are_fatal_without_echo(tmp_path, bad_type):
+    document = spec(schema={"properties": {"x": {"type": bad_type}}})
+    with pytest.raises(DiscoveryError) as caught:
+        inventory.analyze_post_json(write_spec(tmp_path, document))
+
+    assert caught.value.source.pointer.endswith("/properties/x/type")
+    assert caught.value.reason == (
+        "Invalid schema type. Use a known JSON Schema type name or a non-empty array of distinct known type names."
+    )
+    assert "private-sentinel" not in str(caught.value)
+
+
+def test_schema_type_array_order_does_not_affect_serialization(tmp_path):
+    def serialized(types):
+        document = spec(schema={"type": types})
+        return inventory.serialize_report(
+            inventory.analyze_post_json(write_spec(tmp_path, document))
+        )
+
+    assert serialized(["null", "string"]) == serialized(["string", "null"])
 
 
 def test_scalar_array_and_local_leaf_ref_preserve_schema_pointers(tmp_path):
@@ -289,7 +384,7 @@ def test_equivalent_json_media_select_exact_then_original_key_order(
         report = inventory.analyze_post_json(write_spec(tmp_path, document))
         [operation] = report.operations
         [field] = operation.fields
-        assert field.type_name == ("boolean" if include_exact else "integer")
+        assert field.types == (("boolean",) if include_exact else ("integer",))
         assert operation.request_body_pointer.endswith(
             "/application~1json" if include_exact else "/Application~1JSON"
         )

@@ -74,7 +74,7 @@ class BodyField:
     json_pointer: str
     schema_pointer: str
     schema_definition_pointer: str
-    type_name: str | None
+    types: tuple[str, ...]
     required: bool
     injectable: bool = False
     reasons: tuple[BlockingReason, ...] = (
@@ -171,9 +171,27 @@ def _reference_diagnostic(
     return SchemaDiagnostic(reason, declared.pointer)
 
 
-def _schema_type(node: JSONMap) -> str | None:
-    value = node.get("type")
-    return value if isinstance(value, str) else None
+_SCALAR_SCHEMA_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
+_SCHEMA_TYPES = _SCALAR_SCHEMA_TYPES | {"object", "array"}
+
+
+def _schema_types(node: JSONMap, source: Source) -> tuple[str, ...]:
+    if "type" not in node:
+        return ()
+    value = node["type"]
+    values = [value] if isinstance(value, str) else value
+    if isinstance(values, list) and values:
+        names: set[str] = set()
+        for name in values:
+            if not isinstance(name, str) or name not in _SCHEMA_TYPES or name in names:
+                break
+            names.add(name)
+        else:
+            return tuple(sorted(names))
+    raise DiscoveryError(
+        source.child("type"),
+        "Invalid schema type. Use a known JSON Schema type name or a non-empty array of distinct known type names.",
+    )
 
 
 def _join_pointer(parent: str, token: str) -> str:
@@ -226,21 +244,17 @@ def _walk_schema(
             )
 
     fields: list[BodyField] = []
-    type_name = _schema_type(node)
-    scalar_root = not json_pointer and type_name in {
-        "string",
-        "integer",
-        "number",
-        "boolean",
-        "null",
-    }
-    if json_pointer or scalar_root:
+    types = _schema_types(node, definition)
+    scalar_root = (
+        not json_pointer and bool(types) and _SCALAR_SCHEMA_TYPES.issuperset(types)
+    )
+    if json_pointer or scalar_root or len(types) > 1:
         fields.append(
             BodyField(
                 json_pointer,
                 declared.pointer,
                 definition.pointer,
-                type_name,
+                types,
                 required,
             )
         )
