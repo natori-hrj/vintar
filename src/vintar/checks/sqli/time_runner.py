@@ -8,6 +8,7 @@ The deadline is cooperative: no new dispatch is permitted after
 expiry, but active synchronous I/O cannot be forcibly interrupted.
 """
 
+import hashlib
 import math
 import sys
 import time
@@ -362,7 +363,11 @@ def verify_time_based_sqli(
                         family="time",
                         sequence=sequence,
                         kind=step.kind.value,
-                        observation=time_response_signature(observation),
+                        observation=time_response_signature(
+                            observation,
+                            body_size=response.size,
+                            body_digest=hashlib.sha256(response.body).hexdigest(),
+                        ),
                     )
                 except (TypeError, ValueError, OverflowError):
                     raise RuntimeError(
