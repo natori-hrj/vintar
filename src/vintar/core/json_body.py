@@ -3,7 +3,7 @@
 import json
 import math
 from dataclasses import dataclass
-from typing import cast
+from typing import Never, cast
 
 from vintar.core.strict_json import (
     DuplicateJsonKeyError,
@@ -239,3 +239,58 @@ def replace_json_leaf(
     if type(replacement) is int:
         serialize_json_integer(replacement)
     return JsonBody._from_value(_replace(body._value, pointer.tokens, replacement))
+
+
+def _value_at(body: JsonBody, pointer: JsonPointer) -> _JsonValue:
+    if type(body) is not JsonBody:
+        raise TypeError("JSON body must be a JsonBody. Parse strict JSON first.")
+    if type(pointer) is not JsonPointer:
+        raise TypeError(
+            "JSON pointer must be a JsonPointer. Parse RFC 6901 syntax first."
+        )
+    value = body._value
+    for token in pointer.tokens:
+        if isinstance(value, _JsonObject):
+            for key, child in value.members:
+                if key == token:
+                    value = child
+                    break
+            else:
+                raise ValueError(
+                    "JSON Pointer object member does not exist. Use a pointer to an existing leaf."
+                )
+        elif isinstance(value, _JsonArray):
+            value = value.values[_array_index(token, len(value.values))]
+        else:
+            _raise_pointer_value_error(
+                "JSON Pointer traverses through a leaf. Use a pointer to an existing leaf."
+            )
+    return value
+
+
+def json_leaf_at(body: JsonBody, pointer: JsonPointer) -> JsonLeaf:
+    """Return one existing leaf selected by a concrete RFC 6901 pointer."""
+    value = _value_at(body, pointer)
+    if isinstance(value, (_JsonArray, _JsonObject)):
+        _raise_pointer_value_error(
+            "JSON Pointer resolves to a container. Use a pointer to an existing leaf."
+        )
+    return value
+
+
+def json_object_at(body: JsonBody, pointer: JsonPointer) -> None:
+    """Require a concrete pointer to resolve to an existing JSON object."""
+    if not isinstance(_value_at(body, pointer), _JsonObject):
+        _raise_pointer_value_error("JSON Pointer does not resolve to an object.")
+
+
+def json_array_at(body: JsonBody, pointer: JsonPointer) -> None:
+    """Require a concrete pointer to resolve to an existing JSON array."""
+    if not isinstance(_value_at(body, pointer), _JsonArray):
+        _raise_pointer_value_error(
+            "JSON Pointer does not resolve to an array. Use a pointer to an existing array."
+        )
+
+
+def _raise_pointer_value_error(message: str) -> Never:
+    raise ValueError(message)

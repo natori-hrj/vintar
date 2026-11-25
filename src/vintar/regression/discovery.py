@@ -62,6 +62,8 @@ class DiscoveryError(ValueError):
     def __init__(self, source: Source, reason: str) -> None:
         self.source = source
         self.reason = reason
+        self.schema_siblings: tuple[ReferenceSibling, ...] = ()
+        self.get_schema_siblings: tuple[ReferenceSibling, ...] = ()
         super().__init__(f"{source.file}#{source.pointer}: {reason}")
 
 
@@ -74,6 +76,30 @@ class HeldItem:
     source: Source
     reason: str
     definition: Source | None = None
+
+
+@dataclass(frozen=True)
+class ReferenceSibling:
+    source: Source
+    keyword: str
+
+
+@dataclass(frozen=True)
+class SchemaResolution:
+    schema: JSONMap | bool
+    definition: Source
+    trail: tuple[Source, ...]
+    siblings: tuple[ReferenceSibling, ...]
+
+
+@dataclass(frozen=True)
+class _CachedSchemaResolution:
+    schema: JSON
+    definition: Source
+    sites: tuple[Source, ...]
+    targets: tuple[Source, ...]
+    sibling_steps: tuple[tuple[ReferenceSibling, ...], ...]
+    reference_work_cost: int
 
 
 @dataclass(frozen=True)
@@ -411,6 +437,7 @@ class _Discovery:
     reference_work: int = 0
     inventory_work: int = 0
     pointers: dict[str, tuple[Source, JSON]] = field(default_factory=dict)
+    schema_resolutions: dict[str, _CachedSchemaResolution] = field(default_factory=dict)
 
     def count(self, source: Source, entries: int = 1) -> None:
         self.inventory_work += entries
@@ -456,25 +483,164 @@ class _Discovery:
     def resolve_schema(
         self, value: JSON, source: Source, trail: tuple[Source, ...]
     ) -> tuple[JSONMap | bool, Source, tuple[Source, ...]]:
-        value, definition, trail = self._resolve(value, source, trail)
-        if isinstance(value, bool):
-            if self.version.startswith("3.0."):
-                raise DiscoveryError(
-                    definition,
-                    "OpenAPI 3.0 does not support boolean schemas. Use a schema object.",
-                )
+        try:
+            result = self.resolve_schema_result(value, source, trail)
+        except DiscoveryError as exc:
+            self._hold_reference_siblings(exc.get_schema_siblings)
+            raise
+        self._hold_reference_siblings(result.siblings)
+        if isinstance(result.schema, bool):
             self.held.append(
                 HeldItem(
                     source,
                     "Boolean schema is unsupported for compatibility. Review this input separately or use a schema object.",
-                    definition,
+                    result.definition,
                 )
             )
-            return value, definition, trail
-        return _mapping(value, definition), definition, trail
+        return result.schema, result.definition, result.trail
+
+    def _hold_reference_siblings(self, siblings: tuple[ReferenceSibling, ...]) -> None:
+        for sibling in siblings:
+            if sibling.keyword in {"summary", "description"}:
+                continue
+            self.count(sibling.source)
+            self.held.append(
+                HeldItem(
+                    sibling.source,
+                    "Reference sibling is unsupported. Move it into the referenced declaration.",
+                )
+            )
+
+    def resolve_schema_result(
+        self, value: JSON, source: Source, trail: tuple[Source, ...]
+    ) -> SchemaResolution:
+        siblings: list[ReferenceSibling] = []
+        get_siblings: list[ReferenceSibling] = []
+        cache_reference: str | None = None
+        cache_sites: list[Source] = []
+        cache_targets: list[Source] = []
+        cache_sibling_steps: list[tuple[ReferenceSibling, ...]] = []
+        try:
+            while isinstance(value, dict) and "$ref" in value:
+                node = value
+                site = source.child("$ref")
+                node_siblings = tuple(
+                    ReferenceSibling(source.child(key), key)
+                    for key in sorted(node.keys() - {"$ref"})
+                )
+                reference = _string(node["$ref"], site)
+                if cache_reference is None:
+                    cache_reference = reference
+                    cache_sibling_steps.append(())
+                else:
+                    cache_sibling_steps.append(node_siblings)
+                cached = self.schema_resolutions.get(reference)
+                if cached is not None:
+                    for index, (cached_site, target) in enumerate(
+                        zip(cached.sites, cached.targets, strict=True)
+                    ):
+                        step_site = site if index == 0 else cached_site
+                        step_siblings = (
+                            node_siblings if index == 0 else cached.sibling_steps[index]
+                        )
+                        siblings.extend(step_siblings)
+                        self.reference_work += 1
+                        if (
+                            self.reference_work > MAX_REFERENCE_WORK
+                            or len(trail) >= MAX_REFERENCE_DEPTH
+                        ):
+                            raise ReferenceLimitError(
+                                step_site,
+                                "Reference work limit exceeded. Simplify or split the spec.",
+                            )
+                        if target == source or target in trail:
+                            raise DiscoveryError(
+                                step_site,
+                                "Reference cycle detected. Break the recursive reference chain.",
+                            )
+                        get_siblings.extend(step_siblings)
+                        trail = (*trail, target)
+                        source = target
+                    if not (
+                        len(cached.targets)
+                        == len(cached.sites)
+                        == len(cached.sibling_steps)
+                        == cached.reference_work_cost
+                    ):
+                        raise AssertionError("Invalid cached reference-work cost.")
+                    cache_sites.extend((site, *cached.sites[1:]))
+                    cache_targets.extend(cached.targets)
+                    if cache_reference != reference:
+                        cache_sibling_steps.extend(cached.sibling_steps[1:])
+                        self.schema_resolutions[cache_reference] = (
+                            _CachedSchemaResolution(
+                                cached.schema,
+                                cached.definition,
+                                tuple(cache_sites),
+                                tuple(cache_targets),
+                                tuple(cache_sibling_steps),
+                                len(cache_targets),
+                            )
+                        )
+                    value = cached.schema
+                    source = cached.definition
+                    break
+                siblings.extend(node_siblings)
+                self.reference_work += 1
+                if (
+                    self.reference_work > MAX_REFERENCE_WORK
+                    or len(trail) >= MAX_REFERENCE_DEPTH
+                ):
+                    raise ReferenceLimitError(
+                        site,
+                        "Reference work limit exceeded. Simplify or split the spec.",
+                    )
+                target, value = self._pointer(reference, site)
+                if target == source or target in trail:
+                    raise DiscoveryError(
+                        site,
+                        "Reference cycle detected. Break the recursive reference chain.",
+                    )
+                get_siblings.extend(node_siblings)
+                trail = (*trail, target)
+                source = target
+                cache_sites.append(site)
+                cache_targets.append(target)
+        except DiscoveryError as exc:
+            exc.schema_siblings = tuple(siblings)
+            exc.get_schema_siblings = tuple(get_siblings)
+            raise
+        if (
+            cache_reference is not None
+            and cache_reference not in self.schema_resolutions
+        ):
+            self.schema_resolutions[cache_reference] = _CachedSchemaResolution(
+                value,
+                source,
+                tuple(cache_sites),
+                tuple(cache_targets),
+                tuple(cache_sibling_steps),
+                len(cache_targets),
+            )
+        if isinstance(value, bool):
+            if self.version.startswith("3.0."):
+                error = DiscoveryError(
+                    source,
+                    "OpenAPI 3.0 does not support boolean schemas. Use a schema object.",
+                )
+                error.schema_siblings = tuple(siblings)
+                error.get_schema_siblings = tuple(get_siblings)
+                raise error
+            schema: JSONMap | bool = value
+        else:
+            schema = _mapping(value, source)
+        return SchemaResolution(schema, source, trail, tuple(siblings))
 
     def _resolve(
-        self, value: JSON, source: Source, trail: tuple[Source, ...]
+        self,
+        value: JSON,
+        source: Source,
+        trail: tuple[Source, ...],
     ) -> tuple[JSON, Source, tuple[Source, ...]]:
         while isinstance(value, dict) and "$ref" in value:
             node = value

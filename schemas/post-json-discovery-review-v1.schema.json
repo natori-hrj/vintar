@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/natori-hrj/vintar/blob/main/schemas/post-json-discovery-review-v1.schema.json",
+  "title": "Vintar POST JSON Discovery Review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report_type", "candidate_id", "operation", "field", "baseline", "side_effect", "environment"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "report_type": {"const": "post_json_discovery_review"},
+    "candidate_id": {"type": "string", "pattern": "^post-json-candidate-[0-9a-f]{32}$"},
+    "operation": {"$ref": "#/$defs/operation"},
+    "field": {"$ref": "#/$defs/field"},
+    "baseline": {"$ref": "#/$defs/baseline"},
+    "side_effect": {"$ref": "#/$defs/side_effect"},
+    "environment": {"$ref": "#/$defs/environment"}
+  },
+  "$defs": {
+    "pointer": {"type": "string", "pattern": "^(?:/(?:[^~/]|~[01])*)*$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "operation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["approved", "method", "path", "operation_pointer", "request_body_pointer", "operation_definition_sha256"],
+      "properties": {
+        "approved": {"const": true}, "method": {"const": "POST"}, "path": {"type": "string", "pattern": "^/"},
+        "operation_pointer": {"$ref": "#/$defs/pointer"}, "request_body_pointer": {"$ref": "#/$defs/pointer"},
+        "operation_definition_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "field": {
+      "type": "object", "additionalProperties": false,
+      "required": ["json_pointer_pattern", "concrete_json_pointer", "schema_pointer", "schema_definition_pointer", "types"],
+      "properties": {
+        "literal_star_positions": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
+        "json_pointer_pattern": {"$ref": "#/$defs/pointer"}, "concrete_json_pointer": {"$ref": "#/$defs/pointer"},
+        "schema_pointer": {"$ref": "#/$defs/pointer"}, "schema_definition_pointer": {"$ref": "#/$defs/pointer"},
+        "types": {"const": ["string"]}
+      }
+    },
+    "source": {"oneOf": [{"const": "reviewer"}, {"type": "object", "additionalProperties": false, "required": ["file", "pointer"], "properties": {"file": {"type": "string", "minLength": 1, "maxLength": 255}, "pointer": {"$ref": "#/$defs/pointer"}}}]},
+    "baseline": {"type": "object", "additionalProperties": false, "required": ["source", "body_sha256"], "properties": {"source": {"$ref": "#/$defs/source"}, "body_sha256": {"$ref": "#/$defs/digest"}}},
+    "side_effect": {"type": "object", "additionalProperties": false, "required": ["class", "confirmed"], "properties": {"class": {"const": "no_side_effect"}, "confirmed": {"const": true}}},
+    "environment": {"type": "object", "additionalProperties": false, "required": ["class", "confirmed"], "properties": {"class": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}, "confirmed": {"const": true}}}
+  }
+}

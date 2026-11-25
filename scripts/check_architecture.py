@@ -30,6 +30,7 @@ DISCOVERY_IMPORTS = {
     "__future__",
     "collections.abc",
     "dataclasses",
+    "enum",
     "hashlib",
     "json",
     "math",
@@ -38,6 +39,7 @@ DISCOVERY_IMPORTS = {
     "re",
     "stat",
     "tomllib",
+    "typing",
     "urllib.parse",
     "yaml",
     "yaml.events",
@@ -61,11 +63,19 @@ def discovery_diagnostics(path, tree):
             Path("discover_cli.py"),
             Path("review_draft_cli.py"),
             Path("materialize_case_cli.py"),
+            Path("post_json_inventory_cli.py"),
+            Path("post_json_review_cli.py"),
         }
         else DISCOVERY_IMPORTS
     )
     if path == Path("review_draft_cli.py"):
         allowed = allowed | {"vintar.regression.discovery_review"}
+    if path == Path("post_json_inventory_cli.py"):
+        allowed = DISCOVER_CLI_IMPORTS | {"vintar.regression.post_json_inventory"}
+    if path == Path("post_json_review_cli.py"):
+        allowed = DISCOVER_CLI_IMPORTS | {
+            "vintar.regression.post_json_review",
+        }
     if path == Path("materialize_case_cli.py"):
         allowed = DISCOVER_CLI_IMPORTS | {
             "vintar.regression.case_materialization",
@@ -75,6 +85,16 @@ def discovery_diagnostics(path, tree):
         allowed = DISCOVERY_IMPORTS | {
             "vintar.regression.discovery",
             "vintar.regression.discovery_drafts",
+        }
+    if path == Path("regression/post_json_inventory.py"):
+        allowed = DISCOVERY_IMPORTS | {"vintar.regression.discovery"}
+    if path == Path("regression/post_json_review.py"):
+        allowed = DISCOVERY_IMPORTS | {
+            "vintar.core.json_body",
+            "vintar.core.strict_json",
+            "vintar.regression.discovery",
+            "vintar.regression.discovery_drafts",
+            "vintar.regression.post_json_inventory",
         }
     if path == Path("regression/discovery_drafts.py"):
         allowed = DISCOVERY_IMPORTS | {
@@ -139,9 +159,13 @@ def check_source(path: Path, source: str) -> list[str]:
         Path("discover_cli.py"),
         Path("review_draft_cli.py"),
         Path("materialize_case_cli.py"),
+        Path("post_json_inventory_cli.py"),
+        Path("post_json_review_cli.py"),
         Path("checks/sqli/presets.py"),
         Path("regression/case_materialization.py"),
         Path("regression/discovery_review.py"),
+        Path("regression/post_json_inventory.py"),
+        Path("regression/post_json_review.py"),
         Path("regression/discovery.py"),
         Path("regression/discovery_drafts.py"),
     } or path.parts[:2] == (

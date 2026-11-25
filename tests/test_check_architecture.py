@@ -124,3 +124,30 @@ def test_review_draft_imports_stay_offline(path):
     for module in ("httpx", "vintar.regression.runner", "vintar.regression.cases"):
         [diagnostic] = check_source(Path(path), f"import {module}")
         assert "Discovery must remain offline" in diagnostic
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "post_json_inventory_cli.py",
+        "post_json_review_cli.py",
+        "regression/post_json_inventory.py",
+        "regression/post_json_review.py",
+    ],
+)
+def test_post_json_discovery_and_review_stay_offline(path):
+    for module in (
+        "httpx",
+        "vintar.core.executor",
+        "vintar.regression.runner",
+        "vintar.regression.cases",
+    ):
+        [diagnostic] = check_source(Path(path), f"import {module}")
+        assert "Discovery must remain offline" in diagnostic
+
+
+def test_post_json_review_can_reuse_json_body_primitives():
+    assert not check_source(
+        Path("regression/post_json_review.py"),
+        "from vintar.core.json_body import JsonBody, JsonPointer",
+    )

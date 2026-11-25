@@ -15,7 +15,11 @@ from vintar.core.strict_json import DuplicateJsonKeyError, unique_object
 from vintar.regression.post_json_inventory import MAX_REPORT_BYTES
 
 _ROOT = Path(__file__).resolve().parents[1]
-_SCHEMA = _ROOT / "schemas" / "openapi-post-json-inventory-v1.schema.json"
+_SCHEMAS = {
+    version: _ROOT / "schemas" / f"openapi-post-json-inventory-v{version}.schema.json"
+    for version in (1, 2)
+}
+_SCHEMA = _SCHEMAS[1]
 _ERROR_MESSAGE = (
     "Vintar: POST JSON inventory validation failed. "
     "Regenerate the report with the current Vintar version and try again."
@@ -128,6 +132,14 @@ def _semantic_validate(report: dict[str, object]) -> None:
                 )
             ):
                 raise ValueError("Invalid field pointer.")
+            tokens = field["json_pointer"].split("/")[1:]
+            if any(
+                type(index) is not int
+                or not 0 <= index < len(tokens)
+                or tokens[index] != "*"
+                for index in field.get("literal_star_positions", [])
+            ):
+                raise ValueError("Invalid literal star position.")
             types = field["types"]
             if types != sorted(types) or len(types) != len(set(types)):
                 raise ValueError("Field types are unordered or duplicated.")
@@ -161,6 +173,24 @@ def _semantic_validate(report: dict[str, object]) -> None:
                 raise ValueError("Invalid diagnostic pointer.")
         diagnostic_count += len(diagnostics)
 
+        candidates = operation.get("review_candidates", [])
+        candidate_ids = [candidate["candidate_id"] for candidate in candidates]
+        if candidate_ids != sorted(candidate_ids) or len(candidate_ids) != len(
+            set(candidate_ids)
+        ):
+            raise ValueError("Review candidates are unordered or duplicated.")
+        if report["schema_version"] == 2:
+            expected_candidates = (
+                0
+                if diagnostics
+                else sum(tuple(field["types"]) == ("string",) for field in fields)
+            )
+            if len(candidates) != expected_candidates:
+                raise ValueError("Review candidate coverage is inconsistent.")
+        for candidate in candidates:
+            if candidate["approval"] != "unapproved" or diagnostics:
+                raise ValueError("Review candidate contradicts its operation field.")
+
     expected = {
         "operations": len(operations),
         "case_generatable": 0,
@@ -174,20 +204,22 @@ def _semantic_validate(report: dict[str, object]) -> None:
 
 
 def _validate(path: Path) -> None:
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    raw = _read_bounded(path)
+    report = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+    if not isinstance(report, dict) or type(report.get("schema_version")) is not int:
+        raise TypeError("Invalid report shape.")
+    schema_path = _SCHEMAS.get(report["schema_version"])
+    if schema_path is None:
+        raise ValueError("Unsupported report version.")
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema)
     validator.check_schema(schema)
-    report = json.loads(
-        _read_bounded(path).decode("utf-8"), object_pairs_hook=unique_object
-    )
     try:
         validator.validate(report)
     except ValidationError as exc:
         if tuple(exc.absolute_schema_path)[-2:] == ("injectable", "const"):
             raise InjectableFieldError(_INJECTABLE_MESSAGE) from exc
         raise
-    if not isinstance(report, dict):
-        raise TypeError("Invalid report shape.")
     _semantic_validate(report)
 
 

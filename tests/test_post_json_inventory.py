@@ -151,6 +151,122 @@ def test_nested_schema_types_are_normalized_for_properties_and_items(tmp_path):
     ]
 
 
+def test_only_exact_string_fields_become_unapproved_review_candidates(tmp_path):
+    document = spec(
+        schema={
+            "type": "object",
+            "properties": {
+                "exact": {"type": "string"},
+                "nullable": {"type": ["string", "null"]},
+                "integer": {"type": "integer"},
+            },
+        }
+    )
+
+    operation = inventory.analyze_post_json(write_spec(tmp_path, document)).operations[
+        0
+    ]
+
+    [candidate] = operation.review_candidates
+    assert candidate.approval == "unapproved"
+    assert candidate.json_pointer_pattern == "/exact"
+    assert candidate.types == ("string",)
+    assert all(not field.injectable for field in operation.fields)
+
+    document["paths"]["/items"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]["properties"]["choice"] = {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+    diagnosed = inventory.analyze_post_json(write_spec(tmp_path, document)).operations[
+        0
+    ]
+    assert diagnosed.review_candidates == ()
+    assert diagnosed.diagnostics[0].reason == "one_of_unsupported"
+
+
+def test_operation_digest_resolves_reference_objects_only_at_allowed_positions(
+    tmp_path,
+):
+    document = {
+        "openapi": "3.1.2",
+        "paths": {
+            "/items": {
+                "parameters": [{"$ref": "#/components/parameters/Tenant"}],
+                "servers": [{"url": "https://isolated.invalid"}],
+                "post": {
+                    "requestBody": {"$ref": "#/components/requestBodies/Body"},
+                    "responses": {"200": {"$ref": "#/components/responses/Created"}},
+                    "callbacks": {
+                        "completed": {"$ref": "#/components/callbacks/Completed"}
+                    },
+                    "x-literal": {"$ref": "not-a-reference"},
+                },
+            }
+        },
+        "components": {
+            "schemas": {
+                "Body": {
+                    "type": "object",
+                    "properties": {"name": {"$ref": "#/components/schemas/Name"}},
+                },
+                "Name": {"type": "string"},
+                "Reply": {"allOf": [{"$ref": "#/components/schemas/Body"}]},
+            },
+            "parameters": {
+                "Tenant": {
+                    "name": "tenant",
+                    "in": "header",
+                    "schema": {"$ref": "#/components/schemas/Name"},
+                }
+            },
+            "requestBodies": {
+                "Body": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/Body"},
+                            "examples": {
+                                "body": {"$ref": "#/components/examples/Body"}
+                            },
+                        }
+                    }
+                }
+            },
+            "examples": {"Body": {"value": {"name": "example"}}},
+            "headers": {"Trace": {"schema": {"$ref": "#/components/schemas/Name"}}},
+            "links": {"Created": {"operationId": "readItem"}},
+            "responses": {
+                "Created": {
+                    "description": "created",
+                    "headers": {"X-Trace": {"$ref": "#/components/headers/Trace"}},
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/Reply"}
+                        }
+                    },
+                    "links": {"created": {"$ref": "#/components/links/Created"}},
+                }
+            },
+            "callbacks": {
+                "Completed": {
+                    "{$request.body#/callbackUrl}": {
+                        "$ref": "#/components/pathItems/Callback"
+                    }
+                }
+            },
+            "pathItems": {
+                "Callback": {
+                    "post": {"responses": {"204": {"description": "complete"}}}
+                }
+            },
+        },
+    }
+
+    report = inventory.analyze_post_json(write_spec(tmp_path, document))
+
+    [candidate] = report.operations[0].review_candidates
+    assert candidate.json_pointer_pattern == "/name"
+    assert len(candidate.operation_definition_sha256) == 64
+
+
 @pytest.mark.parametrize(
     ("schema", "expected"),
     [
@@ -294,10 +410,229 @@ def test_reference_sibling_and_definition_pointer(tmp_path):
     report = inventory.analyze_post_json(write_spec(tmp_path, document))
     [operation] = report.operations
     assert operation.fields[0].schema_definition_pointer.endswith("/Name/properties/x")
-    assert (
-        operation.diagnostics[0].reason
-        is inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED
+    ]
+    assert operation.review_candidates == ()
+
+
+@pytest.mark.parametrize(
+    "sibling",
+    [
+        {"not": {"type": "string"}},
+        {"type": "integer"},
+        {"enum": ["allowed"]},
+        {"allOf": [{"type": "string"}]},
+    ],
+)
+def test_openapi_31_ref_constraint_sibling_blocks_candidates(tmp_path, sibling):
+    document = spec(
+        schema={"$ref": "#/components/schemas/Name", **sibling},
+        components={"schemas": {"Name": {"type": "string"}}},
     )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.review_candidates == ()
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED
+    ]
+    assert operation.diagnostics[0].schema_pointer.endswith("/" + next(iter(sibling)))
+
+
+def test_openapi_31_ref_annotation_sibling_allows_candidate(tmp_path):
+    document = spec(
+        schema={
+            "$ref": "#/components/schemas/Name",
+            "description": "display name",
+        },
+        components={"schemas": {"Name": {"type": "string"}}},
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.diagnostics == ()
+    assert len(operation.review_candidates) == 1
+
+
+def test_openapi_31_ref_default_keeps_all_operation_candidates(tmp_path):
+    document = spec(
+        schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "$ref": "#/components/schemas/Name",
+                    "default": "guest",
+                },
+                "email": {"type": "string"},
+            },
+        },
+        components={"schemas": {"Name": {"type": "string"}}},
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.diagnostics == ()
+    assert {item.json_pointer_pattern for item in operation.review_candidates} == {
+        "/email",
+        "/name",
+    }
+
+
+def test_openapi_31_nested_ref_constraint_sibling_blocks_candidates(tmp_path):
+    document = spec(
+        schema={
+            "type": "object",
+            "properties": {"name": {"$ref": "#/components/schemas/Alias"}},
+        },
+        components={
+            "schemas": {
+                "Alias": {
+                    "$ref": "#/components/schemas/Name",
+                    "not": {"type": "string"},
+                },
+                "Name": {"type": "string"},
+            }
+        },
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.review_candidates == ()
+    assert operation.diagnostics[0].schema_pointer == "/components/schemas/Alias/not"
+
+
+def test_reference_depth_limit_stops_before_reading_the_next_target(tmp_path):
+    schemas = {
+        f"Node{index}": {
+            "$ref": (
+                f"#/components/schemas/Node{index + 1}"
+                if index < 23
+                else "#/components/schemas/Missing"
+            )
+        }
+        for index in range(24)
+    }
+    document = spec(
+        schema={"$ref": "#/components/schemas/Node0"},
+        components={"schemas": schemas},
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_LIMIT_EXCEEDED
+    ]
+    assert operation.diagnostics[0].schema_pointer.endswith("/schema")
+
+
+def test_repeated_schema_reference_cache_charges_reference_work(tmp_path, monkeypatch):
+    monkeypatch.setattr("vintar.regression.discovery.MAX_REFERENCE_WORK", 1)
+    document = spec(
+        schema={
+            "type": "object",
+            "properties": {
+                "first": {"$ref": "#/components/schemas/Name"},
+                "second": {"$ref": "#/components/schemas/Name"},
+            },
+        },
+        components={"schemas": {"Name": {"type": "string"}}},
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.review_candidates == ()
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_LIMIT_EXCEEDED
+    ]
+    assert operation.diagnostics[0].schema_pointer.endswith("/properties/second")
+
+
+def test_cached_post_chain_keeps_siblings_reached_before_work_limit(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("vintar.regression.discovery.MAX_REFERENCE_WORK", 5)
+    request_body = {
+        "requestBody": {
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/Alias"}}
+            }
+        }
+    }
+    document = spec(
+        paths={
+            "/first": {"post": request_body},
+            "/second": {"post": request_body},
+        },
+        components={
+            "schemas": {
+                "Alias": {
+                    "$ref": "#/components/schemas/Middle",
+                    "not": {"type": "string"},
+                },
+                "Middle": {"$ref": "#/components/schemas/Name"},
+                "Name": {"type": "string"},
+            }
+        },
+    )
+
+    first, second = inventory.analyze_post_json(
+        write_spec(tmp_path, document)
+    ).operations
+
+    assert [item.reason for item in first.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED
+    ]
+    assert [item.reason for item in second.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
+        inventory.SchemaDiagnosticReason.REFERENCE_LIMIT_EXCEEDED,
+    ]
+    assert [item.schema_pointer for item in second.diagnostics] == [
+        "/components/schemas/Alias/not",
+        "/paths/~1second/post/requestBody/content/application~1json/schema",
+    ]
+
+
+def test_reference_cycle_preserves_sibling_and_cycle_diagnostics(tmp_path):
+    document = spec(
+        schema={"$ref": "#/components/schemas/A"},
+        components={
+            "schemas": {
+                "A": {
+                    "$ref": "#/components/schemas/B",
+                    "not": {"type": "string"},
+                },
+                "B": {"$ref": "#/components/schemas/A"},
+            }
+        },
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
+        inventory.SchemaDiagnosticReason.RECURSIVE_REF_UNSUPPORTED,
+    ]
+    assert operation.review_candidates == ()
+
+
+def test_openapi_30_reference_sibling_behavior_is_unchanged(tmp_path):
+    document = spec(
+        schema={
+            "$ref": "#/components/schemas/Name",
+            "description": "allowed Reference Object annotation",
+            "not": {"type": "string"},
+        },
+        components={"schemas": {"Name": {"type": "string"}}},
+        openapi="3.0.4",
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.review_candidates == ()
+    assert [item.schema_pointer for item in operation.diagnostics] == [
+        "/paths/~1items/post/requestBody/content/application~1json/schema/not"
+    ]
 
 
 def test_reference_limit_is_operation_diagnostic(tmp_path, monkeypatch):

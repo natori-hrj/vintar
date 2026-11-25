@@ -41,11 +41,18 @@
         "operation_id": "createItem",
         "operation_pointer": "/paths/~1items/post",
         "path": "/items",
-        "request_body_pointer": "/paths/~1items/post/requestBody/content/application~1json"
+        "request_body_pointer": "/paths/~1items/post/requestBody/content/application~1json",
+        "review_candidates": [
+          {
+            "approval": "unapproved",
+            "candidate_id": "post-json-candidate-fcc31e5bb44319ebb58ae18c30b7b631",
+            "operation_definition_sha256": "7f4219434594b23cb184cf3aea08058c55f966c09b698fd63424130905071b15"
+          }
+        ]
       }
     ],
     "report_type": "openapi_post_json_inventory",
-    "schema_version": 1
+    "schema_version": 2
   },
   "stderr": "",
   "stdout": "POST JSON inventory: 1 operations; 0 case-generatable; 1 fields; 0 injectable; 0 diagnostics.\n"

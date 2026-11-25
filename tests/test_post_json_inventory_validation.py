@@ -127,7 +127,7 @@ def write_mutation(tmp_path: Path, report: object, name: str) -> Path:
 @pytest.mark.parametrize(
     "name,mutate",
     [
-        ("version", lambda r: r.update(schema_version=2)),
+        ("version", lambda r: r.update(schema_version=3)),
         ("report_type", lambda r: r.update(report_type="PRIVATE-SENTINEL")),
         ("unknown", lambda r: r.update(private="PRIVATE-SENTINEL")),
         (
@@ -265,6 +265,9 @@ def test_duplicate_json_keys_are_rejected_without_echo(tmp_path, member):
 
 def test_v1_rejects_injectable_field_with_consistent_claimed_counts(tmp_path):
     report = valid_report(tmp_path)
+    report["schema_version"] = 1
+    for operation in report["operations"]:
+        operation.pop("review_candidates")
     fields = report["operations"][1]["fields"]
     del fields[1:]
     fields[0].update(injectable=True, reasons=[])
@@ -294,3 +297,16 @@ def test_v1_rejects_injectable_field_with_consistent_claimed_counts(tmp_path):
     completed = run_validator(write_mutation(tmp_path, report, "injectable_attack"))
     assert completed.returncode == 2
     assert completed.stderr == message + "\n"
+
+
+def test_committed_v1_inventory_fixture_remains_valid():
+    fixture = ROOT / "tests" / "fixtures" / "post-json-inventory-v1.json"
+
+    completed = subprocess.run(
+        [sys.executable, str(VALIDATOR), str(fixture)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert (completed.returncode, completed.stdout, completed.stderr) == (0, "", "")

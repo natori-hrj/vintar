@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from enum import StrEnum
@@ -65,6 +66,12 @@ class CaseGeneration(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class CandidateApproval(StrEnum):
+    """Inventory candidates are never execution or review approval."""
+
+    UNAPPROVED = "unapproved"
+
+
 @dataclass(frozen=True, slots=True)
 class SchemaDiagnostic:
     reason: SchemaDiagnosticReason
@@ -79,10 +86,27 @@ class BodyField:
     schema_definition_pointer: str
     types: tuple[str, ...]
     required: bool
+    literal_star_positions: tuple[int, ...] = ()
     injectable: bool = False
     reasons: tuple[BlockingReason, ...] = (
         BlockingReason.REQUEST_BODY_CASE_GENERATION_UNSUPPORTED,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCandidate:
+    candidate_id: str
+    approval: CandidateApproval
+    method: str
+    path: str
+    operation_pointer: str
+    request_body_pointer: str
+    operation_definition_sha256: str
+    json_pointer_pattern: str
+    literal_star_positions: tuple[int, ...]
+    schema_pointer: str
+    schema_definition_pointer: str
+    types: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +138,7 @@ class PostJsonOperation:
     auth: ResolvedAuth
     fields: tuple[BodyField, ...]
     diagnostics: tuple[SchemaDiagnostic, ...]
+    review_candidates: tuple[ReviewCandidate, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,11 +168,442 @@ _SCHEMA_REASONS = {
     "$dynamicRef": SchemaDiagnosticReason.DYNAMIC_REF_UNSUPPORTED,
     "$id": SchemaDiagnosticReason.SCHEMA_ID_SCOPE_UNSUPPORTED,
 }
+_POST_REFERENCE_ANNOTATIONS = frozenset(
+    {
+        "$comment",
+        "default",
+        "deprecated",
+        "description",
+        "examples",
+        "readOnly",
+        "summary",
+        "title",
+        "writeOnly",
+    }
+)
 _BLOCKING_REASONS = (
     BlockingReason.POST_METHOD_UNSUPPORTED,
     BlockingReason.REQUEST_BODY_CASE_GENERATION_UNSUPPORTED,
 )
 _SECURITY_TYPES = frozenset({"apiKey", "http", "oauth2", "openIdConnect", "mutualTLS"})
+
+
+def _post_reference_annotation(version: str, keyword: str) -> bool:
+    if version.startswith("3.0."):
+        return keyword in {"summary", "description"}
+    return keyword in _POST_REFERENCE_ANNOTATIONS
+
+
+def _candidate_identity(
+    path: str,
+    field: BodyField,
+) -> list[object]:
+    identity: list[object] = ["POST", path, field.json_pointer]
+    if field.literal_star_positions:
+        identity.append(field.literal_star_positions)
+    return identity
+
+
+def post_json_candidate_id(
+    path: str,
+    field: BodyField,
+) -> str:
+    """Identify one candidate by its stable operation and field location."""
+    encoded = json.dumps(
+        _candidate_identity(path, field),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return f"post-json-candidate-{hashlib.sha256(encoded).hexdigest()[:32]}"
+
+
+def _definition_map(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+) -> JSON:
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _openapi_entry(
+            document,
+            key,
+            child,
+            source.child(key),
+            trail,
+            kind,
+            named=False,
+            extensions_allowed=True,
+        )
+        for key, child in sorted(value.items())
+    }
+
+
+def _openapi_entry(
+    document: _Discovery,
+    key: str,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+    *,
+    named: bool,
+    extensions_allowed: bool,
+) -> JSON:
+    """Keep lowercase x- entries opaque only where OpenAPI permits them."""
+    if extensions_allowed and key.startswith("x-"):
+        return value
+    if named:
+        return _definition_value(document, value, source, trail, kind)
+    return _definition_child(document, value, source, trail, kind, key)
+
+
+def _definition_list(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+) -> JSON:
+    if not isinstance(value, list):
+        return value
+    return [
+        _definition_value(document, child, source.child(index), trail, kind)
+        for index, child in enumerate(value)
+    ]
+
+
+def _openapi_entries(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+    *,
+    extensions_allowed: bool,
+) -> JSON:
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _openapi_entry(
+            document,
+            key,
+            child,
+            source.child(key),
+            trail,
+            kind,
+            named=True,
+            extensions_allowed=extensions_allowed,
+        )
+        for key, child in sorted(value.items())
+    }
+
+
+def _schema_entries(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+) -> JSON:
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _definition_value(document, child, source.child(key), trail, "schema")
+        for key, child in sorted(value.items())
+    }
+
+
+def _definition_value(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+) -> JSON:
+    if isinstance(value, dict) and "$ref" in value:
+        reference_source = source.child("$ref")
+        target, referenced = document._pointer(
+            _string(value["$ref"], reference_source), reference_source
+        )
+        if target == source or target in trail:
+            if kind != "schema":
+                raise DiscoveryError(
+                    reference_source,
+                    "Reference cycle detected. Break the recursive reference chain.",
+                )
+            resolved: JSON = {"$ref": f"#{target.pointer}"}
+        else:
+            resolved = _definition_value(
+                document, referenced, target, (*trail, target), kind
+            )
+        siblings = _definition_map(
+            document,
+            {key: child for key, child in value.items() if key != "$ref"},
+            source,
+            trail,
+            kind,
+        )
+        return {"$ref_target": resolved, "siblings": siblings}
+    return _definition_map(document, value, source, trail, kind)
+
+
+def _schema_child(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    key: str,
+) -> JSON:
+    if key in {
+        "example",
+        "examples",
+        "default",
+        "enum",
+        "const",
+    }:
+        return value
+    if key in {
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "$defs",
+        "definitions",
+    }:
+        return _schema_entries(document, value, source, trail)
+    if key in {"allOf", "anyOf", "oneOf", "prefixItems"}:
+        return _definition_list(document, value, source, trail, "schema")
+    if key in {
+        "items",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "contains",
+        "propertyNames",
+        "if",
+        "then",
+        "else",
+        "not",
+        "unevaluatedItems",
+    }:
+        return _definition_value(document, value, source, trail, "schema")
+    return value
+
+
+def _definition_child(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+    key: str,
+) -> JSON:
+    if kind == "schema":
+        return _schema_child(document, value, source, trail, key)
+    if kind in {"operation", "path_item"}:
+        if key == "parameters":
+            return _definition_list(document, value, source, trail, "parameter")
+        if key == "servers":
+            return value
+    if kind == "operation":
+        if key == "requestBody":
+            return _definition_value(document, value, source, trail, "request_body")
+        if key == "responses":
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "response",
+                extensions_allowed=True,
+            )
+        if key == "callbacks":
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "callback",
+                extensions_allowed=False,
+            )
+        return value
+    if kind == "path_item":
+        if key.lower() in {
+            "get",
+            "put",
+            "post",
+            "delete",
+            "options",
+            "head",
+            "patch",
+            "trace",
+        }:
+            return _definition_map(document, value, source, trail, "operation")
+        return value
+    if kind in {"parameter", "header"}:
+        if key == "schema":
+            return _definition_value(document, value, source, trail, "schema")
+        if key == "content":
+            return _openapi_entries(
+                document, value, source, trail, "media", extensions_allowed=False
+            )
+        if key == "examples":
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "example",
+                extensions_allowed=False,
+            )
+        if key == "example":
+            return value
+        return value
+    if kind == "request_body":
+        if key == "content":
+            return _openapi_entries(
+                document, value, source, trail, "media", extensions_allowed=False
+            )
+        return value
+    if kind == "media":
+        if key == "schema":
+            return _definition_value(document, value, source, trail, "schema")
+        if key == "examples":
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "example",
+                extensions_allowed=False,
+            )
+        if key == "example":
+            return value
+        if key == "encoding":
+            return _openapi_entries(
+                document,
+                value,
+                source,
+                trail,
+                "encoding",
+                extensions_allowed=False,
+            )
+        return value
+    if kind == "encoding":
+        if key == "headers":
+            return _openapi_entries(
+                document, value, source, trail, "header", extensions_allowed=False
+            )
+        return value
+    if kind == "response":
+        if key == "headers":
+            return _openapi_entries(
+                document, value, source, trail, "header", extensions_allowed=False
+            )
+        if key == "content":
+            return _openapi_entries(
+                document, value, source, trail, "media", extensions_allowed=False
+            )
+        if key == "links":
+            return _openapi_entries(
+                document, value, source, trail, "link", extensions_allowed=False
+            )
+        return value
+    if kind == "callback":
+        return _definition_value(document, value, source, trail, "path_item")
+    if kind == "example" and key == "value":
+        return value
+    return value
+
+
+def _resolved_operation(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+) -> JSON:
+    if isinstance(value, list):
+        return [
+            _resolved_operation(document, child, source.child(index), trail)
+            for index, child in enumerate(value)
+        ]
+    if not isinstance(value, dict):
+        return value
+    return _definition_map(document, value, source, trail, "operation")
+
+
+def _operation_definition_sha256(
+    document: _Discovery,
+    operation: JSONMap,
+    operation_source: Source,
+    path_item: JSONMap,
+    path_source: Source,
+    trail: tuple[Source, ...],
+) -> str:
+    definition: JSON = {
+        "operation": _resolved_operation(document, operation, operation_source, trail),
+        "path_parameters": _definition_list(
+            document,
+            path_item.get("parameters", []),
+            path_source.child("parameters"),
+            trail,
+            "parameter",
+        ),
+        "path_servers": path_item.get("servers", []),
+        "path_extensions": _openapi_entries(
+            document,
+            {
+                key: child
+                for key, child in path_item.items()
+                if key.lower().startswith("x-")
+            },
+            path_source,
+            trail,
+            "path_item",
+            extensions_allowed=True,
+        ),
+    }
+    encoded = json.dumps(
+        definition,
+        allow_nan=False,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _review_candidates(
+    path: str,
+    operation_pointer: str,
+    request_body_pointer: str,
+    fields: tuple[BodyField, ...],
+    diagnostics: tuple[SchemaDiagnostic, ...],
+    operation_definition_sha256: str,
+) -> tuple[ReviewCandidate, ...]:
+    if diagnostics:
+        return ()
+    candidates = []
+    for field in fields:
+        if field.types != ("string",):
+            continue
+        candidates.append(
+            ReviewCandidate(
+                post_json_candidate_id(path, field),
+                CandidateApproval.UNAPPROVED,
+                "POST",
+                path,
+                operation_pointer,
+                request_body_pointer,
+                operation_definition_sha256,
+                field.json_pointer,
+                field.literal_star_positions,
+                field.schema_pointer,
+                field.schema_definition_pointer,
+                field.types,
+            )
+        )
+    return tuple(sorted(candidates, key=lambda item: item.candidate_id))
 
 
 def _diagnostic_key(item: SchemaDiagnostic) -> tuple[str, str, str]:
@@ -209,27 +665,38 @@ def _walk_schema(
     trail: tuple[Source, ...],
     json_pointer: str,
     required: bool,
+    literal_star_positions: tuple[int, ...] = (),
 ) -> tuple[list[BodyField], list[SchemaDiagnostic]]:
-    reference_siblings: list[SchemaDiagnostic] = []
-    if isinstance(value, dict) and "$ref" in value:
-        for sibling in sorted(value.keys() - {"$ref", "summary", "description"}):
-            reference_siblings.append(
-                SchemaDiagnostic(
-                    SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
-                    declared.child(sibling).pointer,
-                )
-            )
     try:
-        node, definition, resolved_trail = document.resolve_schema(
-            value, declared, trail
-        )
+        resolution = document.resolve_schema_result(value, declared, trail)
     except DiscoveryError as exc:
         diagnostic = _reference_diagnostic(exc, declared)
         if diagnostic is None:
             raise
-        return [], [*reference_siblings, diagnostic]
+        siblings = exc.schema_siblings
+        return [], [
+            *(
+                SchemaDiagnostic(
+                    SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
+                    sibling.source.pointer,
+                )
+                for sibling in siblings
+                if not _post_reference_annotation(document.version, sibling.keyword)
+            ),
+            diagnostic,
+        ]
 
-    diagnostics = reference_siblings
+    node = resolution.schema
+    definition = resolution.definition
+    resolved_trail = resolution.trail
+    diagnostics = [
+        SchemaDiagnostic(
+            SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
+            sibling.source.pointer,
+        )
+        for sibling in resolution.siblings
+        if not _post_reference_annotation(document.version, sibling.keyword)
+    ]
     if isinstance(node, bool):
         diagnostics.append(
             SchemaDiagnostic(
@@ -259,6 +726,7 @@ def _walk_schema(
                 definition.pointer,
                 types,
                 required,
+                literal_star_positions=literal_star_positions,
             )
         )
     if scalar_root or "$id" in node or "$dynamicRef" in node:
@@ -282,6 +750,9 @@ def _walk_schema(
             resolved_trail,
             _join_pointer(json_pointer, name),
             name in required_names,
+            (*literal_star_positions, json_pointer.count("/"))
+            if name == "*"
+            else literal_star_positions,
         )
         fields.extend(child_fields)
         diagnostics.extend(child_diagnostics)
@@ -293,6 +764,7 @@ def _walk_schema(
             resolved_trail,
             f"{json_pointer}/*",
             False,
+            literal_star_positions,
         )
         fields.extend(item_fields)
         diagnostics.extend(item_diagnostics)
@@ -440,6 +912,7 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
                     _resolve_auth(document, operation, operation_source, schemes),
                     (),
                     (diagnostic,),
+                    (),
                 )
             )
             continue
@@ -475,6 +948,10 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
                 "",
                 _required(body, body_definition),
             )
+        ordered_fields = tuple(
+            sorted(fields, key=lambda item: (item.json_pointer, item.schema_pointer))
+        )
+        ordered_diagnostics = tuple(sorted(set(diagnostics), key=_diagnostic_key))
         operations.append(
             PostJsonOperation(
                 operation_path,
@@ -484,13 +961,25 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
                 CaseGeneration.UNSUPPORTED,
                 _BLOCKING_REASONS,
                 _resolve_auth(document, operation, operation_source, schemes),
-                tuple(
-                    sorted(
-                        fields,
-                        key=lambda item: (item.json_pointer, item.schema_pointer),
-                    )
+                ordered_fields,
+                ordered_diagnostics,
+                _review_candidates(
+                    operation_path,
+                    operation_source.pointer,
+                    media_source.pointer,
+                    ordered_fields,
+                    ordered_diagnostics,
+                    ""
+                    if ordered_diagnostics
+                    else _operation_definition_sha256(
+                        document,
+                        operation,
+                        operation_source,
+                        path_item,
+                        path_definition,
+                        path_trail,
+                    ),
                 ),
-                tuple(sorted(set(diagnostics), key=_diagnostic_key)),
             )
         )
     ordered_operations = tuple(
@@ -501,7 +990,7 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
         len(operation.diagnostics) for operation in ordered_operations
     )
     return PostJsonInventoryReport(
-        1,
+        2,
         "openapi_post_json_inventory",
         InventoryCounts(
             len(ordered_operations),
@@ -517,6 +1006,12 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
 
 
 def _json_value(value: object) -> object:
+    if isinstance(value, ReviewCandidate):
+        return {
+            "candidate_id": value.candidate_id,
+            "approval": value.approval.value,
+            "operation_definition_sha256": value.operation_definition_sha256,
+        }
     if isinstance(value, StrEnum):
         return value.value
     if isinstance(value, tuple):
@@ -525,6 +1020,7 @@ def _json_value(value: object) -> object:
         return {
             name: _json_value(getattr(value, name))
             for name in value.__dataclass_fields__
+            if name != "literal_star_positions" or getattr(value, name)
         }
     return value
 

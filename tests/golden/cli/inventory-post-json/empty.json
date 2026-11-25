@@ -12,7 +12,7 @@
     },
     "operations": [],
     "report_type": "openapi_post_json_inventory",
-    "schema_version": 1
+    "schema_version": 2
   },
   "stderr": "",
   "stdout": "POST JSON inventory: 0 operations; 0 case-generatable; 0 fields; 0 injectable; 0 diagnostics.\n"

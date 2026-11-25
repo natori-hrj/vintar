@@ -196,12 +196,37 @@ example, default, enum, or const values; server and OAuth/OIDC URLs; scope
 names; API-key parameter names; descriptions; extension values; credentials;
 or the spec file path.
 
-All POST bodies currently have `case_generation: "unsupported"` and no
-injectable fields because Vintar's existing case pipeline supports only GET
-query parameters. The inventory is a readiness and review artifact, not an
-executable case or authorization configuration. The command performs no
-network requests and prints one human summary line; the JSON report is written
-only to `--output`.
+All POST bodies retain `case_generation: "unsupported"` and no inventory field
+is injectable. Inventory v2 adds only unapproved candidates for fields whose
+declared type is exactly `string`; it does not infer safety from the method,
+path, or operation ID. The inventory is not an executable case or authorization
+configuration.
+
+Review one candidate offline with a complete baseline body, a concrete JSON
+Pointer (including an explicit index for every array), the canonical body
+SHA-256, and explicit operation, `no_side_effect`, and isolated-environment
+confirmations:
+
+```bash
+uv run --locked vintar review-post-json \
+  --spec openapi.json \
+  --inventory post-json-inventory.json \
+  --answers post-json-review-answers.json \
+  --output post-json-review.json
+```
+
+The separate review artifact records only digests, schema provenance, the
+concrete pointer, and confirmations. It never records the baseline body and
+cannot execute HTTP or materialize a regression case.
+In a pointer pattern, `*` denotes an array index unless its zero-based token
+position is listed in `literal_star_positions`. Those positions select object
+properties named `*` and stay literal in the concrete pointer.
+Candidate IDs identify stable operation/field locations. A separate operation
+definition digest binds side-effect approval to the complete resolved operation,
+including referenced request/response schemas and path-level parameters and
+servers. Changing that definition requires side-effect review again. Baseline
+pointers are limited to the selected JSON media type's direct `example` or its
+named `examples[*].value`, including locally referenced component examples.
 
 Validate a report before consuming or archiving it:
 
@@ -210,9 +235,10 @@ uv run --locked python scripts/validate_post_json_inventory.py \
   post-json-inventory.json
 ```
 
-The validator checks schema v1 plus ordering, counts, pointers, uniqueness,
-authentication consistency, and injectability invariants. It exits `0` for a
-valid report and `2` for invalid input without echoing report content.
+The validator accepts historical schema v1 and current schema v2 while checking
+ordering, counts, pointers, uniqueness, authentication consistency, candidate
+coverage, and injectability invariants. It exits `0` for a valid report and `2`
+for invalid input without echoing report content.
 
 Run discovery with your local `openapi.json` to find stable input IDs. To reproduce this example, copy `tests/fixtures/discovery/openapi30.json` to `openapi.json`. Commit `review.toml` with the IDs a reviewer approved. Omit `--selection` to inventory inputs before review.
 

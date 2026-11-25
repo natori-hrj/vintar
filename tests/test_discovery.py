@@ -240,6 +240,177 @@ def test_unknown_path_fields_and_reference_siblings_are_held(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("version", ["3.0.4", "3.1.2"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_get_shared_schema_chain_matches_pre_pr_golden(tmp_path, version, reverse):
+    def operation(label):
+        return {
+            "get": {
+                "parameters": [
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "schema": {
+                            "$ref": "#/components/schemas/Alias",
+                            "default": label,
+                        },
+                    }
+                ]
+            }
+        }
+
+    entries = [("/a", operation("a")), ("/b", operation("b"))]
+    if reverse:
+        entries.reverse()
+    path = write_spec(
+        tmp_path,
+        paths=dict(entries),
+        openapi=version,
+        components={
+            "schemas": {
+                "Alias": {
+                    "$ref": "#/components/schemas/Name",
+                    "not": {"type": "string"},
+                },
+                "Name": {"type": "string"},
+            }
+        },
+    )
+
+    inventory = load_inventory(path)
+
+    assert [
+        (
+            item.method,
+            item.path,
+            item.compatible,
+            item.compatibility_blocker,
+            item.inputs[0].compatible,
+        )
+        for item in inventory.operations
+    ] == [
+        ("GET", "/a", False, None, False),
+        ("GET", "/b", False, None, False),
+    ]
+    assert [item.source.pointer for item in inventory.held] == [
+        "/components/schemas/Alias/not",
+        "/paths/~1a/get/parameters/0",
+        "/paths/~1a/get/parameters/0/schema/default",
+        "/paths/~1b/get/parameters/0",
+        "/paths/~1b/get/parameters/0/schema/default",
+    ]
+
+
+def shared_reference_work_spec(operation_count, chain_length):
+    schemas = {
+        f"Node{index}": (
+            {"type": "string"}
+            if index == chain_length - 1
+            else {"$ref": f"#/components/schemas/Node{index + 1}"}
+        )
+        for index in range(chain_length)
+    }
+    paths = {
+        f"/op{index:03d}": {
+            "get": {
+                "parameters": [
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "schema": {"$ref": "#/components/schemas/Node0"},
+                    }
+                ]
+            }
+        }
+        for index in range(operation_count)
+    }
+    return paths, {"schemas": schemas}
+
+
+def test_get_cached_reference_work_limit_matches_pre_pr_golden(tmp_path):
+    paths, schemas = shared_reference_work_spec(200, 22)
+    path = write_spec(tmp_path, paths=paths, components=schemas)
+
+    with pytest.raises(DiscoveryError) as caught:
+        load_inventory(path)
+
+    assert caught.value.reason == (
+        "Reference work limit exceeded. Simplify or split the spec."
+    )
+    assert caught.value.source == Source(path, "/components/schemas/Node3/$ref")
+
+
+def test_get_warm_cache_charges_the_same_work_as_cold_resolution(tmp_path, monkeypatch):
+    monkeypatch.setattr(discovery, "MAX_REFERENCE_WORK", 1)
+    paths, schemas = shared_reference_work_spec(2, 1)
+    path = write_spec(tmp_path, paths=paths, components=schemas)
+
+    with pytest.raises(DiscoveryError) as caught:
+        load_inventory(path)
+
+    assert caught.value.reason == (
+        "Reference work limit exceeded. Simplify or split the spec."
+    )
+    assert caught.value.source == Source(
+        path, "/paths/~1op001/get/parameters/0/schema/$ref"
+    )
+
+
+def reference_sibling_chain_spec():
+    return {
+        "schemas": {
+            "Alias": {
+                "$ref": "#/components/schemas/Middle",
+                "not": {"type": "string"},
+            },
+            "Middle": {"$ref": "#/components/schemas/Name"},
+            "Name": {"type": "string"},
+        }
+    }
+
+
+def test_schema_resolution_cache_matches_cold_diagnostics_mid_walk(
+    tmp_path, monkeypatch
+):
+    path = write_spec(tmp_path, components=reference_sibling_chain_spec())
+    schema = {"$ref": "#/components/schemas/Alias"}
+    warm = discovery._load_document(path)
+    warm.resolve_schema_result(schema, Source(path, "/prime"), ())
+    warm.reference_work = 1
+    cold = discovery._load_document(path)
+    cold.reference_work = 1
+    monkeypatch.setattr(discovery, "MAX_REFERENCE_WORK", 2)
+
+    errors = []
+    for document in (cold, warm):
+        with pytest.raises(DiscoveryError) as caught:
+            document.resolve_schema_result(schema, Source(path, "/probe"), ())
+        errors.append(caught.value)
+
+    cold_error, warm_error = errors
+    assert warm_error.source == cold_error.source
+    assert warm_error.reason == cold_error.reason
+    assert warm_error.schema_siblings == cold_error.schema_siblings
+    assert warm_error.get_schema_siblings == cold_error.get_schema_siblings
+    assert warm.reference_work == cold.reference_work == 3
+
+
+def test_schema_resolution_cache_matches_cold_get_output_full_walk(tmp_path):
+    path = write_spec(tmp_path, components=reference_sibling_chain_spec())
+    schema = {"$ref": "#/components/schemas/Alias"}
+    warm = discovery._load_document(path)
+    warm.resolve_schema_result(schema, Source(path, "/prime"), ())
+    warm.reference_work = 0
+    cold = discovery._load_document(path)
+
+    cold_result = cold.resolve_schema(schema, Source(path, "/probe"), ())
+    warm_result = warm.resolve_schema(schema, Source(path, "/probe"), ())
+
+    assert warm_result == cold_result
+    assert warm.held == cold.held
+    assert warm.reference_work == cold.reference_work == 3
+
+
 def test_duplicate_parameters_fail_with_declaration_pointer(tmp_path):
     parameter = {"name": "q", "in": "query"}
     path = write_spec(

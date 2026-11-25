@@ -1,0 +1,6 @@
+{
+  "exit_code": 2,
+  "review_json": null,
+  "stderr": "Error: Concrete JSON Pointer has an invalid array selection. Use a canonical non-negative decimal index.\n",
+  "stdout_json": null
+}

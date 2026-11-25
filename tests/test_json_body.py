@@ -8,6 +8,8 @@ from vintar.core.json_body import (
     MAX_JSON_POINTER_CHARACTERS,
     JsonBody,
     JsonPointer,
+    json_array_at,
+    json_leaf_at,
     replace_json_leaf,
 )
 from vintar.core.strict_json import (
@@ -277,3 +279,29 @@ def test_errors_never_echo_pointer_or_replacement_values():
     assert "body-private-value" not in message
     assert "pointer-private-value" not in message
     assert "replacement-private-value" not in message
+
+
+def test_json_leaf_at_reuses_concrete_pointer_rules_without_mutating_body():
+    body = JsonBody.from_bytes(b'{"items":[{"name":"selected"}]}')
+
+    selected = json_leaf_at(body, JsonPointer.parse("/items/0/name"))
+
+    assert selected == "selected"
+    assert body.to_bytes() == b'{"items":[{"name":"selected"}]}'
+
+
+@pytest.mark.parametrize("pointer", ["/items/*/name", "/items/1/name", "/items"])
+def test_json_leaf_at_rejects_nonconcrete_or_nonleaf_targets(pointer):
+    body = JsonBody.from_bytes(b'{"items":[{"name":"selected"}]}')
+
+    with pytest.raises(ValueError):
+        json_leaf_at(body, JsonPointer.parse(pointer))
+
+
+def test_json_array_at_distinguishes_arrays_from_numeric_object_members():
+    array_body = JsonBody.from_bytes(b'{"items":[{"name":"x"}]}')
+    object_body = JsonBody.from_bytes(b'{"items":{"0":{"name":"x"}}}')
+
+    assert json_array_at(array_body, JsonPointer.parse("/items")) is None
+    with pytest.raises(ValueError, match="does not resolve to an array"):
+        json_array_at(object_body, JsonPointer.parse("/items"))
