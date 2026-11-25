@@ -1,0 +1,6 @@
+{
+  "exit_code": 2,
+  "report_json": null,
+  "stderr": "Error: invalid or unreadable OpenAPI spec. Check the local file format, declarations, references, and limits, then try again.\n",
+  "stdout": ""
+}

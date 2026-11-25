@@ -157,6 +157,15 @@ SCENARIOS = {
     "discover/invalid-spec.json": Scenario(2, 0),
     "discover/output-spec-conflict.json": Scenario(2, 0),
     "discover/output-selection-conflict.json": Scenario(2, 0),
+    "inventory-post-json/success.json": Scenario(0, 0),
+    "inventory-post-json/empty.json": Scenario(0, 0),
+    "inventory-post-json/invalid-spec.json": Scenario(2, 0),
+    "inventory-post-json/unreadable-spec.json": Scenario(2, 0),
+    "inventory-post-json/external-ref.json": Scenario(0, 0),
+    "inventory-post-json/cyclic-ref.json": Scenario(0, 0),
+    "inventory-post-json/output-spec-conflict.json": Scenario(2, 0),
+    "inventory-post-json/unwritable-output.json": Scenario(2, 0),
+    "inventory-post-json/interrupt.json": Scenario(130, 0),
 }
 
 
@@ -350,6 +359,109 @@ def capture_discovery(name, scenario, folder, args, env):
     }
 
 
+def capture_post_json(name, scenario, folder, args, env):
+    spec = folder / "openapi.json"
+    operation = {
+        "operationId": "createItem",
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["name"],
+                        "properties": {"name": {"type": "string"}},
+                    }
+                }
+            }
+        },
+    }
+    document = {"openapi": "3.1.2", "paths": {"/items": {"post": operation}}}
+    if name == "inventory-post-json/empty.json":
+        document["paths"] = {}
+    elif name == "inventory-post-json/invalid-spec.json":
+        spec.write_text("{", encoding="utf-8")
+    elif name == "inventory-post-json/unreadable-spec.json":
+        spec = folder / "missing.json"
+    elif name == "inventory-post-json/external-ref.json":
+        operation["requestBody"]["content"]["application/json"]["schema"] = {
+            "$ref": "external.json#/Item"
+        }
+    elif name == "inventory-post-json/cyclic-ref.json":
+        operation["requestBody"]["content"]["application/json"]["schema"] = {
+            "$ref": "#/components/schemas/Node"
+        }
+        document["components"] = {
+            "schemas": {
+                "Node": {
+                    "type": "object",
+                    "properties": {"child": {"$ref": "#/components/schemas/Node"}},
+                }
+            }
+        }
+    if not spec.exists() and name not in {
+        "inventory-post-json/invalid-spec.json",
+        "inventory-post-json/unreadable-spec.json",
+    }:
+        spec.write_text(json.dumps(document), encoding="utf-8")
+    output = (
+        spec.name
+        if name == "inventory-post-json/output-spec-conflict.json"
+        else "missing/report.json"
+        if name == "inventory-post-json/unwritable-output.json"
+        else "post-json-inventory.json"
+    )
+    if args is None:
+        args = ["inventory-post-json", "--spec", spec.name, "--output", output]
+    patches = []
+    if name == "inventory-post-json/interrupt.json":
+        patches.append(
+            patch(
+                "vintar.post_json_inventory_cli.analyze_post_json",
+                side_effect=KeyboardInterrupt,
+            )
+        )
+    with (
+        chdir(folder),
+        patch(
+            "socket.socket", side_effect=AssertionError("Inventory opened a socket.")
+        ),
+        patch(
+            "socket.getaddrinfo", side_effect=AssertionError("Inventory resolved DNS.")
+        ),
+    ):
+        for context in patches:
+            context.start()
+        try:
+            result = CliRunner().invoke(app, args, env=env)
+        finally:
+            for context in reversed(patches):
+                context.stop()
+    report_path = folder / "post-json-inventory.json"
+    if result.exit_code != scenario.exit_code:
+        raise ValueError(
+            f"Expected exit code {scenario.exit_code}, got {result.exit_code}. "
+            f"CLI stderr: {result.stderr.strip()}"
+        )
+    if result.exit_code == 0:
+        if (
+            not result.stdout.endswith("\n")
+            or result.stderr
+            or not report_path.is_file()
+        ):
+            raise ValueError("Expected a human summary, report, and empty stderr.")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    else:
+        if result.stdout or not result.stderr or report_path.exists():
+            raise ValueError("Expected only a diagnostic and no report.")
+        report = None
+    return {
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "report_json": report,
+    }
+
+
 def capture_review(name, scenario, folder, args, env):
     export = capture_discovery(
         "discover/drafts.json", Scenario(0, 0), folder, None, env
@@ -533,13 +645,17 @@ def capture(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
 ) -> str:
-    if name.startswith(("discover/", "review-draft/", "materialize-case/")):
+    if name.startswith(
+        ("discover/", "review-draft/", "materialize-case/", "inventory-post-json/")
+    ):
         if name.startswith("review-draft/"):
             offline_capture = capture_review
         elif name.startswith("materialize-case/"):
             offline_capture = capture_materialization
-        else:
+        elif name.startswith("discover/"):
             offline_capture = capture_discovery
+        else:
+            offline_capture = capture_post_json
         return (
             json.dumps(
                 offline_capture(name, scenario, folder, args, env),

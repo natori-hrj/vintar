@@ -1,0 +1,19 @@
+{
+  "exit_code": 0,
+  "report_json": {
+    "counts": {
+      "case_generatable": 0,
+      "diagnostics": 0,
+      "fields": 0,
+      "injectable_fields": 0,
+      "operations": 0,
+      "post_operations_without_application_json": 0,
+      "unsupported_inputs": 0
+    },
+    "operations": [],
+    "report_type": "openapi_post_json_inventory",
+    "schema_version": 1
+  },
+  "stderr": "",
+  "stdout": "POST JSON inventory: 0 operations; 0 case-generatable; 0 fields; 0 injectable; 0 diagnostics.\n"
+}
