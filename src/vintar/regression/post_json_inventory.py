@@ -21,6 +21,9 @@ from vintar.regression.discovery import (
     _string,
 )
 
+# Maximum UTF-8 size accepted by the v1 report validator.
+MAX_REPORT_BYTES = 2_097_152
+
 
 class BlockingReason(StrEnum):
     """Stable reasons the existing case pipeline cannot use a POST body."""

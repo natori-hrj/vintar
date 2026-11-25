@@ -100,7 +100,7 @@
         "schema_definition_pointer": {"$ref": "#/$defs/pointer"},
         "types": {"$ref": "#/$defs/types"},
         "required": {"type": "boolean"},
-        "injectable": {"type": "boolean"},
+        "injectable": {"const": false},
         "reasons": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/blocking_reason"}}
       }
     },

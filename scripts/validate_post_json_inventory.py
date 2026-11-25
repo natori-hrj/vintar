@@ -12,10 +12,10 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
 from vintar.core.strict_json import DuplicateJsonKeyError, unique_object
+from vintar.regression.post_json_inventory import MAX_REPORT_BYTES
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SCHEMA = _ROOT / "schemas" / "openapi-post-json-inventory-v1.schema.json"
-_MAX_REPORT_BYTES = 2_097_152
 _ERROR_MESSAGE = (
     "Vintar: POST JSON inventory validation failed. "
     "Regenerate the report with the current Vintar version and try again."
@@ -25,11 +25,20 @@ _DUPLICATE_KEY_MESSAGE = (
     "Duplicate JSON keys make the report ambiguous across parsers. "
     "Regenerate the report with vintar inventory-post-json."
 )
+_INJECTABLE_MESSAGE = (
+    "Vintar: POST JSON inventory validation failed. "
+    "Version 1 never marks POST fields injectable. "
+    "Regenerate the report with vintar inventory-post-json."
+)
 _POINTER = re.compile(r"(?:/(?:[^~/]|~[01])*)*")
 _BLOCKING_REASONS = (
     "post_method_unsupported",
     "request_body_case_generation_unsupported",
 )
+
+
+class InjectableFieldError(ValueError):
+    """A v1 report claims a POST field is injectable."""
 
 
 def _read_bounded(path: Path) -> bytes:
@@ -41,14 +50,14 @@ def _read_bounded(path: Path) -> bytes:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ValueError("Report is not a regular file.")
         data = bytearray()
-        while len(data) <= _MAX_REPORT_BYTES:
-            chunk = os.read(descriptor, min(65_536, _MAX_REPORT_BYTES + 1 - len(data)))
+        while len(data) <= MAX_REPORT_BYTES:
+            chunk = os.read(descriptor, min(65_536, MAX_REPORT_BYTES + 1 - len(data)))
             if not chunk:
                 break
             data.extend(chunk)
     finally:
         os.close(descriptor)
-    if len(data) > _MAX_REPORT_BYTES:
+    if len(data) > MAX_REPORT_BYTES:
         raise ValueError("Report exceeds the size limit.")
     return bytes(data)
 
@@ -70,7 +79,7 @@ def _semantic_validate(report: dict[str, object]) -> None:
     ):
         raise ValueError("Operations are unordered or duplicated.")
 
-    field_count = injectable_count = diagnostic_count = 0
+    field_count = diagnostic_count = 0
     for operation in operations:
         if (
             operation["case_generation"] != "unsupported"
@@ -125,12 +134,11 @@ def _semantic_validate(report: dict[str, object]) -> None:
             reasons = field["reasons"]
             if reasons != sorted(reasons) or len(reasons) != len(set(reasons)):
                 raise ValueError("Field reasons are unordered or duplicated.")
-            if (field["injectable"] and reasons) or (
-                not field["injectable"] and not reasons
-            ):
+            if field["injectable"] is not False:
+                raise InjectableFieldError(_INJECTABLE_MESSAGE)
+            if not reasons:
                 raise ValueError("Injectability contradicts reasons.")
             field_count += 1
-            injectable_count += int(field["injectable"])
 
         diagnostics = operation["diagnostics"]
         diagnostic_keys = [
@@ -157,8 +165,8 @@ def _semantic_validate(report: dict[str, object]) -> None:
         "operations": len(operations),
         "case_generatable": 0,
         "fields": field_count,
-        "injectable_fields": injectable_count,
-        "unsupported_inputs": field_count - injectable_count,
+        "injectable_fields": 0,
+        "unsupported_inputs": field_count,
         "diagnostics": diagnostic_count,
     }
     if any(counts[name] != value for name, value in expected.items()):
@@ -172,7 +180,12 @@ def _validate(path: Path) -> None:
     report = json.loads(
         _read_bounded(path).decode("utf-8"), object_pairs_hook=unique_object
     )
-    validator.validate(report)
+    try:
+        validator.validate(report)
+    except ValidationError as exc:
+        if tuple(exc.absolute_schema_path)[-2:] == ("injectable", "const"):
+            raise InjectableFieldError(_INJECTABLE_MESSAGE) from exc
+        raise
     if not isinstance(report, dict):
         raise TypeError("Invalid report shape.")
     _semantic_validate(report)
@@ -184,6 +197,9 @@ def main() -> int:
             raise ValueError("Invalid arguments.")
         _validate(Path(sys.argv[1]))
         return 0
+    except InjectableFieldError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except DuplicateJsonKeyError:
         print(_DUPLICATE_KEY_MESSAGE, file=sys.stderr)
         return 2

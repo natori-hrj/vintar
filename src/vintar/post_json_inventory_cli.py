@@ -8,14 +8,18 @@ from typing import Annotated
 import typer
 
 from vintar.regression.discovery import DiscoveryError
-from vintar.regression.post_json_inventory import analyze_post_json, serialize_report
+from vintar.regression.post_json_inventory import (
+    MAX_REPORT_BYTES,
+    analyze_post_json,
+    serialize_report,
+)
 
 
 class PostJsonInventoryOutputError(ValueError):
     """The inventory output cannot be safely written."""
 
 
-def _write_report(spec: Path, output: Path, content: str) -> None:
+def _write_report(spec: Path, output: Path, content: bytes) -> None:
     destination = output.parent.resolve() / output.name
     if destination.resolve() == spec.resolve() or (
         destination.exists() and destination.samefile(spec)
@@ -26,10 +30,8 @@ def _write_report(spec: Path, output: Path, content: str) -> None:
     temporary: Path | None = None
     try:
         with NamedTemporaryFile(
-            mode="w",
+            mode="wb",
             dir=destination.parent,
-            encoding="utf-8",
-            newline="\n",
             delete=False,
         ) as stream:
             temporary = Path(stream.name)
@@ -53,7 +55,13 @@ def inventory_post_json_command(
     """Inventory POST application/json request bodies offline."""
     try:
         report = analyze_post_json(spec)
-        _write_report(spec, output, serialize_report(report))
+        content = serialize_report(report).encode("utf-8")
+        if len(content) > MAX_REPORT_BYTES:
+            raise PostJsonInventoryOutputError(
+                "The POST JSON inventory exceeds the report size limit. "
+                "Split the OpenAPI spec into smaller specs and run the inventory for each."
+            )
+        _write_report(spec, output, content)
     except KeyboardInterrupt as exc:
         typer.echo(
             "Error: POST JSON inventory was interrupted. Rerun to regenerate the report.",

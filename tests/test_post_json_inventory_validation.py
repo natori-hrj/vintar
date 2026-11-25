@@ -8,8 +8,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator, ValidationError
 
 from vintar.regression.post_json_inventory import (
+    MAX_REPORT_BYTES,
     AuthSource,
     BlockingReason,
     CaseGeneration,
@@ -204,7 +206,7 @@ def test_valid_writer_output_and_invalid_json_contract(tmp_path):
 
 def test_oversized_report_is_rejected_without_reading_value(tmp_path):
     path = tmp_path / "large.json"
-    path.write_bytes(b"PRIVATE-SENTINEL" + b" " * 2_097_152)
+    path.write_bytes(b"PRIVATE-SENTINEL" + b" " * MAX_REPORT_BYTES)
     completed = run_validator(path, "PRIVATE-SENTINEL")
     assert completed.returncode == 2
 
@@ -259,3 +261,36 @@ def test_duplicate_json_keys_are_rejected_without_echo(tmp_path, member):
         "Duplicate JSON keys make the report ambiguous across parsers. "
         "Regenerate the report with vintar inventory-post-json.\n"
     )
+
+
+def test_v1_rejects_injectable_field_with_consistent_claimed_counts(tmp_path):
+    report = valid_report(tmp_path)
+    fields = report["operations"][1]["fields"]
+    del fields[1:]
+    fields[0].update(injectable=True, reasons=[])
+    report["counts"].update(fields=1, injectable_fields=1, unsupported_inputs=0)
+
+    schema = json.loads(NAMESPACE["_SCHEMA"].read_text(encoding="utf-8"))
+    with pytest.raises(ValidationError) as error:
+        Draft202012Validator(schema).validate(report)
+    assert list(error.value.absolute_path) == [
+        "operations",
+        1,
+        "fields",
+        0,
+        "injectable",
+    ]
+    assert error.value.validator == "const"
+
+    message = (
+        "Vintar: POST JSON inventory validation failed. "
+        "Version 1 never marks POST fields injectable. "
+        "Regenerate the report with vintar inventory-post-json."
+    )
+    with pytest.raises(NAMESPACE["InjectableFieldError"]) as semantic_error:
+        NAMESPACE["_semantic_validate"](report)
+    assert str(semantic_error.value) == message
+
+    completed = run_validator(write_mutation(tmp_path, report, "injectable_attack"))
+    assert completed.returncode == 2
+    assert completed.stderr == message + "\n"
