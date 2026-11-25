@@ -418,6 +418,116 @@ def test_pointer_baseline_rejects_examples_not_reachable_from_request_body(
     assert str(caught.value) == INVALID_BASELINE_POINTER_MESSAGE
 
 
+def test_literal_ref_data_is_opaque_but_bound_to_operation_digest(tmp_path):
+    literal = {"$ref": "order-123"}
+    document = {
+        "openapi": "3.1.2",
+        "paths": {
+            "/orders": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {"$ref": {"type": "string"}},
+                                    "default": literal,
+                                    "enum": [literal],
+                                },
+                                "example": literal,
+                                "examples": {"named": {"value": literal}},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+    spec = tmp_path / "openapi.json"
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    report = analyze_post_json(spec)
+    candidate = report.operations[0].review_candidates[0]
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(serialize_report(report), encoding="utf-8")
+    canonical = b'{"$ref":"order-123"}'
+    answer = {
+        "version": 1,
+        "candidate_id": candidate.candidate_id,
+        "operation_definition_sha256": candidate.operation_definition_sha256,
+        "schema_pointer": candidate.schema_pointer,
+        "schema_definition_pointer": candidate.schema_definition_pointer,
+        "baseline": {
+            "pointer": "/paths/~1orders/post/requestBody/content/application~1json/example",
+            "body_sha256": hashlib.sha256(canonical).hexdigest(),
+        },
+        "concrete_pointer": "/$ref",
+        "operation_approved": True,
+        "side_effect": {"class": "no_side_effect", "confirmed": True},
+        "environment": {"class": "isolated_test", "confirmed": True},
+    }
+    answers = tmp_path / "answers.json"
+    write_answer(answers, answer)
+
+    material = resolve_post_json_review(spec, inventory, answers)
+
+    assert material.report["candidate_id"] == candidate.candidate_id
+    mutations = (
+        lambda media: media["example"].update({"$ref": "order-456"}),
+        lambda media: media["examples"]["named"]["value"].update({"$ref": "order-456"}),
+        lambda media: media["schema"]["default"].update({"$ref": "order-456"}),
+        lambda media: media["schema"]["enum"][0].update({"$ref": "order-456"}),
+    )
+    changed = None
+    for mutate in mutations:
+        edited = json.loads(json.dumps(document))
+        edited_media = edited["paths"]["/orders"]["post"]["requestBody"]["content"][
+            "application/json"
+        ]
+        mutate(edited_media)
+        spec.write_text(json.dumps(edited), encoding="utf-8")
+        changed = analyze_post_json(spec).operations[0].review_candidates[0]
+        assert changed.candidate_id == candidate.candidate_id
+        assert (
+            changed.operation_definition_sha256 != candidate.operation_definition_sha256
+        )
+    assert changed is not None
+    with pytest.raises(PostJsonReviewError) as caught:
+        resolve_post_json_review(spec, inventory, answers)
+    assert str(caught.value) == OPERATION_DEFINITION_CHANGED_MESSAGE
+
+
+def test_real_component_example_reference_is_resolved_for_digest(tmp_path):
+    spec, inventory, answers, answer = inputs(tmp_path)
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    media = document["paths"]["/items"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]
+    media["examples"] = {"referenced": {"$ref": "#/components/examples/Referenced"}}
+    document["components"] = {"examples": {"Referenced": {"value": {"name": "first"}}}}
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    before = refresh_inventory_and_answer(spec, inventory, answers, answer)
+    document["components"]["examples"]["Referenced"]["value"]["name"] = "second"
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    after = analyze_post_json(spec).operations[0].review_candidates[0]
+
+    assert before.candidate_id == after.candidate_id
+    assert before.operation_definition_sha256 != after.operation_definition_sha256
+
+
+def test_unresolvable_reference_object_uses_existing_fixed_message(tmp_path):
+    spec, inventory, answers, _ = inputs(tmp_path)
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    document["paths"]["/items"]["post"]["responses"] = {
+        "200": {"$ref": "#/components/responses/Missing"}
+    }
+    spec.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(PostJsonReviewError) as caught:
+        resolve_post_json_review(spec, inventory, answers)
+
+    assert str(caught.value) == STALE_INVENTORY_MESSAGE
+
+
 @pytest.mark.parametrize(
     "pointer",
     [

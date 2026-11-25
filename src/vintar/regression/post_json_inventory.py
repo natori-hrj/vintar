@@ -197,20 +197,59 @@ def post_json_candidate_id(
     return f"post-json-candidate-{hashlib.sha256(encoded).hexdigest()[:32]}"
 
 
-def _resolved_definition(
+def _definition_map(
     document: _Discovery,
     value: JSON,
     source: Source,
-    trail: tuple[Source, ...] = (),
+    trail: tuple[Source, ...],
+    kind: str,
 ) -> JSON:
-    if isinstance(value, list):
-        return [
-            _resolved_definition(document, child, source.child(index), trail)
-            for index, child in enumerate(value)
-        ]
     if not isinstance(value, dict):
         return value
-    if "$ref" in value:
+    return {
+        key: _definition_child(document, child, source.child(key), trail, kind, key)
+        for key, child in sorted(value.items())
+    }
+
+
+def _definition_list(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+) -> JSON:
+    if not isinstance(value, list):
+        return value
+    return [
+        _definition_value(document, child, source.child(index), trail, kind)
+        for index, child in enumerate(value)
+    ]
+
+
+def _definition_entries(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+) -> JSON:
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _definition_value(document, child, source.child(key), trail, kind)
+        for key, child in sorted(value.items())
+    }
+
+
+def _definition_value(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+) -> JSON:
+    if isinstance(value, dict) and "$ref" in value:
         reference_source = source.child("$ref")
         target, referenced = document._pointer(
             _string(value["$ref"], reference_source), reference_source
@@ -220,19 +259,158 @@ def _resolved_definition(
                 reference_source,
                 "Reference cycle detected. Break the recursive reference chain.",
             )
-        resolved = _resolved_definition(document, referenced, target, (*trail, target))
-        siblings = {
-            key: _resolved_definition(document, child, source.child(key), trail)
-            for key, child in sorted(value.items())
-            if key != "$ref"
-        }
-        if isinstance(resolved, dict):
+        resolved = _definition_value(
+            document, referenced, target, (*trail, target), kind
+        )
+        siblings = _definition_map(
+            document,
+            {key: child for key, child in value.items() if key != "$ref"},
+            source,
+            trail,
+            kind,
+        )
+        if isinstance(resolved, dict) and isinstance(siblings, dict):
             return resolved | siblings
         return {"resolved": resolved, "siblings": siblings}
-    return {
-        key: _resolved_definition(document, child, source.child(key), trail)
-        for key, child in sorted(value.items())
-    }
+    return _definition_map(document, value, source, trail, kind)
+
+
+def _schema_child(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    key: str,
+) -> JSON:
+    if key.startswith("x-") or key in {
+        "example",
+        "examples",
+        "default",
+        "enum",
+        "const",
+    }:
+        return value
+    if key in {
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "$defs",
+        "definitions",
+    }:
+        return _definition_entries(document, value, source, trail, "schema")
+    if key in {"allOf", "anyOf", "oneOf", "prefixItems"}:
+        return _definition_list(document, value, source, trail, "schema")
+    if key in {
+        "items",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "contains",
+        "propertyNames",
+        "if",
+        "then",
+        "else",
+        "not",
+        "unevaluatedItems",
+    }:
+        return _definition_value(document, value, source, trail, "schema")
+    return value
+
+
+def _definition_child(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+    kind: str,
+    key: str,
+) -> JSON:
+    if key.startswith("x-"):
+        return value
+    if kind == "schema":
+        return _schema_child(document, value, source, trail, key)
+    if kind in {"operation", "path_item"}:
+        if key == "parameters":
+            return _definition_list(document, value, source, trail, "parameter")
+        if key == "servers":
+            return value
+    if kind == "operation":
+        if key == "requestBody":
+            return _definition_value(document, value, source, trail, "request_body")
+        if key == "responses":
+            return _definition_entries(document, value, source, trail, "response")
+        if key == "callbacks":
+            return _definition_entries(document, value, source, trail, "callback")
+        return value
+    if kind == "path_item":
+        if key.lower() in {
+            "get",
+            "put",
+            "post",
+            "delete",
+            "options",
+            "head",
+            "patch",
+            "trace",
+        }:
+            return _definition_map(document, value, source, trail, "operation")
+        return value
+    if kind in {"parameter", "header"}:
+        if key == "schema":
+            return _definition_value(document, value, source, trail, "schema")
+        if key == "content":
+            return _definition_entries(document, value, source, trail, "media")
+        if key == "examples":
+            return _definition_entries(document, value, source, trail, "example")
+        if key == "example":
+            return value
+        return value
+    if kind == "request_body":
+        if key == "content":
+            return _definition_entries(document, value, source, trail, "media")
+        return value
+    if kind == "media":
+        if key == "schema":
+            return _definition_value(document, value, source, trail, "schema")
+        if key == "examples":
+            return _definition_entries(document, value, source, trail, "example")
+        if key == "example":
+            return value
+        if key == "encoding":
+            return _definition_entries(document, value, source, trail, "encoding")
+        return value
+    if kind == "encoding":
+        if key == "headers":
+            return _definition_entries(document, value, source, trail, "header")
+        return value
+    if kind == "response":
+        if key == "headers":
+            return _definition_entries(document, value, source, trail, "header")
+        if key == "content":
+            return _definition_entries(document, value, source, trail, "media")
+        if key == "links":
+            return _definition_entries(document, value, source, trail, "link")
+        return value
+    if kind == "callback":
+        return _definition_value(document, value, source, trail, "path_item")
+    if kind == "example" and key == "value":
+        return value
+    return value
+
+
+def _resolved_operation(
+    document: _Discovery,
+    value: JSON,
+    source: Source,
+    trail: tuple[Source, ...],
+) -> JSON:
+    if isinstance(value, list):
+        return [
+            _resolved_operation(document, child, source.child(index), trail)
+            for index, child in enumerate(value)
+        ]
+    if not isinstance(value, dict):
+        return value
+    return _definition_map(document, value, source, trail, "operation")
 
 
 def _operation_definition_sha256(
@@ -244,19 +422,15 @@ def _operation_definition_sha256(
     trail: tuple[Source, ...],
 ) -> str:
     definition: JSON = {
-        "operation": _resolved_definition(document, operation, operation_source, trail),
-        "path_parameters": _resolved_definition(
+        "operation": _resolved_operation(document, operation, operation_source, trail),
+        "path_parameters": _definition_list(
             document,
             path_item.get("parameters", []),
             path_source.child("parameters"),
             trail,
+            "parameter",
         ),
-        "path_servers": _resolved_definition(
-            document,
-            path_item.get("servers", []),
-            path_source.child("servers"),
-            trail,
-        ),
+        "path_servers": path_item.get("servers", []),
     }
     encoded = json.dumps(
         definition,

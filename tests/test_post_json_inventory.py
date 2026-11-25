@@ -183,6 +183,90 @@ def test_only_exact_string_fields_become_unapproved_review_candidates(tmp_path):
     assert diagnosed.diagnostics[0].reason == "one_of_unsupported"
 
 
+def test_operation_digest_resolves_reference_objects_only_at_allowed_positions(
+    tmp_path,
+):
+    document = {
+        "openapi": "3.1.2",
+        "paths": {
+            "/items": {
+                "parameters": [{"$ref": "#/components/parameters/Tenant"}],
+                "servers": [{"url": "https://isolated.invalid"}],
+                "post": {
+                    "requestBody": {"$ref": "#/components/requestBodies/Body"},
+                    "responses": {"200": {"$ref": "#/components/responses/Created"}},
+                    "callbacks": {
+                        "completed": {"$ref": "#/components/callbacks/Completed"}
+                    },
+                    "x-literal": {"$ref": "not-a-reference"},
+                },
+            }
+        },
+        "components": {
+            "schemas": {
+                "Body": {
+                    "type": "object",
+                    "properties": {"name": {"$ref": "#/components/schemas/Name"}},
+                },
+                "Name": {"type": "string"},
+                "Reply": {"allOf": [{"$ref": "#/components/schemas/Body"}]},
+            },
+            "parameters": {
+                "Tenant": {
+                    "name": "tenant",
+                    "in": "header",
+                    "schema": {"$ref": "#/components/schemas/Name"},
+                }
+            },
+            "requestBodies": {
+                "Body": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/Body"},
+                            "examples": {
+                                "body": {"$ref": "#/components/examples/Body"}
+                            },
+                        }
+                    }
+                }
+            },
+            "examples": {"Body": {"value": {"name": "example"}}},
+            "headers": {"Trace": {"schema": {"$ref": "#/components/schemas/Name"}}},
+            "links": {"Created": {"operationId": "readItem"}},
+            "responses": {
+                "Created": {
+                    "description": "created",
+                    "headers": {"X-Trace": {"$ref": "#/components/headers/Trace"}},
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/Reply"}
+                        }
+                    },
+                    "links": {"created": {"$ref": "#/components/links/Created"}},
+                }
+            },
+            "callbacks": {
+                "Completed": {
+                    "{$request.body#/callbackUrl}": {
+                        "$ref": "#/components/pathItems/Callback"
+                    }
+                }
+            },
+            "pathItems": {
+                "Callback": {
+                    "post": {"responses": {"204": {"description": "complete"}}}
+                }
+            },
+        },
+    }
+
+    report = inventory.analyze_post_json(write_spec(tmp_path, document))
+
+    [candidate] = report.operations[0].review_candidates
+    assert candidate.json_pointer_pattern == "/name"
+    assert len(candidate.operation_definition_sha256) == 64
+
+
 @pytest.mark.parametrize(
     ("schema", "expected"),
     [
