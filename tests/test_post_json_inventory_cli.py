@@ -151,7 +151,7 @@ def test_oversized_report_does_not_touch_output(tmp_path):
 
 
 def test_report_at_size_limit_passes_validator(tmp_path):
-    document, operation = wide_spec(450)
+    document, operation = wide_spec(400)
     spec = tmp_path / "openapi.json"
     spec.write_text(json.dumps(document), encoding="utf-8")
     size = len(serialize_report(analyze_post_json(spec)).encode("utf-8"))

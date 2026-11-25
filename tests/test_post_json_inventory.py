@@ -151,6 +151,38 @@ def test_nested_schema_types_are_normalized_for_properties_and_items(tmp_path):
     ]
 
 
+def test_only_exact_string_fields_become_unapproved_review_candidates(tmp_path):
+    document = spec(
+        schema={
+            "type": "object",
+            "properties": {
+                "exact": {"type": "string"},
+                "nullable": {"type": ["string", "null"]},
+                "integer": {"type": "integer"},
+            },
+        }
+    )
+
+    operation = inventory.analyze_post_json(write_spec(tmp_path, document)).operations[
+        0
+    ]
+
+    [candidate] = operation.review_candidates
+    assert candidate.approval == "unapproved"
+    assert candidate.json_pointer_pattern == "/exact"
+    assert candidate.types == ("string",)
+    assert all(not field.injectable for field in operation.fields)
+
+    document["paths"]["/items"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]["properties"]["choice"] = {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+    diagnosed = inventory.analyze_post_json(write_spec(tmp_path, document)).operations[
+        0
+    ]
+    assert diagnosed.review_candidates == ()
+    assert diagnosed.diagnostics[0].reason == "one_of_unsupported"
+
+
 @pytest.mark.parametrize(
     ("schema", "expected"),
     [

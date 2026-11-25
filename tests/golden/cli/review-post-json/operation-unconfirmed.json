@@ -1,0 +1,6 @@
+{
+  "exit_code": 2,
+  "review_json": null,
+  "stderr": "Error: operation_approved must be JSON true. Review and explicitly confirm this decision.\n",
+  "stdout_json": null
+}

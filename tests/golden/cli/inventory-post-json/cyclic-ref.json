@@ -33,11 +33,12 @@
         "operation_id": "createItem",
         "operation_pointer": "/paths/~1items/post",
         "path": "/items",
-        "request_body_pointer": "/paths/~1items/post/requestBody/content/application~1json"
+        "request_body_pointer": "/paths/~1items/post/requestBody/content/application~1json",
+        "review_candidates": []
       }
     ],
     "report_type": "openapi_post_json_inventory",
-    "schema_version": 1
+    "schema_version": 2
   },
   "stderr": "",
   "stdout": "POST JSON inventory: 1 operations; 0 case-generatable; 0 fields; 0 injectable; 1 diagnostics.\n"

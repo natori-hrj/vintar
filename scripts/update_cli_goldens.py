@@ -1,6 +1,7 @@
 """Capture deterministic CLI results and regenerate their golden files."""
 
 import argparse
+import hashlib
 import json
 import runpy
 from contextlib import chdir
@@ -27,6 +28,7 @@ from vintar.core.rate_limit import RateLimiter
 from vintar.regression import batch
 from vintar.regression import runner as regression_runner
 from vintar.regression.cases import load_regression_case
+from vintar.regression.post_json_inventory import analyze_post_json, serialize_report
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_DIR = ROOT / "tests" / "golden" / "cli"
@@ -166,6 +168,12 @@ SCENARIOS = {
     "inventory-post-json/output-spec-conflict.json": Scenario(2, 0),
     "inventory-post-json/unwritable-output.json": Scenario(2, 0),
     "inventory-post-json/interrupt.json": Scenario(130, 0),
+    "review-post-json/success.json": Scenario(0, 0),
+    "review-post-json/digest-mismatch.json": Scenario(2, 0),
+    "review-post-json/operation-unconfirmed.json": Scenario(2, 0),
+    "review-post-json/side-effect-unconfirmed.json": Scenario(2, 0),
+    "review-post-json/environment-unconfirmed.json": Scenario(2, 0),
+    "review-post-json/wildcard-pointer.json": Scenario(2, 0),
 }
 
 
@@ -526,6 +534,111 @@ def capture_review(name, scenario, folder, args, env):
     }
 
 
+def capture_post_review(name, scenario, folder, args, env):
+    sentinel = "PRIVATE-BODY-SENTINEL-74d9"
+    body = {"orders": [{"sku": sentinel}]}
+    document = {
+        "openapi": "3.1.2",
+        "paths": {
+            "/items": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "orders": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "sku": {"type": "string"}
+                                                },
+                                            },
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+    spec = folder / "openapi.json"
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    inventory = folder / "inventory.json"
+    report = analyze_post_json(spec)
+    inventory.write_text(serialize_report(report), encoding="utf-8")
+    candidate = report.operations[0].review_candidates[0]
+    canonical = json.dumps(
+        body, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("ascii")
+    answer = {
+        "version": 1,
+        "candidate_id": candidate.candidate_id,
+        "operation_sha256": candidate.operation_sha256,
+        "schema_pointer": candidate.schema_pointer,
+        "schema_definition_pointer": candidate.schema_definition_pointer,
+        "baseline": {
+            "value": body,
+            "body_sha256": hashlib.sha256(canonical).hexdigest(),
+        },
+        "concrete_pointer": "/orders/0/sku",
+        "operation_approved": True,
+        "side_effect": {"class": "no_side_effect", "confirmed": True},
+        "environment": {"class": "isolated_test", "confirmed": True},
+    }
+    if name.endswith("digest-mismatch.json"):
+        answer["baseline"]["body_sha256"] = "0" * 64
+    elif name.endswith("operation-unconfirmed.json"):
+        answer["operation_approved"] = False
+    elif name.endswith("side-effect-unconfirmed.json"):
+        answer["side_effect"]["confirmed"] = False
+    elif name.endswith("environment-unconfirmed.json"):
+        answer["environment"]["confirmed"] = False
+    elif name.endswith("wildcard-pointer.json"):
+        answer["concrete_pointer"] = "/orders/*/sku"
+    answers = folder / "answers.json"
+    answers.write_text(json.dumps(answer), encoding="utf-8")
+    output = folder / "review.json"
+    with (
+        chdir(folder),
+        patch("socket.socket", side_effect=AssertionError("Review opened a socket.")),
+        patch("socket.getaddrinfo", side_effect=AssertionError("Review resolved DNS.")),
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "review-post-json",
+                "--spec",
+                spec.name,
+                "--inventory",
+                inventory.name,
+                "--answers",
+                answers.name,
+                "--output",
+                output.name,
+            ],
+            env=env,
+        )
+    if result.exit_code != scenario.exit_code:
+        raise ValueError(result.stderr)
+    artifact = (
+        json.loads(output.read_text(encoding="utf-8")) if output.exists() else None
+    )
+    serialized = result.stdout + result.stderr + json.dumps(artifact)
+    if sentinel in serialized:
+        raise ValueError("POST review golden disclosed its baseline body.")
+    return {
+        "exit_code": result.exit_code,
+        "stdout_json": json.loads(result.stdout) if result.stdout else None,
+        "stderr": result.stderr,
+        "review_json": artifact,
+    }
+
+
 def capture_materialization(name, scenario, folder, args, env):
     capture_review("review-draft/success.json", Scenario(0, 0), folder, None, env)
     draft = next((folder / "drafts").iterdir())
@@ -646,10 +759,18 @@ def capture(
     env: dict[str, str] | None = None,
 ) -> str:
     if name.startswith(
-        ("discover/", "review-draft/", "materialize-case/", "inventory-post-json/")
+        (
+            "discover/",
+            "review-draft/",
+            "materialize-case/",
+            "inventory-post-json/",
+            "review-post-json/",
+        )
     ):
         if name.startswith("review-draft/"):
             offline_capture = capture_review
+        elif name.startswith("review-post-json/"):
+            offline_capture = capture_post_review
         elif name.startswith("materialize-case/"):
             offline_capture = capture_materialization
         elif name.startswith("discover/"):

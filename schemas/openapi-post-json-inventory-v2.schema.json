@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/natori-hrj/vintar/blob/main/schemas/openapi-post-json-inventory-v2.schema.json",
+  "title": "Vintar OpenAPI POST JSON Inventory v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report_type", "counts", "operations"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "report_type": {"const": "openapi_post_json_inventory"},
+    "counts": {"$ref": "#/$defs/counts"},
+    "operations": {"type": "array", "maxItems": 512, "items": {"$ref": "#/$defs/operation"}}
+  },
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0, "maximum": 8192},
+    "pointer": {"type": "string", "pattern": "^(?:/(?:[^~/]|~[01])*)*$"},
+    "pattern_pointer": {"type": "string", "pattern": "^(?:/(?:[^~/]|~[01])*)*$"},
+    "blocking_reason": {"enum": ["post_method_unsupported", "request_body_case_generation_unsupported"]},
+    "diagnostic_reason": {"enum": ["missing_schema", "boolean_schema_unsupported", "all_of_unsupported", "any_of_unsupported", "one_of_unsupported", "additional_properties_unsupported", "dynamic_ref_unsupported", "schema_id_scope_unsupported", "external_ref_unsupported", "recursive_ref_unsupported", "reference_sibling_unsupported", "reference_limit_exceeded"]},
+    "types": {"type": "array", "uniqueItems": true, "maxItems": 7, "items": {"enum": ["array", "boolean", "integer", "null", "number", "object", "string"]}},
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operations", "case_generatable", "fields", "injectable_fields", "unsupported_inputs", "diagnostics", "post_operations_without_application_json"],
+      "properties": {
+        "operations": {"$ref": "#/$defs/count"}, "case_generatable": {"$ref": "#/$defs/count"},
+        "fields": {"$ref": "#/$defs/count"}, "injectable_fields": {"$ref": "#/$defs/count"},
+        "unsupported_inputs": {"$ref": "#/$defs/count"}, "diagnostics": {"$ref": "#/$defs/count"},
+        "post_operations_without_application_json": {"$ref": "#/$defs/count"}
+      }
+    },
+    "scheme": {"type": "object", "additionalProperties": false, "required": ["name", "type"], "properties": {"name": {"type": "string", "minLength": 1}, "type": {"enum": ["apiKey", "http", "mutualTLS", "oauth2", "openIdConnect"]}}},
+    "alternative": {"type": "object", "additionalProperties": false, "required": ["schemes"], "properties": {"schemes": {"type": "array", "items": {"$ref": "#/$defs/scheme"}}}},
+    "auth": {"type": "object", "additionalProperties": false, "required": ["source", "public", "alternatives"], "properties": {"source": {"enum": ["none", "global", "operation"]}, "public": {"type": "boolean"}, "alternatives": {"type": "array", "items": {"$ref": "#/$defs/alternative"}}}},
+    "field": {
+      "type": "object", "additionalProperties": false,
+      "required": ["json_pointer", "schema_pointer", "schema_definition_pointer", "types", "required", "injectable", "reasons"],
+      "properties": {
+        "json_pointer": {"$ref": "#/$defs/pattern_pointer"}, "schema_pointer": {"$ref": "#/$defs/pointer"},
+        "schema_definition_pointer": {"$ref": "#/$defs/pointer"}, "types": {"$ref": "#/$defs/types"},
+        "required": {"type": "boolean"}, "injectable": {"const": false},
+        "reasons": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/blocking_reason"}}
+      }
+    },
+    "diagnostic": {"type": "object", "additionalProperties": false, "required": ["reason", "schema_pointer", "schema_definition_pointer"], "properties": {"reason": {"$ref": "#/$defs/diagnostic_reason"}, "schema_pointer": {"$ref": "#/$defs/pointer"}, "schema_definition_pointer": {"oneOf": [{"$ref": "#/$defs/pointer"}, {"type": "null"}]}}},
+    "candidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate_id", "approval", "operation_sha256"],
+      "properties": {
+        "candidate_id": {"type": "string", "pattern": "^post-json-candidate-[0-9a-f]{32}$"},
+        "approval": {"const": "unapproved"},
+        "operation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "operation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "operation_id", "operation_pointer", "request_body_pointer", "case_generation", "blocking_reasons", "auth", "fields", "diagnostics", "review_candidates"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^/"}, "operation_id": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "operation_pointer": {"$ref": "#/$defs/pointer"}, "request_body_pointer": {"$ref": "#/$defs/pointer"},
+        "case_generation": {"const": "unsupported"}, "blocking_reasons": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/blocking_reason"}},
+        "auth": {"$ref": "#/$defs/auth"}, "fields": {"type": "array", "items": {"$ref": "#/$defs/field"}},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}},
+        "review_candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}}
+      }
+    }
+  }
+}

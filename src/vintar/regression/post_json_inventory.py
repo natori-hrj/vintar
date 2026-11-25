@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from enum import StrEnum
@@ -65,6 +66,12 @@ class CaseGeneration(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class CandidateApproval(StrEnum):
+    """Inventory candidates are never execution or review approval."""
+
+    UNAPPROVED = "unapproved"
+
+
 @dataclass(frozen=True, slots=True)
 class SchemaDiagnostic:
     reason: SchemaDiagnosticReason
@@ -83,6 +90,21 @@ class BodyField:
     reasons: tuple[BlockingReason, ...] = (
         BlockingReason.REQUEST_BODY_CASE_GENERATION_UNSUPPORTED,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCandidate:
+    candidate_id: str
+    approval: CandidateApproval
+    method: str
+    path: str
+    operation_pointer: str
+    request_body_pointer: str
+    operation_sha256: str
+    json_pointer_pattern: str
+    schema_pointer: str
+    schema_definition_pointer: str
+    types: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +136,7 @@ class PostJsonOperation:
     auth: ResolvedAuth
     fields: tuple[BodyField, ...]
     diagnostics: tuple[SchemaDiagnostic, ...]
+    review_candidates: tuple[ReviewCandidate, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +171,88 @@ _BLOCKING_REASONS = (
     BlockingReason.REQUEST_BODY_CASE_GENERATION_UNSUPPORTED,
 )
 _SECURITY_TYPES = frozenset({"apiKey", "http", "oauth2", "openIdConnect", "mutualTLS"})
+
+
+def _candidate_identity(
+    path: str,
+    operation_pointer: str,
+    request_body_pointer: str,
+    field: BodyField,
+) -> list[object]:
+    return [
+        "POST",
+        path,
+        operation_pointer,
+        request_body_pointer,
+        field.json_pointer,
+        field.schema_pointer,
+        field.schema_definition_pointer,
+        list(field.types),
+    ]
+
+
+def post_json_operation_sha256(
+    path: str,
+    operation_pointer: str,
+    request_body_pointer: str,
+    field: BodyField,
+) -> str:
+    """Digest the exact operation and schema provenance used for review."""
+    encoded = json.dumps(
+        _candidate_identity(path, operation_pointer, request_body_pointer, field),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def post_json_candidate_id(
+    path: str,
+    operation_pointer: str,
+    request_body_pointer: str,
+    field: BodyField,
+) -> str:
+    """Return a stable ID for one unapproved review candidate."""
+    digest = post_json_operation_sha256(
+        path, operation_pointer, request_body_pointer, field
+    )[:32]
+    return f"post-json-candidate-{digest}"
+
+
+def _review_candidates(
+    path: str,
+    operation_pointer: str,
+    request_body_pointer: str,
+    fields: tuple[BodyField, ...],
+    diagnostics: tuple[SchemaDiagnostic, ...],
+) -> tuple[ReviewCandidate, ...]:
+    if diagnostics:
+        return ()
+    candidates = []
+    for field in fields:
+        if field.types != ("string",):
+            continue
+        digest = post_json_operation_sha256(
+            path, operation_pointer, request_body_pointer, field
+        )
+        candidates.append(
+            ReviewCandidate(
+                post_json_candidate_id(
+                    path, operation_pointer, request_body_pointer, field
+                ),
+                CandidateApproval.UNAPPROVED,
+                "POST",
+                path,
+                operation_pointer,
+                request_body_pointer,
+                digest,
+                field.json_pointer,
+                field.schema_pointer,
+                field.schema_definition_pointer,
+                field.types,
+            )
+        )
+    return tuple(sorted(candidates, key=lambda item: item.candidate_id))
 
 
 def _diagnostic_key(item: SchemaDiagnostic) -> tuple[str, str, str]:
@@ -440,6 +545,7 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
                     _resolve_auth(document, operation, operation_source, schemes),
                     (),
                     (diagnostic,),
+                    (),
                 )
             )
             continue
@@ -475,6 +581,10 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
                 "",
                 _required(body, body_definition),
             )
+        ordered_fields = tuple(
+            sorted(fields, key=lambda item: (item.json_pointer, item.schema_pointer))
+        )
+        ordered_diagnostics = tuple(sorted(set(diagnostics), key=_diagnostic_key))
         operations.append(
             PostJsonOperation(
                 operation_path,
@@ -484,13 +594,15 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
                 CaseGeneration.UNSUPPORTED,
                 _BLOCKING_REASONS,
                 _resolve_auth(document, operation, operation_source, schemes),
-                tuple(
-                    sorted(
-                        fields,
-                        key=lambda item: (item.json_pointer, item.schema_pointer),
-                    )
+                ordered_fields,
+                ordered_diagnostics,
+                _review_candidates(
+                    operation_path,
+                    operation_source.pointer,
+                    media_source.pointer,
+                    ordered_fields,
+                    ordered_diagnostics,
                 ),
-                tuple(sorted(set(diagnostics), key=_diagnostic_key)),
             )
         )
     ordered_operations = tuple(
@@ -501,7 +613,7 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
         len(operation.diagnostics) for operation in ordered_operations
     )
     return PostJsonInventoryReport(
-        1,
+        2,
         "openapi_post_json_inventory",
         InventoryCounts(
             len(ordered_operations),
@@ -517,6 +629,12 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
 
 
 def _json_value(value: object) -> object:
+    if isinstance(value, ReviewCandidate):
+        return {
+            "candidate_id": value.candidate_id,
+            "approval": value.approval.value,
+            "operation_sha256": value.operation_sha256,
+        }
     if isinstance(value, StrEnum):
         return value.value
     if isinstance(value, tuple):

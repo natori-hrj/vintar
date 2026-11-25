@@ -4,6 +4,10 @@
 
 **Changed**
 
+- Add offline POST JSON candidate review with explicit array indexes, canonical
+  baseline digests, operation approval, reviewed `no_side_effect`, and isolated
+  environment confirmation. Inventory v2 candidates remain unapproved and all
+  inventory fields remain non-injectable; historical inventory v1 still validates.
 - Check that the release tag matches the package version at the tagged commit
   before running release tests, builds, or publishing.
 

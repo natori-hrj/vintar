@@ -1,0 +1,6 @@
+{
+  "exit_code": 2,
+  "review_json": null,
+  "stderr": "Error: Baseline body digest does not match. Recompute body_sha256 from the complete canonical JSON body and confirm it before reviewing.\n",
+  "stdout_json": null
+}

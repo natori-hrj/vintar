@@ -1,0 +1,43 @@
+{
+  "exit_code": 0,
+  "review_json": {
+    "baseline": {
+      "body_sha256": "8b672bf71f217f9211c2b86ac9a0ca4049ebbac956e13ffd2af8200cf5e953b2",
+      "source": "reviewer"
+    },
+    "candidate_id": "post-json-candidate-eccb97f5b6d1a16866f117b7ce2a191e",
+    "environment": {
+      "class": "isolated_test",
+      "confirmed": true
+    },
+    "field": {
+      "concrete_json_pointer": "/orders/0/sku",
+      "json_pointer_pattern": "/orders/*/sku",
+      "schema_definition_pointer": "/paths/~1items/post/requestBody/content/application~1json/schema/properties/orders/items/properties/sku",
+      "schema_pointer": "/paths/~1items/post/requestBody/content/application~1json/schema/properties/orders/items/properties/sku",
+      "types": [
+        "string"
+      ]
+    },
+    "operation": {
+      "approved": true,
+      "method": "POST",
+      "operation_pointer": "/paths/~1items/post",
+      "operation_sha256": "eccb97f5b6d1a16866f117b7ce2a191e580ec4b46dbff74af00a49908efb2ea5",
+      "path": "/items",
+      "request_body_pointer": "/paths/~1items/post/requestBody/content/application~1json"
+    },
+    "report_type": "post_json_discovery_review",
+    "schema_version": 1,
+    "side_effect": {
+      "class": "no_side_effect",
+      "confirmed": true
+    }
+  },
+  "stderr": "",
+  "stdout_json": {
+    "candidate_id": "post-json-candidate-eccb97f5b6d1a16866f117b7ce2a191e",
+    "report_type": "post_json_discovery_review_summary",
+    "schema_version": 1
+  }
+}
