@@ -235,6 +235,25 @@ def test_review_rejects_edited_spec_with_fixed_stale_message(tmp_path):
     assert str(caught.value) == INVENTORY_SPEC_MISMATCH_MESSAGE
 
 
+def test_review_rejects_operation_with_unresolved_ref_sibling_diagnostic(tmp_path):
+    spec, inventory, answers, _ = inputs(tmp_path)
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    schema = document["paths"]["/items"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    schema["properties"]["name"] = {
+        "$ref": "#/components/schemas/Name",
+        "not": {"type": "string"},
+    }
+    document["components"] = {"schemas": {"Name": {"type": "string"}}}
+    spec.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(PostJsonReviewError) as caught:
+        resolve_post_json_review(spec, inventory, answers)
+
+    assert str(caught.value) == INVENTORY_SPEC_MISMATCH_MESSAGE
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -293,14 +312,14 @@ def test_schema_ref_target_and_siblings_are_hashed_separately(tmp_path, change_t
     document["components"] = {"schemas": {"Name": {"type": "string", "minimum": 5}}}
     media["schema"] = {
         "$ref": "#/components/schemas/Name",
-        "minimum": 1,
+        "description": "original annotation",
     }
     spec.write_text(json.dumps(document), encoding="utf-8")
     before = refresh_inventory_and_answer(spec, inventory, answers, answer)
     if change_target:
         document["components"]["schemas"]["Name"]["minimum"] = 10
     else:
-        media["schema"]["minimum"] = 2
+        media["schema"]["description"] = "changed annotation"
     spec.write_text(json.dumps(document), encoding="utf-8")
     after = analyze_post_json(spec).operations[0].review_candidates[0]
 

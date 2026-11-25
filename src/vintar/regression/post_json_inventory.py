@@ -168,6 +168,18 @@ _SCHEMA_REASONS = {
     "$dynamicRef": SchemaDiagnosticReason.DYNAMIC_REF_UNSUPPORTED,
     "$id": SchemaDiagnosticReason.SCHEMA_ID_SCOPE_UNSUPPORTED,
 }
+_REFERENCE_ANNOTATION_SIBLINGS = frozenset(
+    {
+        "$comment",
+        "deprecated",
+        "description",
+        "examples",
+        "readOnly",
+        "summary",
+        "title",
+        "writeOnly",
+    }
+)
 _BLOCKING_REASONS = (
     BlockingReason.POST_METHOD_UNSUPPORTED,
     BlockingReason.REQUEST_BODY_CASE_GENERATION_UNSUPPORTED,
@@ -648,19 +660,7 @@ def _walk_schema(
     required: bool,
     literal_star_positions: tuple[int, ...] = (),
 ) -> tuple[list[BodyField], list[SchemaDiagnostic]]:
-    reference_siblings: list[SchemaDiagnostic] = []
-    if (
-        document.version.startswith("3.0.")
-        and isinstance(value, dict)
-        and "$ref" in value
-    ):
-        for sibling in sorted(value.keys() - {"$ref", "summary", "description"}):
-            reference_siblings.append(
-                SchemaDiagnostic(
-                    SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
-                    declared.child(sibling).pointer,
-                )
-            )
+    reference_siblings = _reference_sibling_diagnostics(document, value, declared)
     try:
         node, definition, resolved_trail = document.resolve_schema(
             value, declared, trail
@@ -744,6 +744,35 @@ def _walk_schema(
         fields.extend(item_fields)
         diagnostics.extend(item_diagnostics)
     return fields, diagnostics
+
+
+def _reference_sibling_diagnostics(
+    document: _Discovery, value: JSON, declared: Source
+) -> list[SchemaDiagnostic]:
+    diagnostics: list[SchemaDiagnostic] = []
+    source = declared
+    seen: set[Source] = set()
+    while isinstance(value, dict) and "$ref" in value and source not in seen:
+        seen.add(source)
+        allowed = (
+            {"$ref", "summary", "description"}
+            if document.version.startswith("3.0.")
+            else {"$ref", *_REFERENCE_ANNOTATION_SIBLINGS}
+        )
+        diagnostics.extend(
+            SchemaDiagnostic(
+                SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
+                source.child(sibling).pointer,
+            )
+            for sibling in sorted(value.keys() - allowed)
+        )
+        try:
+            source, value = document._pointer(
+                _string(value["$ref"], source.child("$ref")), source.child("$ref")
+            )
+        except DiscoveryError:
+            break
+    return diagnostics
 
 
 def _security_schemes(document: _Discovery) -> dict[str, AuthScheme]:

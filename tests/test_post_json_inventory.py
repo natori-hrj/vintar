@@ -410,7 +410,91 @@ def test_reference_sibling_and_definition_pointer(tmp_path):
     report = inventory.analyze_post_json(write_spec(tmp_path, document))
     [operation] = report.operations
     assert operation.fields[0].schema_definition_pointer.endswith("/Name/properties/x")
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED
+    ]
+    assert operation.review_candidates == ()
+
+
+@pytest.mark.parametrize(
+    "sibling",
+    [
+        {"not": {"type": "string"}},
+        {"type": "integer"},
+        {"enum": ["allowed"]},
+        {"allOf": [{"type": "string"}]},
+    ],
+)
+def test_openapi_31_ref_constraint_sibling_blocks_candidates(tmp_path, sibling):
+    document = spec(
+        schema={"$ref": "#/components/schemas/Name", **sibling},
+        components={"schemas": {"Name": {"type": "string"}}},
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.review_candidates == ()
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED
+    ]
+    assert operation.diagnostics[0].schema_pointer.endswith("/" + next(iter(sibling)))
+
+
+def test_openapi_31_ref_annotation_sibling_allows_candidate(tmp_path):
+    document = spec(
+        schema={
+            "$ref": "#/components/schemas/Name",
+            "description": "display name",
+        },
+        components={"schemas": {"Name": {"type": "string"}}},
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
     assert operation.diagnostics == ()
+    assert len(operation.review_candidates) == 1
+
+
+def test_openapi_31_nested_ref_constraint_sibling_blocks_candidates(tmp_path):
+    document = spec(
+        schema={
+            "type": "object",
+            "properties": {"name": {"$ref": "#/components/schemas/Alias"}},
+        },
+        components={
+            "schemas": {
+                "Alias": {
+                    "$ref": "#/components/schemas/Name",
+                    "not": {"type": "string"},
+                },
+                "Name": {"type": "string"},
+            }
+        },
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.review_candidates == ()
+    assert operation.diagnostics[0].schema_pointer == "/components/schemas/Alias/not"
+
+
+def test_openapi_30_reference_sibling_behavior_is_unchanged(tmp_path):
+    document = spec(
+        schema={
+            "$ref": "#/components/schemas/Name",
+            "description": "allowed Reference Object annotation",
+            "not": {"type": "string"},
+        },
+        components={"schemas": {"Name": {"type": "string"}}},
+        openapi="3.0.4",
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.review_candidates == ()
+    assert [item.schema_pointer for item in operation.diagnostics] == [
+        "/paths/~1items/post/requestBody/content/application~1json/schema/not"
+    ]
 
 
 def test_reference_limit_is_operation_diagnostic(tmp_path, monkeypatch):
