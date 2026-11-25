@@ -260,8 +260,9 @@ An authorization case declares:
   labels that are descriptive inputs, not discovered truth;
 - explicit resource IDs and reviewed ownership/tenant declarations;
 - an expected authorization matrix for each identity x operation x resource;
-- one positive control and one negative control using pre-approved identities
-  and resources;
+- one positive control request for every authenticated identity, using that
+  identity's own credentials against a pre-approved resource it is expected to
+  access, plus negative controls using pre-approved identities and resources;
 - immutable request templates and response assertions; and
 - side-effect classification, with reviewed `no_side_effect` operations
   initially required.
@@ -270,6 +271,13 @@ Cases never contain credentials. They never enumerate, guess, mutate, or follow
 links to arbitrary users/resources. OpenAPI and observed responses may help a
 human find candidates but cannot generate expected policy, ownership, roles, or
 permissions.
+
+Materialization rejects a case unless every authenticated identity has exactly
+the required explicit positive control and its expected success assertions.
+A case-wide positive control cannot satisfy this rule. An unauthenticated
+identity is exempt from the positive-control requirement only when the case
+declares it explicitly as unauthenticated; absence of an identity or provider
+binding is not an implicit unauthenticated identity.
 
 ### Isolation and execution
 
@@ -296,9 +304,24 @@ header presence, and bounded schema/shape checks. Assertions cannot contain
 secrets or production PII. A denial must also assert that protected resource
 markers are absent; an allow must assert identity/resource-specific declared
 fields or markers. Initial assertions are limited to status code plus presence
-or absence of declared response fields or markers. Positive controls prove the
-resource and credential are usable;
-negative controls prove the denial assertion can distinguish principals.
+or absence of declared response fields or markers. Each authenticated identity's
+own positive control must succeed with that identity's credentials before any
+denial cell for that identity can conform. If the control fails because of an
+expired credential, authentication failure, unexpected status, or any other
+control assertion failure, every denial result for that identity is
+`inconclusive`, never `conforms`. A different identity's successful control
+cannot substitute for it. Negative controls prove the denial assertion can
+distinguish principals.
+
+Field-presence and field-absence assertions are evaluated only after the body is
+fully read within the configured read limit and parsed successfully in the
+case's declared expected format, initially JSON. A content-type mismatch, parse
+failure, truncated body, or read-limit overflow makes the matrix cell
+`inconclusive`, never `conforms`. In particular, failure to evaluate a JSON
+Pointer because the body is unparseable is not evidence that the field is
+absent. A denial cell may explicitly declare that an empty body is acceptable;
+without that declaration, an empty body is `inconclusive` whenever the cell has
+a field-presence or field-absence assertion.
 
 Use a distinct `AuthorizationVerdict` such as `conforms`, `violation`, and
 `inconclusive`, with explicit reasons for assertion mismatch, unexpected allow,
@@ -319,6 +342,8 @@ PII, or free text.
 | Credential forwarded to another origin through case URL, redirect, provider endpoint, or target rebinding | Exact origin-bound credentials; target and credential scope intersection; redirects off; final pre-dispatch check; network egress policy; no URL credentials. |
 | Injection changes or captures credential material | Inject before auth; disjoint types; provider-owned fields reserved; structural proof that JSON injection changes one leaf only. |
 | Identity/session contamination creates false authorization results | Separate client, transport, cookies, headers, auth context, and connection pool per identity; no shared mutable session; isolation tests with identity canaries. |
+| An expired or rejected credential makes a denial look correct | Require a successful positive control for each authenticated identity using its own credentials; classify every denial for that identity as inconclusive when its control fails. Only explicitly declared unauthenticated identities are exempt. |
+| A proxy or read failure turns an unreadable denial body into apparent field absence | Require complete bounded reads, matching declared content type, successful format parsing, and evaluable pointers before field assertions. Treat HTML proxy responses, truncation, overflow, parse failure, and undeclared empty bodies as inconclusive. |
 | Untrusted PR exfiltrates CI credentials or changes policy | No credentials or protected environment for PR/fork jobs; trusted post-merge workflow; pin actions/dependencies; environment approval; do not use `pull_request_target`; protected runtime policy outside checkout. |
 | SSRF, DNS rebinding, or access to metadata/internal services | Existing exact-origin scope plus runner/network egress allowlists, DNS/IP controls, metadata blocking, and isolated runners. Document that application origin checks alone are insufficient. |
 | POST causes unintended effects or replay | No automatic POST execution; reviewed per-operation approval; isolated environment; only `no_side_effect` initially; fixed budget/rate; no retries; mutation-specific assessment and cleanup. |
@@ -388,8 +413,8 @@ coverage pragma, retry, or sleep-based synchronization is permitted.
 | 4. Trusted POST execution | Generalize runner preflight for POST v2, exact per-operation approval, isolated-environment policy, reviewed `no_side_effect` enforcement, shared budget/rate, and existing SQLi runners through generalized injection. | Isolated loopback E2E for Boolean/Time/Error JSON bodies; request capture proves type/value preservation and exact counts; reject every side-effect class except `no_side_effect`; 429/budget/rate/timeout; no retries; SQLi never promoted to vulnerable; confirm SQLi Report v1 represents POST results before proposing a Report v2. | 350-500 product, 500-800 tests | PR 3 |
 | 5. Authentication contracts | Add `vintar.auth` protocol, secret-bearing types, origin binding, collision rules, failure taxonomy, redaction, no-auth and externally supplied Bearer/API-key/Basic/static-Cookie providers; consume externally obtained IAP/WIF/OAuth/OIDC tokens without login or token acquisition automation; extend import contracts/guard. | Unit tests with canary secrets in every error/report/log path; origin/collision/expiry tests; provider conformance; static Cookie isolation; no network acquisition or login flow; architecture tests. | 450-650 product, 650-900 tests | PR 1; policy decisions |
 | 6. Authenticated execution | Compose provider with isolated execution contexts; acquire material after preflight and outside Time clocks; accept trusted runtime configuration only from environment variables or a local config file with an explicit precedence rule; treat IAP/WIF/OAuth/OIDC as externally supplied token profiles. | Local authenticated server E2E for success/401/403/expiry/cross-origin; environment/file precedence and rejection tests; Time clock proof; no forwarding; CI fixture has synthetic tokens only. | 400-600 product, 650-900 tests/docs | PRs 4-5 |
-| 7. Authorization case model | Add `checks.authorization` pure models, assertions, verdict/reason types, an independently versioned authorization case parser, reviewed ownership/matrix/controls, and only status plus declared field/marker presence/absence assertions; no HTTP runner yet. | Closed schemas, matrix completeness, aliases, explicit resources, assertion allowlist, no inferred policy, PII/secret rejection, cross-family type/import tests. | 450-700 product, 700-1,000 tests | PR 5 |
-| 8. Authorization runner | Execute declared read-only matrix with one isolated context per identity and distinct decision model; integrate aggregate policy/budget/rate and fail-closed controls. | Multi-identity local server E2E for IDOR/BOLA/BFLA/horizontal/vertical/tenant/unauthenticated cases; canary isolation; order independence without sleeps; transport failures. | 500-750 product, 800-1,200 tests | PRs 6-7 |
+| 7. Authorization case model | Add `checks.authorization` pure models, assertions, verdict/reason types, an independently versioned authorization case parser, reviewed ownership/matrix/controls, and only status plus declared field/marker presence/absence assertions; require one successful-control definition per authenticated identity and explicit unauthenticated identities; model bounded body readability, expected format, and opt-in empty denial bodies; no HTTP runner yet. | Closed schemas, matrix completeness, aliases, explicit resources, per-identity positive-control presence, unauthenticated exemption, readable-body assertion prerequisites, empty-body declaration, assertion allowlist, no inferred policy, PII/secret rejection, cross-family type/import tests. | 450-700 product, 700-1,000 tests | PR 5 |
+| 8. Authorization runner | Execute each authenticated identity's positive control and the declared read-only matrix with one isolated context per identity and a distinct decision model; make that identity's denial cells inconclusive when its control fails; require complete bounded parsing before field assertions; integrate aggregate policy/budget/rate and fail-closed controls. | Multi-identity local server E2E for IDOR/BOLA/BFLA/horizontal/vertical/tenant/unauthenticated cases; expired-credential control failure proves all denial cells for that identity are inconclusive; HTML `403` proxy, content-type mismatch, malformed JSON, truncation, read-limit overflow, and undeclared empty-body fixtures never satisfy absence; declared acceptable empty denial body; canary isolation; order independence without sleeps; transport failures. | 500-750 product, 800-1,200 tests | PRs 6-7 |
 | 9. Separate authorization report and CI gate | Add authorization-only serialization, schema, semantic validator, CLI/report artifact, and CI gate without changing the SQLi Report v1 or SQLi gate; update goldens and CI guide. | Existing SQLi v1 legacy fixture and goldens remain unchanged; authorization semantic mutation suite, independent exit-code matrix, redaction/size/determinism, isolated E2E artifact validation. | 450-700 product, 700-1,000 tests/docs | PR 8 |
 | 10. Local authorization measurement and release hardening | Build a local synthetic authorization app and derive the corpus size, diversity, and release thresholds at this stage; add the POST/auth quality harness and document CI deployment, threat model, limitations, and migration. | Measure expected matrix-cell classification, false violation, missed violation, inconclusive/auth-failure rates, identity leakage, and budget adherence; record and review thresholds before release; release rehearsal/distributions. | 250-450 product/scripts, 500-800 fixtures/docs | PR 9 |
 
@@ -402,15 +427,18 @@ Use three layers:
 
 1. **Pure invariants.** Table-driven tests cover strict parsing, pointer
    resolution, immutable copying, type preservation, auth collisions/redaction,
-   policy intersection, matrix completeness, serializers, and semantic
-   validators. Mechanical architecture tests forbid forbidden imports and send
-   paths.
+   policy intersection, matrix completeness, mandatory per-authenticated-identity
+   positive controls, explicit unauthenticated identities, bounded response
+   readability and empty-body declarations, serializers, and semantic validators.
+   Mechanical architecture tests forbid forbidden imports and send paths.
 2. **Isolated local E2E.** Deterministic loopback servers capture requests and
    implement synthetic authenticated tenants/roles/resources. Tests verify exact
    request order/count, no credential forwarding, no identity state sharing,
-   auth acquisition outside timing, positive/negative controls, response
-   assertions, rate/budget stops, and stable exit/report contracts. Synchronize
-   with explicit events/queues/server readiness, never sleeps or retries.
+   auth acquisition outside timing, per-identity positive/negative controls,
+   expired credentials, HTML `403` proxy responses, content-type/parse/truncation/
+   read-limit failures, explicit empty-body behavior, response assertions,
+   rate/budget stops, and stable exit/report contracts. Synchronize with explicit
+   events/queues/server readiness, never sleeps or retries.
 3. **Maintainer real measurement.** Extend the existing measurement discipline
    to a local synthetic authorization app when the roadmap reaches authorization
    checks, and later to reviewed pinned disposable API fixtures if needed. Corpus
@@ -453,8 +481,13 @@ The first enterprise release is eligible only when:
 - origin binding, collision prevention, redaction, identity isolation, and Time
   acquisition exclusion pass hostile local E2E tests;
 - authorization read-only cases cover all named categories through explicit
-  users/resources/matrices and positive/negative controls, with response
-  assertions beyond status;
+  users/resources/matrices, a successful positive control for every authenticated
+  identity, explicit unauthenticated identities, and negative controls; a failed
+  identity control makes all denial cells for that identity inconclusive;
+- field assertions conform only after a complete within-limit read and successful
+  parse in the declared format; content-type mismatch, parse failure, truncation,
+  read-limit overflow, an unevaluable pointer, and an undeclared empty body are
+  inconclusive, including the HTML `403` proxy scenario;
 - untrusted PR execution cannot access trusted credentials or select the
   privileged environment in the supplied CI example;
 - legacy case/report fixtures, JSON Schemas, CLI goldens, and exit codes remain
