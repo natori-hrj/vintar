@@ -5,6 +5,10 @@ import math
 
 MAX_STRICT_JSON_BYTES = 1_048_576
 MAX_STRICT_JSON_NESTING = 48
+MAX_JSON_INTEGER_DIGITS = 4_300
+JSON_INTEGER_TOO_LONG_MESSAGE = (
+    "JSON integer is too long. Use a string field for large identifiers."
+)
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -26,13 +30,22 @@ class StrictJsonError(ValueError):
 
 
 def _parse_integer(source: str) -> int:
-    negative = source.startswith("-")
-    digits = source[1:] if negative else source
-    value = 0
-    for offset in range(0, len(digits), 9):
-        chunk = digits[offset : offset + 9]
-        value = value * (10 ** len(chunk)) + int(chunk)
-    return -value if negative else value
+    digits = source.removeprefix("-")
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise StrictJsonError(JSON_INTEGER_TOO_LONG_MESSAGE)
+    return int(source)
+
+
+def serialize_json_integer(value: int) -> str:
+    """Serialize one bounded JSON integer with CPython's linear conversion."""
+    try:
+        text = str(value)
+    except ValueError as exc:
+        raise StrictJsonError(JSON_INTEGER_TOO_LONG_MESSAGE) from exc
+    digits = text.removeprefix("-")
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise StrictJsonError(JSON_INTEGER_TOO_LONG_MESSAGE)
+    return text
 
 
 def _parse_float(source: str) -> float:

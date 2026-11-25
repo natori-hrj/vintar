@@ -5,7 +5,11 @@ import math
 from dataclasses import dataclass
 from typing import cast
 
-from vintar.core.strict_json import DuplicateJsonKeyError, parse_strict_json
+from vintar.core.strict_json import (
+    DuplicateJsonKeyError,
+    parse_strict_json,
+    serialize_json_integer,
+)
 
 type JsonLeaf = bool | int | float | str | None
 type _JsonValue = JsonLeaf | _JsonArray | _JsonObject
@@ -33,27 +37,13 @@ def _freeze(value: object) -> _JsonValue:
     raise TypeError("Strict JSON parser returned an unsupported value type.")
 
 
-def _integer_text(value: int) -> str:
-    if value == 0:
-        return "0"
-    negative = value < 0
-    remaining = -value if negative else value
-    chunks: list[int] = []
-    while remaining:
-        remaining, chunk = divmod(remaining, 1_000_000_000)
-        chunks.append(chunk)
-    head = str(chunks.pop())
-    digits = head + "".join(f"{chunk:09d}" for chunk in reversed(chunks))
-    return f"-{digits}" if negative else digits
-
-
 def _serialize(value: _JsonValue) -> str:
     if value is None:
         return "null"
     if type(value) is bool:
         return "true" if value else "false"
     if type(value) is int:
-        return _integer_text(value)
+        return serialize_json_integer(value)
     if type(value) is float:
         if not math.isfinite(value):
             raise ValueError(
@@ -76,11 +66,12 @@ def _serialize(value: _JsonValue) -> str:
     )
 
 
-@dataclass(frozen=True, slots=True, repr=False, init=False)
+@dataclass(frozen=True, slots=True, repr=False, init=False, eq=False)
 class JsonBody:
     """An immutable strict-JSON document with deterministic serialization."""
 
     _value: _JsonValue
+    _canonical: bytes
 
     def __init__(self) -> None:
         raise TypeError("JsonBody must be created with JsonBody.from_bytes().")
@@ -89,6 +80,7 @@ class JsonBody:
     def _from_value(cls, value: _JsonValue) -> "JsonBody":
         body = object.__new__(cls)
         object.__setattr__(body, "_value", value)
+        object.__setattr__(body, "_canonical", _serialize(value).encode("ascii"))
         return body
 
     @classmethod
@@ -102,7 +94,15 @@ class JsonBody:
 
     def to_bytes(self) -> bytes:
         """Serialize with sorted object keys and Python repr for finite floats."""
-        return _serialize(self._value).encode("ascii")
+        return self._canonical
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not JsonBody:
+            return NotImplemented
+        return self._canonical == other._canonical
+
+    def __hash__(self) -> int:
+        return hash(self._canonical)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -227,4 +227,6 @@ def replace_json_leaf(
         )
     if type(replacement) is float and not math.isfinite(replacement):
         raise ValueError("JSON replacement must be finite. Use a finite JSON number.")
+    if type(replacement) is int:
+        serialize_json_integer(replacement)
     return JsonBody._from_value(_replace(body._value, pointer.tokens, replacement))

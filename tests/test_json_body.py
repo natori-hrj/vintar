@@ -1,9 +1,12 @@
 from dataclasses import FrozenInstanceError
+from time import perf_counter
 
 import pytest
 
 from vintar.core.json_body import JsonBody, JsonPointer, replace_json_leaf
 from vintar.core.strict_json import (
+    JSON_INTEGER_TOO_LONG_MESSAGE,
+    MAX_JSON_INTEGER_DIGITS,
     MAX_STRICT_JSON_BYTES,
     MAX_STRICT_JSON_NESTING,
     StrictJsonError,
@@ -36,9 +39,37 @@ def test_strict_json_leaf_serialization_rule(source, serialized, is_float):
         assert float(repr(value)) == value
 
 
-def test_arbitrarily_large_integer_round_trips_exactly():
-    digits = b"1234567890" * 1_000
+def test_integer_at_digit_limit_round_trips_exactly():
+    digits = b"9" * MAX_JSON_INTEGER_DIGITS
     assert JsonBody.from_bytes(digits).to_bytes() == digits
+
+
+def test_integer_over_digit_limit_is_rejected_with_fixed_message():
+    digits = b"9" * (MAX_JSON_INTEGER_DIGITS + 1)
+    with pytest.raises(StrictJsonError) as caught:
+        JsonBody.from_bytes(digits)
+    assert str(caught.value) == JSON_INTEGER_TOO_LONG_MESSAGE
+
+
+def test_replacement_integer_over_digit_limit_uses_fixed_message():
+    oversized = 10**MAX_JSON_INTEGER_DIGITS
+    with pytest.raises(StrictJsonError) as caught:
+        replace_json_leaf(JsonBody.from_bytes(b"0"), JsonPointer.parse(""), oversized)
+    assert str(caught.value) == JSON_INTEGER_TOO_LONG_MESSAGE
+
+
+def test_max_size_body_of_max_length_integers_has_bounded_work():
+    integer = b"9" * MAX_JSON_INTEGER_DIGITS
+    count = (MAX_STRICT_JSON_BYTES - 2) // (len(integer) + 1)
+    compact = b"[" + b",".join([integer] * count) + b"]"
+    source = compact + b" " * (MAX_STRICT_JSON_BYTES - len(compact))
+
+    started = perf_counter()
+    serialized = JsonBody.from_bytes(source).to_bytes()
+    elapsed = perf_counter() - started
+
+    assert serialized == compact
+    assert elapsed < 5.0
 
 
 @pytest.mark.parametrize("source", [b"1e400", b"-1e400"])
@@ -62,6 +93,24 @@ def test_object_order_and_unicode_have_deterministic_bytes():
     second = JsonBody.from_bytes('{"a":[1,2.00],"界":"値"}'.encode())
     assert first.to_bytes() == second.to_bytes()
     assert first.to_bytes() == b'{"a":[1,2.0],"\\u754c":"\\u5024"}'
+
+
+def test_equality_and_hash_follow_canonical_json_bytes():
+    true_body = JsonBody.from_bytes(b"true")
+    one_body = JsonBody.from_bytes(b"1")
+    assert len({true_body, one_body}) == 2
+    assert JsonBody.from_bytes(b"false") != JsonBody.from_bytes(b"0")
+    assert JsonBody.from_bytes(b"1") != JsonBody.from_bytes(b"1.0")
+    assert JsonBody.from_bytes(b"-0.0") != JsonBody.from_bytes(b"0.0")
+    assert JsonBody.from_bytes(b"[true]") != JsonBody.from_bytes(b"[1]")
+    assert JsonBody.from_bytes(b'{"a":1}') != JsonBody.from_bytes(b'{"a":1.0}')
+
+
+def test_equal_bodies_with_different_key_order_have_equal_hashes():
+    first = JsonBody.from_bytes(b'{"a":1,"b":true}')
+    second = JsonBody.from_bytes(b'{"b":true,"a":1}')
+    assert first == second
+    assert hash(first) == hash(second)
 
 
 @pytest.mark.parametrize(

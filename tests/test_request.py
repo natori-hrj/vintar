@@ -67,6 +67,20 @@ def test_request_template_accepts_immutable_json_body():
     )
 
 
+def test_request_templates_distinguish_json_body_types():
+    integer = RequestTemplate(
+        method="POST",
+        url="http://localhost/",
+        json_body=JsonBody.from_bytes(b'{"a":1}'),
+    )
+    number = RequestTemplate(
+        method="POST",
+        url="http://localhost/",
+        json_body=JsonBody.from_bytes(b'{"a":1.0}'),
+    )
+    assert integer != number
+
+
 def test_request_template_is_frozen():
     template = RequestTemplate(
         method="GET",
