@@ -226,17 +226,25 @@ def _walk_schema(
             )
 
     fields: list[BodyField] = []
-    if json_pointer:
+    type_name = _schema_type(node)
+    scalar_root = not json_pointer and type_name in {
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "null",
+    }
+    if json_pointer or scalar_root:
         fields.append(
             BodyField(
                 json_pointer,
                 declared.pointer,
                 definition.pointer,
-                _schema_type(node),
+                type_name,
                 required,
             )
         )
-    if "$id" in node or "$dynamicRef" in node:
+    if scalar_root or "$id" in node or "$dynamicRef" in node:
         return fields, diagnostics
 
     properties_value = node.get("properties", {})
@@ -360,7 +368,12 @@ def _operation_id(operation: JSONMap, source: Source) -> str | None:
 
 
 def analyze_post_json(path: Path) -> PostJsonInventoryReport:
-    """Analyze POST JSON bodies without contacting any server or target."""
+    """Analyze POST JSON bodies without contacting any server or target.
+
+    Match media types case-insensitively after stripping parameters and surrounding
+    whitespace. Prefer the exact application/json key, then the lexically first
+    original matching key. Pointers identify the original selected media entry.
+    """
     document = _load_document(path)
     schemes = _security_schemes(document)
     paths_source = document.source.child("paths")
@@ -414,11 +427,20 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
             )
             continue
         content = _mapping(body.get("content"), body_definition.child("content"))
-        if "application/json" not in content:
+        media_key = min(
+            (
+                key
+                for key in content
+                if key.partition(";")[0].strip().lower() == "application/json"
+            ),
+            key=lambda key: (key != "application/json", key),
+            default=None,
+        )
+        if media_key is None:
             without_json += 1
             continue
-        media_source = body_definition.child("content").child("application/json")
-        media = _mapping(content["application/json"], media_source)
+        media_source = body_definition.child("content").child(media_key)
+        media = _mapping(content[media_key], media_source)
         fields: list[BodyField] = []
         diagnostics: list[SchemaDiagnostic] = []
         if "schema" not in media:
@@ -441,7 +463,7 @@ def analyze_post_json(path: Path) -> PostJsonInventoryReport:
                 operation_path,
                 _operation_id(operation, operation_source),
                 operation_source.pointer,
-                request_source.pointer,
+                media_source.pointer,
                 CaseGeneration.UNSUPPORTED,
                 _BLOCKING_REASONS,
                 _resolve_auth(document, operation, operation_source, schemes),

@@ -83,6 +83,32 @@ def test_simple_nested_and_array_object_fields_are_inventory_only(tmp_path):
     assert report.counts.injectable_fields == report.counts.case_generatable == 0
 
 
+@pytest.mark.parametrize("schema_type", ["string", "integer", "boolean"])
+@pytest.mark.parametrize("required", [True, False, None])
+def test_scalar_root_uses_empty_pointer_and_body_required(
+    tmp_path, schema_type, required
+):
+    document = spec(
+        schema={"$ref": "#/components/schemas/Scalar"},
+        components={"schemas": {"Scalar": {"type": schema_type}}},
+    )
+    body = document["paths"]["/items"]["post"]["requestBody"]
+    if required is None:
+        del body["required"]
+    else:
+        body["required"] = required
+
+    report = inventory.analyze_post_json(write_spec(tmp_path, document))
+    [operation] = report.operations
+    [field] = operation.fields
+    assert field.json_pointer == ""
+    assert field.type_name == schema_type
+    assert field.required is (required is True)
+    assert field.schema_definition_pointer == "/components/schemas/Scalar"
+    assert report.counts.fields == report.counts.unsupported_inputs == 1
+    assert operation.diagnostics == ()
+
+
 def test_scalar_array_and_local_leaf_ref_preserve_schema_pointers(tmp_path):
     document = spec(
         schema={
@@ -219,6 +245,64 @@ def test_json_media_is_selected_when_other_media_are_present(tmp_path):
     content["text/plain"] = {"schema": {"properties": {"private": {"type": "string"}}}}
     report = inventory.analyze_post_json(write_spec(tmp_path, document))
     assert [field.json_pointer for field in report.operations[0].fields] == ["/safe"]
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "Application/JSON",
+        "application/json; charset=utf-8",
+        " application/json ;charset=UTF-8",
+    ],
+)
+def test_json_media_normalizes_for_matching_but_keeps_source_pointer(tmp_path, key):
+    document = spec(schema={"type": "string"})
+    content = document["paths"]["/items"]["post"]["requestBody"]["content"]
+    content[key] = content.pop("application/json")
+
+    report = inventory.analyze_post_json(write_spec(tmp_path, document))
+    [operation] = report.operations
+    [field] = operation.fields
+    pointer = "/paths/~1items/post/requestBody/content/" + key.replace("/", "~1")
+    assert operation.request_body_pointer == pointer
+    assert (
+        field.schema_pointer == field.schema_definition_pointer == pointer + "/schema"
+    )
+    assert report.counts.post_operations_without_application_json == 0
+
+
+@pytest.mark.parametrize("include_exact", [False, True])
+def test_equivalent_json_media_select_exact_then_original_key_order(
+    tmp_path, include_exact
+):
+    document = spec()
+    body = document["paths"]["/items"]["post"]["requestBody"]
+    options = {
+        "application/json; charset=utf-8": {"schema": {"type": "string"}},
+        "Application/JSON": {"schema": {"type": "integer"}},
+    }
+    if include_exact:
+        options["application/json"] = {"schema": {"type": "boolean"}}
+
+    for content in (options, dict(reversed(tuple(options.items())))):
+        body["content"] = content
+        report = inventory.analyze_post_json(write_spec(tmp_path, document))
+        [operation] = report.operations
+        [field] = operation.fields
+        assert field.type_name == ("boolean" if include_exact else "integer")
+        assert operation.request_body_pointer.endswith(
+            "/application~1json" if include_exact else "/Application~1JSON"
+        )
+
+
+def test_json_structured_suffix_is_counted_only(tmp_path):
+    document = spec()
+    body = document["paths"]["/items"]["post"]["requestBody"]
+    body["content"] = {"application/problem+json": {"schema": {"type": "string"}}}
+
+    report = inventory.analyze_post_json(write_spec(tmp_path, document))
+    assert report.operations == ()
+    assert report.counts.post_operations_without_application_json == 1
 
 
 def test_duplicate_operation_ids_do_not_affect_operation_identity(tmp_path):
