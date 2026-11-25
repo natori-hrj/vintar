@@ -455,6 +455,30 @@ def test_openapi_31_ref_annotation_sibling_allows_candidate(tmp_path):
     assert len(operation.review_candidates) == 1
 
 
+def test_openapi_31_ref_default_keeps_all_operation_candidates(tmp_path):
+    document = spec(
+        schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "$ref": "#/components/schemas/Name",
+                    "default": "guest",
+                },
+                "email": {"type": "string"},
+            },
+        },
+        components={"schemas": {"Name": {"type": "string"}}},
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.diagnostics == ()
+    assert {item.json_pointer_pattern for item in operation.review_candidates} == {
+        "/email",
+        "/name",
+    }
+
+
 def test_openapi_31_nested_ref_constraint_sibling_blocks_candidates(tmp_path):
     document = spec(
         schema={
@@ -476,6 +500,75 @@ def test_openapi_31_nested_ref_constraint_sibling_blocks_candidates(tmp_path):
 
     assert operation.review_candidates == ()
     assert operation.diagnostics[0].schema_pointer == "/components/schemas/Alias/not"
+
+
+def test_reference_depth_limit_stops_before_reading_the_next_target(tmp_path):
+    schemas = {
+        f"Node{index}": {
+            "$ref": (
+                f"#/components/schemas/Node{index + 1}"
+                if index < 23
+                else "#/components/schemas/Missing"
+            )
+        }
+        for index in range(24)
+    }
+    document = spec(
+        schema={"$ref": "#/components/schemas/Node0"},
+        components={"schemas": schemas},
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_LIMIT_EXCEEDED
+    ]
+    assert operation.diagnostics[0].schema_pointer.endswith("/schema")
+
+
+def test_repeated_schema_reference_uses_analysis_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr("vintar.regression.discovery.MAX_REFERENCE_WORK", 1)
+    document = spec(
+        schema={
+            "type": "object",
+            "properties": {
+                "first": {"$ref": "#/components/schemas/Name"},
+                "second": {"$ref": "#/components/schemas/Name"},
+            },
+        },
+        components={"schemas": {"Name": {"type": "string"}}},
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert operation.diagnostics == ()
+    assert {item.json_pointer_pattern for item in operation.review_candidates} == {
+        "/first",
+        "/second",
+    }
+
+
+def test_reference_cycle_preserves_sibling_and_cycle_diagnostics(tmp_path):
+    document = spec(
+        schema={"$ref": "#/components/schemas/A"},
+        components={
+            "schemas": {
+                "A": {
+                    "$ref": "#/components/schemas/B",
+                    "not": {"type": "string"},
+                },
+                "B": {"$ref": "#/components/schemas/A"},
+            }
+        },
+    )
+
+    [operation] = inventory.analyze_post_json(write_spec(tmp_path, document)).operations
+
+    assert [item.reason for item in operation.diagnostics] == [
+        inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
+        inventory.SchemaDiagnosticReason.RECURSIVE_REF_UNSUPPORTED,
+    ]
+    assert operation.review_candidates == ()
 
 
 def test_openapi_30_reference_sibling_behavior_is_unchanged(tmp_path):
