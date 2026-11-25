@@ -39,6 +39,7 @@ from vintar.checks.sqli.decision_facts import (
 from vintar.checks.sqli.error_analyzer import (
     ERROR_PROBE_ORDER,
     ErrorObservation,
+    ErrorProbeFailure,
     ErrorProbeKind,
     error_probe_failure_reason,
     operational_stop_reason,
@@ -335,9 +336,10 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
                 "Error decision facts identify an unrecorded request. Regenerate the "
                 "report with the bounded Error runner."
             )
+        kind = ERROR_PROBE_ORDER[parsed.sequence - 1]
         expected_kind = (
             ErrorDecisionProbeKind.BASELINE
-            if ERROR_PROBE_ORDER[parsed.sequence - 1] is ErrorProbeKind.BASELINE
+            if kind is ErrorProbeKind.BASELINE
             else ErrorDecisionProbeKind.ERROR
         )
         if parsed.probe_kind is not expected_kind:
@@ -345,36 +347,39 @@ def _validate_decision_facts(item: dict[str, object]) -> None:
                 "Error decision facts contradict the fixed request-plan kind. "
                 "Regenerate the report with the bounded Error runner."
             )
+        attempt: ErrorObservation | ErrorProbeFailure
         if isinstance(parsed.condition, ProbeError):
-            try:
-                derived_reason = error_probe_failure_reason(parsed.condition)
-            except ValueError:
-                derived_reason = None
+            attempt = ErrorProbeFailure(
+                kind, parsed.sequence, error_probe_failure_reason(parsed.condition)
+            )
         else:
             status = parsed.status_code
-            if type(status) is not int:
-                derived_reason = None
-            else:
-                kind = ERROR_PROBE_ORDER[parsed.sequence - 1]
-                synthetic = ErrorObservation(
-                    kind=kind,
-                    sequence=parsed.sequence,
-                    status_code=status,
-                    body_size=0,
-                    body_digest="0" * 64,
-                    truncated=parsed.condition is OperationalCondition.TRUNCATED,
-                )
-                derived_reason = operational_stop_reason(synthetic)
-                if (
-                    derived_reason is None
-                    and parsed.condition is OperationalCondition.NON_SUCCESS_STATUS
-                    and not 200 <= status < 300
-                ):
-                    derived_reason = "non_success_status"
+            assert type(status) is int
+            attempt = ErrorObservation(
+                kind=kind,
+                sequence=parsed.sequence,
+                status_code=status,
+                body_size=0,
+                body_digest="0" * 64,
+                truncated=parsed.condition is OperationalCondition.TRUNCATED,
+            )
+        stop_reason = operational_stop_reason(attempt)
+        derived_reason = stop_reason
+        if (
+            stop_reason is None
+            and parsed.condition is OperationalCondition.NON_SUCCESS_STATUS
+        ):
+            derived_reason = "non_success_status"
         if derived_reason != reason:
             raise _ContradictoryDecisionFacts(
                 "Error decision facts contradict the condition selected by shared "
                 "operational precedence. Regenerate the report with Vintar."
+            )
+        if stop_reason is not None and parsed.sequence != request_count:
+            raise _ContradictoryDecisionFacts(
+                "Error decision facts contradict request accounting. The runner "
+                "stops at this attempt, so no further requests can be recorded. "
+                "Regenerate the report with the current Vintar writer."
             )
         return
     if item.get("check_type") == "sqli.time" and isinstance(

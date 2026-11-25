@@ -150,7 +150,10 @@ def operational_stop_reason(attempt: object) -> str | None: ...
 
 
 def operational_stop_reason(attempt: object) -> str | None:
-    """Derive the single terminal reason, with batch-stop precedence."""
+    """Derive the reason that ends the plan at this attempt, if any.
+
+    Non-success status other than HTTP 429 is classified after collection.
+    """
     if type(attempt) is ErrorProbeFailure:
         return attempt.reason_code
     if type(attempt) is not ErrorObservation:
