@@ -11,6 +11,8 @@ import tarfile
 import threading
 import tomllib
 import traceback
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -1975,6 +1977,36 @@ class _KeepAliveHandler(BaseHTTPRequestHandler):
         return
 
 
+def _run_boolean_probes(origin, transport, collector):
+    context = ExecutionContext(
+        scope=ScopePolicy(
+            allowed_origins=frozenset(
+                {AllowedOrigin("http", "127.0.0.1", int(origin.rsplit(":", 1)[1]))}
+            )
+        ),
+        budget=RequestBudget(6),
+        rate_limiter=RateLimiter(requests_per_second=100),
+    )
+    return verify_boolean_sqli(
+        check_id="fixed-keep-alive-six-probe",
+        template=RequestTemplate(
+            method="GET",
+            url=origin + "/lookup",
+            params=(("id", "2"),),
+        ),
+        point=InjectionPoint(
+            location=InjectionLocation.QUERY,
+            name="id",
+            mode=InjectionMode.APPEND,
+        ),
+        true_payload=" AND 1=1-- ",
+        false_payload=" AND 1=2-- ",
+        context=context,
+        transport=transport,
+        observation_sink=collector,
+    )
+
+
 def _run_six_probes_through_bridge(runner, transport):
     upstream = _KeepAliveUpstream()
     started = threading.Event()
@@ -1995,39 +2027,12 @@ def _run_six_probes_through_bridge(runner, transport):
     collector = runner.ObservationCollector()
     try:
         with runner.loopback_bridge("127.0.0.1", target) as (origin, bridge):
-            context = ExecutionContext(
-                scope=ScopePolicy(
-                    allowed_origins=frozenset(
-                        {
-                            AllowedOrigin(
-                                "http", "127.0.0.1", int(origin.rsplit(":", 1)[1])
-                            )
-                        }
-                    )
-                ),
-                budget=RequestBudget(6),
-                rate_limiter=RateLimiter(requests_per_second=100),
-            )
-            result = verify_boolean_sqli(
-                check_id="fixed-keep-alive-six-probe",
-                template=RequestTemplate(
-                    method="GET",
-                    url=origin + "/lookup",
-                    params=(("id", "2"),),
-                ),
-                point=InjectionPoint(
-                    location=InjectionLocation.QUERY,
-                    name="id",
-                    mode=InjectionMode.APPEND,
-                ),
-                true_payload=" AND 1=1-- ",
-                false_payload=" AND 1=2-- ",
-                context=context,
-                transport=transport,
-                observation_sink=collector,
-            )
-            responses = bridge.recorded_responses(6)
+            result = _run_boolean_probes(origin, transport, collector)
             observations = collector.ordered(6)
+            response_map = bridge.synchronized_response_map(
+                frozenset(item.sequence for item in observations)
+            )
+            responses = tuple(response_map[item.sequence] for item in observations)
             return result, bridge, responses, observations, tuple(upstream.requests)
     finally:
         upstream.shutdown()
@@ -2061,6 +2066,76 @@ def test_measurement_transport_records_one_connection_per_probe():
     )
 
 
+def test_delayed_final_wire_response_reaches_v10_writer_and_validator(
+    tmp_path, monkeypatch
+):
+    runner = load_runner()
+    final_recording_started = threading.Event()
+    synchronization_waiting = threading.Event()
+    release_final_recording = threading.Event()
+    original_recorder_init = runner._ResponseRecorder.__init__
+    original_record_response = runner._ResponseRecorder.record_response
+
+    def observed_recorder_init(recorder):
+        original_recorder_init(recorder)
+        original_wait = recorder.response_condition.wait
+
+        def observed_wait(timeout=None):
+            synchronization_waiting.set()
+            return original_wait(timeout)
+
+        recorder.response_condition.wait = observed_wait
+
+    def delayed_record_response(recorder, sequence, response):
+        if sequence == 5:
+            final_recording_started.set()
+            if not release_final_recording.wait(timeout=5):
+                raise RuntimeError("The final wire-response barrier was not released.")
+        return original_record_response(recorder, sequence, response)
+
+    monkeypatch.setattr(runner._ResponseRecorder, "__init__", observed_recorder_init)
+    monkeypatch.setattr(
+        runner._ResponseRecorder, "record_response", delayed_record_response
+    )
+
+    with (
+        runner.measurement_http_transport() as transport,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        future = executor.submit(_run_six_probes_through_bridge, runner, transport)
+        assert final_recording_started.wait(timeout=5)
+        assert synchronization_waiting.wait(timeout=5)
+        release_final_recording.set()
+        result, _, responses, observations, _ = future.result(timeout=5)
+
+    decision_facts = (
+        None
+        if result.decision_facts is None
+        else runner.decision_facts_report_dict(result.decision_facts)
+    )
+    attempts = runner.sanitized_attempts(
+        observations,
+        {
+            observation.sequence: response
+            for observation, response in zip(observations, responses, strict=True)
+        },
+        decision_facts=decision_facts,
+    )
+    report = v10_report_from_legacy_v4(runner)
+    record = next(
+        item
+        for item in report["records"]
+        if item["check_type"] == "sqli.boolean"
+        and item["mode"] == "six_probe"
+        and item["reason_code"] == result.reason_code
+    )
+    record["attempts"] = attempts
+    output = tmp_path / "report.json"
+    runner.write_report(output, report)
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert runner.validate_measurement_report(written) is written
+
+
 def test_keep_alive_transport_fails_closed_on_second_exchange():
     runner = load_runner()
 
@@ -2091,28 +2166,57 @@ def test_measurement_transport_factory_disables_keep_alive(monkeypatch):
     assert limits.max_keepalive_connections == 0
 
 
-def test_bridge_handler_parse_failure_preserves_redacted_cause_and_sequence():
+@pytest.fixture
+def eof_upstream():
+    def start(response):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if response:
+                    self.wfile.write(response)
+
+        with socketserver.TCPServer(("127.0.0.1", 0), Handler) as upstream:
+            upstream.timeout = 5
+            started = threading.Event()
+
+            def serve():
+                started.set()
+                upstream.handle_request()
+
+            thread = threading.Thread(target=serve)
+            thread.start()
+            try:
+                assert started.wait(timeout=5)
+                yield SimpleNamespace(
+                    target_id="fixed-eof", service_port=upstream.server_address[1]
+                )
+            finally:
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+
+    return contextmanager(start)
+
+
+def test_bridge_handler_parse_failure_preserves_redacted_cause_and_sequence(
+    eof_upstream,
+):
     runner = load_runner()
-    target = SimpleNamespace(target_id="fixed-diagnostic", service_port=1)
     sentinel = "SENTINEL-SECRET-7f3a"
-    malformed = (
-        b"HTTP/1.1 200 OK\r\nContent-Length: " + sentinel.encode() + b"\r\n\r\nbody"
-    )
+    truncated = b"HTTP/1.1 200 OK\r\nX-Test: " + sentinel.encode()
 
     with (
+        eof_upstream(truncated) as target,
         pytest.raises(
             runner.MeasurementError,
             match=r"handler failed at sequence 0 with MeasurementError.*rejected invalid HTTP framing or request sequencing.*Accepted sequences: \[0\]; completed sequences: \[\]",
         ) as caught,
-        runner.loopback_bridge("127.0.0.1", target) as (_, bridge),
+        runner.loopback_bridge("127.0.0.1", target) as (origin, bridge),
+        runner.measurement_http_transport() as transport,
     ):
-        request = object()
-        sequence = bridge.recorder.accept()
-        bridge.accepted_sequences[id(request)] = sequence
-        try:
-            runner._parse_http_response(malformed)
-        except runner.MeasurementError:
-            bridge.handle_error(request, ("127.0.0.1", 1))
+        collector = runner.ObservationCollector()
+        _run_boolean_probes(origin, transport, collector)
+        with pytest.raises(runner.MeasurementError, match="handler failed"):
+            bridge.synchronized_response_map(frozenset())
+        assert bridge.recorder.terminal_states == {0: "failed"}
 
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
@@ -2151,7 +2255,10 @@ def test_bridge_records_responses_by_acceptance_sequence_not_completion_order():
     second_thread.join(timeout=5)
     assert not first_thread.is_alive() and not second_thread.is_alive()
 
-    assert recorder.recorded_responses(2) == (first, second)
+    assert recorder.synchronized_response_map(frozenset({1, 2})) == {
+        1: first,
+        2: second,
+    }
 
 
 def test_bridge_rejects_sequence_gaps_and_duplicates():
@@ -2159,20 +2266,175 @@ def test_bridge_rejects_sequence_gaps_and_duplicates():
     response = runner._recorded_response(200, iter((b"response",)))
     gap_recorder = runner._ResponseRecorder()
     duplicate_recorder = runner._ResponseRecorder()
+    gap_recorder.accept()
+    gap_recorder.accept()
     gap_recorder.record_response(0, response)
     gap_recorder.record_response(2, response)
-    with pytest.raises(
-        runner.MeasurementError,
-        match=r"sequence gaps.*expected \[0, 1\], observed \[0, 2\].*rerun.*completion order",
-    ):
-        gap_recorder.recorded_responses(2)
+    with pytest.raises(runner.MeasurementError, match="bounded wait expired"):
+        gap_recorder.synchronized_response_map(frozenset({1, 2}), timeout_seconds=0)
 
-    duplicate_recorder.record_response(0, response)
+    duplicate_sequence = duplicate_recorder.accept()
+    duplicate_recorder.record_response(duplicate_sequence, response)
     with pytest.raises(
         runner.MeasurementError,
         match=r"duplicate sequence number 0.*rerun.*one probe twice",
     ):
-        duplicate_recorder.record_response(0, response)
+        duplicate_recorder.record_response(duplicate_sequence, response)
+
+
+def test_synchronized_response_map_reports_handler_failure_without_input_echo(
+    monkeypatch,
+):
+    runner = load_runner()
+    recorder = runner._ResponseRecorder()
+    sequence = recorder.accept()
+    synchronization_waiting = threading.Event()
+    sentinel = "SENTINEL-SECRET-7f3a"
+    original_wait = recorder.response_condition.wait
+
+    def observed_wait(timeout=None):
+        synchronization_waiting.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(recorder.response_condition, "wait", observed_wait)
+
+    def synchronize():
+        return recorder.synchronized_response_map(frozenset({1}), timeout_seconds=5)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(synchronize)
+        assert synchronization_waiting.wait(timeout=5)
+        recorder.record_failure(sequence, "RuntimeError", sentinel)
+        with pytest.raises(
+            runner.MeasurementError,
+            match=r"handler failed or the bounded wait expired.*Check bridge response framing.*rerun",
+        ) as caught:
+            future.result(timeout=5)
+
+    assert sentinel not in str(caught.value)
+
+
+def test_loopback_bridge_preserves_fixed_wire_wait_failure():
+    runner = load_runner()
+    target = SimpleNamespace(target_id="fixed-handler-failure", service_port=1)
+    sentinel = "SENTINEL-SECRET-7f3a"
+
+    with (
+        pytest.raises(
+            runner.MeasurementError,
+            match=r"handler failed or the bounded wait expired.*Check bridge response framing.*rerun",
+        ) as caught,
+        runner.loopback_bridge("127.0.0.1", target) as (_, bridge),
+    ):
+        bridge.recorder.record_failure(0, "RuntimeError", sentinel)
+        bridge.synchronized_response_map(frozenset({1}), timeout_seconds=0)
+
+    assert sentinel not in str(caught.value)
+
+
+def test_loopback_bridge_reports_missing_response_without_waiting(monkeypatch):
+    runner = load_runner()
+    target = SimpleNamespace(target_id="fixed-missing-response", service_port=1)
+
+    def unexpected_wait(timeout=None):
+        pytest.fail("The bridge tried to wait with zero accepted handlers.")
+
+    with runner.loopback_bridge("127.0.0.1", target) as (_, bridge):
+        monkeypatch.setattr(bridge.recorder.response_condition, "wait", unexpected_wait)
+        with pytest.raises(runner.MeasurementError) as caught:
+            bridge.synchronized_response_map(frozenset({1}), timeout_seconds=3600)
+
+    assert str(caught.value) == runner._WIRE_RESPONSE_SET_ERROR
+
+
+def test_synchronized_response_map_has_bounded_timeout_and_rejects_extras():
+    runner = load_runner()
+    timeout_recorder = runner._ResponseRecorder()
+    timeout_recorder.accept()
+    with pytest.raises(runner.MeasurementError, match="bounded wait expired"):
+        timeout_recorder.synchronized_response_map(frozenset({1}), timeout_seconds=0)
+
+    extra_recorder = runner._ResponseRecorder()
+    response = runner._recorded_response(200, iter((b"response",)))
+    first_sequence = extra_recorder.accept()
+    second_sequence = extra_recorder.accept()
+    extra_recorder.record_response(first_sequence, response)
+    extra_recorder.record_response(second_sequence, response)
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"wire response sequences differ.*Check bridge request sequencing.*rerun",
+    ):
+        extra_recorder.synchronized_response_map(frozenset({1}))
+
+
+def test_synchronized_response_map_waits_for_late_unexpected_response(monkeypatch):
+    runner = load_runner()
+    recorder = runner._ResponseRecorder()
+    response = runner._recorded_response(200, iter((b"response",)))
+    expected_sequence = recorder.accept()
+    unexpected_sequence = recorder.accept()
+    unexpected_handler_waiting = threading.Event()
+    synchronization_waiting = threading.Event()
+    release_unexpected_handler = threading.Event()
+    original_wait = recorder.response_condition.wait
+
+    def observed_wait(timeout=None):
+        synchronization_waiting.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(recorder.response_condition, "wait", observed_wait)
+
+    def record_unexpected() -> None:
+        unexpected_handler_waiting.set()
+        if not release_unexpected_handler.wait(timeout=5):
+            raise RuntimeError("The unexpected handler barrier was not released.")
+        recorder.record_response(unexpected_sequence, response)
+
+    recorder.record_response(expected_sequence, response)
+    handler_thread = threading.Thread(target=record_unexpected)
+    handler_thread.start()
+    assert unexpected_handler_waiting.wait(timeout=5)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            recorder.synchronized_response_map,
+            frozenset({1}),
+            timeout_seconds=5,
+        )
+        assert synchronization_waiting.wait(timeout=5)
+        assert not future.done()
+        release_unexpected_handler.set()
+        with pytest.raises(
+            runner.MeasurementError,
+            match=r"wire response sequences differ.*Check bridge request sequencing.*rerun",
+        ):
+            future.result(timeout=5)
+    handler_thread.join(timeout=5)
+    assert not handler_thread.is_alive()
+
+
+def test_synchronized_response_map_settles_handler_without_response():
+    runner = load_runner()
+    recorder = runner._ResponseRecorder()
+    sequence = recorder.accept()
+    recorder.complete_without_response(sequence)
+
+    with pytest.raises(
+        runner.MeasurementError,
+        match=r"wire response sequences differ.*Check bridge request sequencing.*rerun",
+    ):
+        recorder.synchronized_response_map(frozenset({1}), timeout_seconds=5)
+
+
+def test_synchronized_response_map_times_out_for_unsettled_unexpected_handler():
+    runner = load_runner()
+    recorder = runner._ResponseRecorder()
+    response = runner._recorded_response(200, iter((b"response",)))
+    expected_sequence = recorder.accept()
+    recorder.accept()
+    recorder.record_response(expected_sequence, response)
+
+    with pytest.raises(runner.MeasurementError, match="bounded wait expired"):
+        recorder.synchronized_response_map(frozenset({1}), timeout_seconds=0)
 
 
 def test_report_target_metadata_must_match_declaration():
@@ -2838,12 +3100,37 @@ def test_v10_attempt_identity_and_wire_mutations_fail(field, value, message):
         runner.validate_measurement_report(report)
 
 
-def test_v10_terminal_no_response_and_not_dispatched_accounting():
+def test_v10_terminal_no_response_and_not_dispatched_accounting(eof_upstream):
     runner = load_runner()
-    for outcome, failure_kind, counted in (
-        ("no_response", "timeout", 1),
-        ("not_dispatched", "budget_unavailable", 0),
+    with (
+        eof_upstream(b"") as target,
+        runner.loopback_bridge("127.0.0.1", target) as (origin, bridge),
+        runner.measurement_http_transport() as transport,
     ):
+        collector = runner.ObservationCollector()
+        result = _run_boolean_probes(origin, transport, collector)
+        (no_response,) = collector.ordered(result.request_count)
+        assert no_response.outcome is runner.AttemptOutcome.NO_RESPONSE
+        response_map = bridge.synchronized_response_map(
+            frozenset(
+                item.sequence
+                for item in (no_response,)
+                if item.outcome is runner.AttemptOutcome.RESPONSE
+            )
+        )
+        assert response_map == {}
+        assert bridge.recorder.terminal_states == {0: "no_response"}
+
+    not_dispatched = RecordedSqliObservation(
+        family="boolean",
+        sequence=1,
+        kind="baseline",
+        outcome=runner.AttemptOutcome.NOT_DISPATCHED,
+        failure=runner.OperationalCondition.BUDGET_UNAVAILABLE,
+    )
+    for terminal, counted in ((no_response, 1), (not_dispatched, 0)):
+        outcome = terminal.outcome
+        failure = terminal.failure
         report = v10_report_from_legacy_v4(runner)
         record = next(
             item
@@ -2851,19 +3138,12 @@ def test_v10_terminal_no_response_and_not_dispatched_accounting():
             if item["check_type"] == "sqli.boolean" and item["mode"] == "six_probe"
         )
         later = record["attempts"][0]
-        record["attempts"] = [
-            {
-                "sequence": 1,
-                "stage": "boolean",
-                "probe_kind": "baseline",
-                "outcome": outcome,
-                "failure_kind": failure_kind,
-            }
-        ]
         record["request_count"] = counted
         record["actual_verdict"] = "inconclusive"
         record["reason_code"] = (
-            "probe_failed" if outcome == "no_response" else "budget_unavailable"
+            "probe_failed"
+            if outcome is runner.AttemptOutcome.NO_RESPONSE
+            else "budget_unavailable"
         )
         record["classification"] = "non_decision"
         record["decision_facts"] = {
@@ -2871,8 +3151,13 @@ def test_v10_terminal_no_response_and_not_dispatched_accounting():
             "stage": "initial",
             "sequence": 1,
             "probe_kind": "baseline",
-            "condition": failure_kind,
+            "condition": failure.value,
         }
+        record["attempts"] = runner.sanitized_attempts(
+            (terminal,),
+            response_map,
+            decision_facts=record["decision_facts"],
+        )
         record["detail"] = {
             "configured": False,
             "reason_code": None,

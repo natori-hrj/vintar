@@ -162,6 +162,16 @@ _PROTOCOL_UPGRADE_ERROR = (
     "The loopback bridge does not support HTTP 101 protocol upgrades. "
     "Use an HTTP endpoint that returns a final non-upgrade response."
 )
+_WIRE_RESPONSE_WAIT_SECONDS = 5.0
+_WIRE_RESPONSE_WAIT_ERROR = (
+    "The trusted bridge did not finish every expected wire response because a "
+    "handler failed or the bounded wait expired. Check bridge response framing "
+    "and handler completion, then rerun the measurement."
+)
+_WIRE_RESPONSE_SET_ERROR = (
+    "The trusted bridge wire response sequences differ from the completed "
+    "analyzer attempts. Check bridge request sequencing and rerun the measurement."
+)
 
 
 class MeasurementError(RuntimeError):
@@ -1881,6 +1891,7 @@ class _ResponseRecorder:
         self.responses: dict[int, RecordedResponse] = {}
         self.response_condition = threading.Condition()
         self.next_sequence = 0
+        self.terminal_states: dict[int, str] = {}
         self.recording_error: str | None = None
         self.failure: BridgeHandlerFailure | None = None
 
@@ -1888,6 +1899,7 @@ class _ResponseRecorder:
         with self.response_condition:
             sequence = self.next_sequence
             self.next_sequence += 1
+            self.terminal_states[sequence] = "active"
             return sequence
 
     def record_response(self, sequence: int, response: RecordedResponse) -> None:
@@ -1907,36 +1919,44 @@ class _ResponseRecorder:
                 self.response_condition.notify_all()
                 raise MeasurementError(self.recording_error)
             self.responses[sequence] = response
+            if sequence in self.terminal_states:
+                self.terminal_states[sequence] = "response"
             self.response_condition.notify_all()
 
-    def recorded_responses(self, expected: int) -> tuple[RecordedResponse, ...]:
+    def complete_without_response(self, sequence: int) -> None:
+        with self.response_condition:
+            if self.terminal_states.get(sequence) == "active":
+                self.terminal_states[sequence] = "no_response"
+            self.response_condition.notify_all()
+
+    def synchronized_response_map(
+        self,
+        expected_sequences: frozenset[int],
+        *,
+        timeout_seconds: float = _WIRE_RESPONSE_WAIT_SECONDS,
+    ) -> dict[int, RecordedResponse]:
+        """After acceptance stops, settle handlers and match one-based wire responses."""
+        if any(
+            type(sequence) is not int or sequence < 1 for sequence in expected_sequences
+        ):
+            raise ValueError(
+                "Expected wire response sequences must be positive integers."
+            )
         with self.response_condition:
             complete = self.response_condition.wait_for(
-                lambda: len(self.responses) >= expected or self.handler_failed,
-                timeout=5,
+                lambda: (
+                    self.handler_failed or "active" not in self.terminal_states.values()
+                ),
+                timeout=timeout_seconds,
             )
-            expected_sequences = set(range(expected))
-            observed_sequences = set(self.responses)
-            if self.recording_error is not None:
-                raise MeasurementError(self.recording_error)
-            if (
-                not complete
-                or len(self.responses) != expected
-                or observed_sequences != expected_sequences
-            ):
-                raise MeasurementError(
-                    f"The loopback recorder has sequence gaps: expected {sorted(expected_sequences)!r}, observed {sorted(observed_sequences)!r}. Check response framing and handler completion, then rerun the measurement instead of pairing roles by completion order."
-                )
-            return tuple(self.responses[index] for index in range(expected))
-
-    def recorded_response_map(self) -> dict[int, RecordedResponse]:
-        """Return completed wire responses keyed by one-based request sequence."""
-        with self.response_condition:
-            if self.recording_error is not None:
-                raise MeasurementError(self.recording_error)
-            return {
+            if not complete or self.handler_failed:
+                raise MeasurementError(_WIRE_RESPONSE_WAIT_ERROR)
+            responses = {
                 sequence + 1: response for sequence, response in self.responses.items()
             }
+            if responses.keys() != expected_sequences:
+                raise MeasurementError(_WIRE_RESPONSE_SET_ERROR)
+            return responses
 
     def record_failure(
         self, sequence: int | None, exception_type: str, cause: str
@@ -1950,6 +1970,8 @@ class _ResponseRecorder:
                     accepted_sequences=tuple(range(self.next_sequence)),
                     completed_sequences=tuple(sorted(self.responses)),
                 )
+            if sequence is not None and sequence in self.terminal_states:
+                self.terminal_states[sequence] = "failed"
             self.response_condition.notify_all()
 
     @property
@@ -2005,16 +2027,25 @@ class _BridgeServer(socketserver.ThreadingTCPServer):
 
     def complete_sequence(self, request: socket.socket) -> None:
         with self.recorder.response_condition:
-            self.accepted_sequences.pop(id(request), None)
+            sequence = self.accepted_sequences.pop(id(request), None)
+        if sequence is not None:
+            self.recorder.complete_without_response(sequence)
 
     def record_response(self, sequence: int, response: RecordedResponse) -> None:
         self.recorder.record_response(sequence, response)
 
-    def recorded_responses(self, expected: int) -> tuple[RecordedResponse, ...]:
-        return self.recorder.recorded_responses(expected)
-
-    def recorded_response_map(self) -> dict[int, RecordedResponse]:
-        return self.recorder.recorded_response_map()
+    def synchronized_response_map(
+        self,
+        expected_sequences: frozenset[int],
+        *,
+        timeout_seconds: float = _WIRE_RESPONSE_WAIT_SECONDS,
+    ) -> dict[int, RecordedResponse]:
+        self.shutdown()
+        self.server_close()
+        return self.recorder.synchronized_response_map(
+            expected_sequences,
+            timeout_seconds=timeout_seconds,
+        )
 
     @property
     def handler_failed(self) -> bool:
@@ -2025,7 +2056,7 @@ class _BridgeServer(socketserver.ThreadingTCPServer):
         if exception is None:
             exception = RuntimeError("The bridge handler failed without an exception.")
         with self.recorder.response_condition:
-            sequence = self.accepted_sequences.pop(id(request), None)
+            sequence = self.accepted_sequences.get(id(request))
         self.recorder.record_failure(
             sequence,
             type(exception).__name__,
@@ -2071,9 +2102,14 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
                     destination.sendall(content)
                 if finished:
                     break
-        recorded = _parse_http_response(bytes(response))
-        server.record_response(sequence, recorded)
-        server.complete_sequence(self.request)
+        if response:
+            recorded = _parse_http_response(bytes(response))
+            server.record_response(sequence, recorded)
+
+    def finish(self) -> None:
+        server = self.server
+        if isinstance(server, _BridgeServer) and sys.exception() is None:
+            server.complete_sequence(self.request)
 
 
 def _chunked_body_chunks(body: bytes) -> tuple[tuple[bytes, ...], bytes]:
@@ -2215,10 +2251,15 @@ def loopback_bridge(
         port = server.server_address[1]
         yield f"http://127.0.0.1:{port}", server
     finally:
+        pending_error = sys.exception()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
-        if server.recorder.failure is not None:
+        preserving_wire_wait_error = (
+            isinstance(pending_error, MeasurementError)
+            and str(pending_error) == _WIRE_RESPONSE_WAIT_ERROR
+        )
+        if server.recorder.failure is not None and not preserving_wire_wait_error:
             failure = server.recorder.failure
             sequence = "unknown" if failure.sequence is None else str(failure.sequence)
             raise MeasurementError(
@@ -3068,9 +3109,12 @@ def run_pipeline_case(
             "Trusted attempt accounting contradicts the product request count. "
             "Check terminal runner emission and rerun the measurement."
         )
+    expected_wire_sequences = frozenset(
+        item.sequence for item in collected if item.outcome is AttemptOutcome.RESPONSE
+    )
     attempts = sanitized_attempts(
         collected,
-        recorder.recorded_response_map(),
+        recorder.synchronized_response_map(expected_wire_sequences),
         decision_facts=decision_facts,
     )
     classification = classify(check_type, label, verdict, reason)

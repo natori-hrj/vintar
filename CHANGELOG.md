@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+**Fixed**
+
+- Wait for every expected trusted bridge response before pairing wire evidence
+  with analyzer attempts in maintainer SQLi reports.
+
 **Added**
 
 - Add an offline `inventory-post-json` command with a privacy-bounded,
