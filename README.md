@@ -179,6 +179,41 @@ Apply network egress controls in sensitive environments. Origin validation leave
 
 Use `vintar discover` to inventory a single local OpenAPI 3.0 or 3.1 spec in JSON or YAML. The report lists operations, declared inputs, held and ignored items, and source pointers. Discovery performs no HTTP requests. It produces review data that is separate from regression case files.
 
+### Inventory POST JSON Bodies
+
+Use `vintar inventory-post-json` for an offline, versioned inventory of every
+POST operation whose request body declares `application/json`:
+
+```bash
+uv run --locked vintar inventory-post-json \
+  --spec openapi.json --output post-json-inventory.json
+```
+
+The report lists body-field JSON pointers, schema types, required status,
+unsupported schema diagnostics, and resolved authentication requirements. It
+records only security scheme component names and types. It never includes
+example, default, enum, or const values; server and OAuth/OIDC URLs; scope
+names; API-key parameter names; descriptions; extension values; credentials;
+or the spec file path.
+
+All POST bodies currently have `case_generation: "unsupported"` and no
+injectable fields because Vintar's existing case pipeline supports only GET
+query parameters. The inventory is a readiness and review artifact, not an
+executable case or authorization configuration. The command performs no
+network requests and prints one human summary line; the JSON report is written
+only to `--output`.
+
+Validate a report before consuming or archiving it:
+
+```bash
+uv run --locked python scripts/validate_post_json_inventory.py \
+  post-json-inventory.json
+```
+
+The validator checks schema v1 plus ordering, counts, pointers, uniqueness,
+authentication consistency, and injectability invariants. It exits `0` for a
+valid report and `2` for invalid input without echoing report content.
+
 Run discovery with your local `openapi.json` to find stable input IDs. To reproduce this example, copy `tests/fixtures/discovery/openapi30.json` to `openapi.json`. Commit `review.toml` with the IDs a reviewer approved. Omit `--selection` to inventory inputs before review.
 
 <!-- cli-example: discover-review/selection -->

@@ -4,6 +4,10 @@
 
 **Added**
 
+- Add an offline `inventory-post-json` command with a privacy-bounded,
+  versioned report of POST JSON body fields, unsupported schema constructs,
+  and resolved authentication declarations, plus a strict report validator.
+
 - Add bounded, machine-readable Boolean `decision_facts` to new CI batch
   reports for operational, response-dynamics, and confirmation-relation
   non-decisions while legacy schema-v1 reports may omit the additive field.

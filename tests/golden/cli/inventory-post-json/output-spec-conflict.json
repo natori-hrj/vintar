@@ -1,0 +1,6 @@
+{
+  "exit_code": 2,
+  "report_json": null,
+  "stderr": "Error: Output conflicts with the spec. Choose a separate report path.\n",
+  "stdout": ""
+}

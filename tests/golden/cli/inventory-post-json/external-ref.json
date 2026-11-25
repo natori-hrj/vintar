@@ -1,0 +1,44 @@
+{
+  "exit_code": 0,
+  "report_json": {
+    "counts": {
+      "case_generatable": 0,
+      "diagnostics": 1,
+      "fields": 0,
+      "injectable_fields": 0,
+      "operations": 1,
+      "post_operations_without_application_json": 0,
+      "unsupported_inputs": 0
+    },
+    "operations": [
+      {
+        "auth": {
+          "alternatives": [],
+          "public": true,
+          "source": "none"
+        },
+        "blocking_reasons": [
+          "post_method_unsupported",
+          "request_body_case_generation_unsupported"
+        ],
+        "case_generation": "unsupported",
+        "diagnostics": [
+          {
+            "reason": "external_ref_unsupported",
+            "schema_definition_pointer": null,
+            "schema_pointer": "/paths/~1items/post/requestBody/content/application~1json/schema"
+          }
+        ],
+        "fields": [],
+        "operation_id": "createItem",
+        "operation_pointer": "/paths/~1items/post",
+        "path": "/items",
+        "request_body_pointer": "/paths/~1items/post/requestBody/content/application~1json"
+      }
+    ],
+    "report_type": "openapi_post_json_inventory",
+    "schema_version": 1
+  },
+  "stderr": "",
+  "stdout": "POST JSON inventory: 1 operations; 0 case-generatable; 0 fields; 0 injectable; 1 diagnostics.\n"
+}
