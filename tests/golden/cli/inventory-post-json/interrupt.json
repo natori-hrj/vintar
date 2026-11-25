@@ -1,0 +1,6 @@
+{
+  "exit_code": 130,
+  "report_json": null,
+  "stderr": "Error: POST JSON inventory was interrupted. Rerun to regenerate the report.\n",
+  "stdout": ""
+}
