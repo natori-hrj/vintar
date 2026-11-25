@@ -2,7 +2,10 @@ import hashlib
 
 import httpx
 
-from vintar.checks.sqli.analyzer import analyze_boolean_responses
+from vintar.checks.sqli.analyzer import (
+    analyze_boolean_responses,
+    boolean_response_signature,
+)
 from vintar.checks.sqli.decision_facts import (
     DecisionStage,
     OperationalCondition,
@@ -19,7 +22,9 @@ from vintar.checks.sqli.models import (
     VerificationResult,
 )
 from vintar.checks.sqli.observation_sink import (
+    AttemptOutcome,
     SqliObservationSink,
+    emit_attempt_stop,
     emit_observation,
 )
 from vintar.core.budget import RequestBudgetExceededError
@@ -92,7 +97,7 @@ def _emit_in_request_order(
             family="boolean",
             sequence=sequence,
             kind=kind.value,
-            observation=by_kind[kind][index],
+            observation=boolean_response_signature(kind, by_kind[kind][index]),
         )
         offsets[kind] += 1
 
@@ -138,21 +143,32 @@ def verify_boolean_sqli(
     if true_payload == false_payload:
         raise ValueError("TRUE and FALSE payloads must differ.")
 
-    true_template = inject(template, point, true_payload)
-    false_template = inject(template, point, false_payload)
+    try:
+        true_template = inject(template, point, true_payload)
+        false_template = inject(template, point, false_payload)
 
-    if true_template == template or false_template == template:
-        raise ValueError("Injected probe templates must differ from the baseline.")
+        if true_template == template or false_template == template:
+            raise ValueError("Injected probe templates must differ from the baseline.")
 
-    # Validate the entire plan before the first HTTP request.
-    planned_templates = (
-        template,
-        true_template,
-        false_template,
-    )
-    for item in planned_templates:
-        validate_template(item)
-        validate_scope(item.url, context.scope)
+        # Validate the entire plan before the first HTTP request.
+        planned_templates = (
+            template,
+            true_template,
+            false_template,
+        )
+        for item in planned_templates:
+            validate_template(item)
+            validate_scope(item.url, context.scope)
+    except (TypeError, ValueError):
+        emit_attempt_stop(
+            observation_sink,
+            family="boolean",
+            sequence=1,
+            kind=ProbeKind.BASELINE.value,
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.PREFLIGHT_FAILED,
+        )
+        raise
 
     requests = {
         ProbeKind.BASELINE: template,
@@ -162,6 +178,14 @@ def verify_boolean_sqli(
     plan = tuple((kind, requests[kind]) for kind in BOOLEAN_PROBE_ORDER)
 
     if context.budget.remaining < len(plan):
+        emit_attempt_stop(
+            observation_sink,
+            family="boolean",
+            sequence=1,
+            kind=ProbeKind.BASELINE.value,
+            outcome=AttemptOutcome.NOT_DISPATCHED,
+            failure=OperationalCondition.BUDGET_UNAVAILABLE,
+        )
         return VerificationResult(
             check_id=check_id,
             verdict=Verdict.INCONCLUSIVE,
@@ -247,6 +271,15 @@ def verify_boolean_sqli(
 
     if failures:
         _emit_in_request_order(observation_sink, plan, tuple(observations))
+        failure = failures[-1]
+        emit_attempt_stop(
+            observation_sink,
+            family="boolean",
+            sequence=len(observations) + len(failures),
+            kind=failure.kind.value,
+            outcome=AttemptOutcome.NO_RESPONSE,
+            failure=failure.error,
+        )
         return VerificationResult(
             check_id=check_id,
             verdict=Verdict.INCONCLUSIVE,

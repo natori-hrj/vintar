@@ -18,6 +18,7 @@ from vintar.checks.sqli.error_analyzer import (
     ErrorProbeKind,
     analyze_error_responses,
     error_observation,
+    error_probe_failure_reason,
     operational_stop_reason,
     validate_error_probe_payload,
 )
@@ -33,7 +34,7 @@ from vintar.checks.sqli.error_signatures import (
     ErrorSignature,
     get_error_signature,
 )
-from vintar.checks.sqli.models import Verdict
+from vintar.checks.sqli.models import ProbeError, Verdict
 from vintar.core.models import HttpResult
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +62,21 @@ SIGNATURE_FIXTURES = {
         b"ORA-00933: database unavailable",
     ),
 }
+
+
+@pytest.mark.parametrize(
+    ("condition", "reason"),
+    [
+        (ProbeError.TIMEOUT, "probe_timeout"),
+        (ProbeError.CONNECTION, "probe_failed"),
+        (ProbeError.RESPONSE_READ, "probe_failed"),
+        (ProbeError.UNKNOWN, "probe_failed"),
+        (ProbeError.RATE_LIMIT, "probe_interrupted"),
+        (ProbeError.CANCELLED, "probe_interrupted"),
+    ],
+)
+def test_error_probe_failure_reason_is_shared_operational_classifier(condition, reason):
+    assert error_probe_failure_reason(condition) == reason
 
 
 def response(

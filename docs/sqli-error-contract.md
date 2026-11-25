@@ -49,6 +49,13 @@ contains response bodies, matched text, payloads, target URLs, or raw baseline
 values. The schema and validator enforce the status, verdict, request range,
 and evidence requirements from `ERROR_RESULT_RULES`.
 
+Operational Error non-decisions add bounded `decision_facts` with stage
+`error`, the fixed request sequence, `baseline` or `error` probe kind, a shared
+failure/response condition, and a status only for completed responses. The
+runner and CI validator derive transport failures through the same pure mapping
+and completed-response stops through the Error analyzer's existing precedence;
+neither layer retains exception messages or response text.
+
 The existing CI exit contract is unchanged: a matching `NOT_DETECTED` result
 passes with exit 0, expectation mismatch uses exit 1, invalid execution or input
 uses exit 2, and every Error candidate or other inconclusive result blocks with

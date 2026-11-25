@@ -164,19 +164,22 @@ non-decisions. Boolean outcomes retain their
 per-observation `elapsed` values, response digests, and sizes. Case IDs and this
 Boolean response metadata may still disclose information.
 `sqli.error` outcomes likewise contain only the final verdict, reason, request
-count, and a sibling `error` object. A matched signal adds only the reviewed
-DBMS family and signature ID. Response bodies, matched text, payloads, and
-target URLs are never included.
+count, a sibling `error` object, and bounded operational `decision_facts` when
+execution cannot decide. A matched signal adds only the reviewed DBMS family
+and signature ID. Response bodies, matched text, payloads, and target URLs are
+never included.
 
-Boolean and Time outcomes may include an additive `decision_facts` sibling for
+Boolean, Time, and Error outcomes may include an additive `decision_facts` sibling for
 a non-decision. Boolean categories are `operational`, `response_dynamics`, and
 `confirmation_relation`. Time uses `operational` and `timing_dynamics`. The
 facts contain only fixed enums, sequences, status codes, booleans, counts, and
 Boolean byte offsets or lengths. Time facts never contain elapsed values,
 medians, thresholds, or margins. Legacy schema-v1 reports may omit the sibling;
 the current writer requires and emits it for the corresponding Boolean,
-confirmation, and Time reasons. JSON Schema and Python validation require its
-category and fields to agree with the final reason code.
+confirmation, Time, and Error operational reasons. Error facts use stage
+`error`, the fixed four-request sequence and `baseline` or `error` probe kind.
+JSON Schema and Python validation require their category, stage, plan position,
+condition, optional status, and final reason to agree.
 
 For Time operational facts, schema-v1 reports do not contain the individual
 probe observations. Validation can therefore check the stopping sequence

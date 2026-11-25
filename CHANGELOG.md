@@ -14,6 +14,9 @@
 - Add bounded Time SQLi `decision_facts` to new CI batch reports for
   operational stops, timing-instability causes, and ambiguous timing
   predicates without exposing elapsed values, thresholds, or margins.
+- Add a trusted Python-only SQLi attempt sink for completed, failed, and
+  undispatched plan positions, pure Boolean/confirmation/Time decision
+  classifiers, and bounded Error operational `decision_facts` in CI reports.
 
 - Extend the pinned-source third-party SQLi evaluation with the independent
   MySQL 8-backed sqli-dojo-docker target, including reviewed positive and
@@ -23,6 +26,13 @@
   records for Boolean, Time, and Error checks.
 
 **Changed**
+
+- Write manual third-party SQLi measurement reports as schema version 10 with
+  strict per-attempt outcomes, production Boolean repeat comparisons, bounded
+  Time predicates, and re-derived structured decision facts. Public validation
+  now rejects v9 and older output; the exact reviewed v9 fixture remains
+  temporarily bound only to documentation drift until a real v10 measurement
+  replaces it.
 
 - Report `confirmation_unstable` when independently reviewed Boolean TRUE or FALSE
   predicate pairs do not reproduce each other; reserve

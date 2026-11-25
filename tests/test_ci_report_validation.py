@@ -19,7 +19,15 @@ from vintar.checks.sqli.decision_facts import (
     OperationalCondition,
     OperationalDecisionFacts,
 )
+from vintar.checks.sqli.error_analyzer import (
+    ErrorAnalysis,
+    ErrorProbeKind,
+    classify_error_observations,
+    error_observation,
+    error_operational_decision_facts,
+)
 from vintar.checks.sqli.error_contract import ERROR_RESULT_RULES
+from vintar.checks.sqli.error_runner import ErrorRunReport
 from vintar.checks.sqli.error_signatures import (
     ERROR_SIGNATURES,
     ErrorSignature,
@@ -35,7 +43,11 @@ from vintar.checks.sqli.time_contract import TIME_RESULT_RULES
 from vintar.core.models import HttpResult
 from vintar.regression.batch import RegressionBatchResult
 from vintar.regression.report import regression_batch_report_dict
-from vintar.regression.runner import RegressionOutcome, RegressionStatus
+from vintar.regression.runner import (
+    ErrorRegressionOutcome,
+    RegressionOutcome,
+    RegressionStatus,
+)
 
 _VALIDATOR_MODULE = runpy.run_path("scripts/validate_ci_report.py")
 _SCHEMA_GENERATOR_MODULE = runpy.run_path("scripts/update_error_signature_schema.py")
@@ -646,6 +658,109 @@ def test_error_schema_and_validator_derive_contract_tables():
         ERROR_RESULT_RULES
     )
     assert _VALIDATOR_MODULE["ERROR_RESULT_RULES"] is ERROR_RESULT_RULES
+
+
+@pytest.mark.parametrize(
+    ("reason", "condition", "status_code"),
+    [
+        ("probe_timeout", "timeout", None),
+        ("probe_failed", "connection", None),
+        ("rate_limited", "rate_limited", 429),
+        ("truncated_response", "truncated", 200),
+        ("non_success_status", "non_success_status", 503),
+    ],
+)
+def test_error_operational_facts_validate_end_to_end(
+    tmp_path, reason, condition, status_code
+):
+    report = make_error_report(reason)
+    facts = {
+        "category": "operational",
+        "stage": "error",
+        "sequence": 1,
+        "probe_kind": "baseline",
+        "condition": condition,
+    }
+    if status_code is not None:
+        facts["status_code"] = status_code
+    report["outcomes"][0]["decision_facts"] = facts
+
+    _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sequence", 2),
+        ("probe_kind", "error"),
+        ("condition", "non_success_status"),
+        ("status_code", 503),
+    ],
+)
+def test_error_operational_fact_mutations_are_rejected(tmp_path, field, value):
+    report = make_error_report("rate_limited")
+    report["outcomes"][0]["decision_facts"] = {
+        "category": "operational",
+        "stage": "error",
+        "sequence": 1,
+        "probe_kind": "baseline",
+        "condition": "rate_limited",
+        "status_code": 429,
+    }
+    report["outcomes"][0]["decision_facts"][field] = value
+
+    with pytest.raises((ValueError, ValidationError), match=r"(?i)(decision|fact)"):
+        _validate(write_report(tmp_path, report), report["exit_code"])
+
+
+def test_error_operational_facts_reject_requests_after_rate_limit(tmp_path):
+    observation = error_observation(
+        ErrorProbeKind.BASELINE, 1, _response(status_code=429)
+    )
+    status, reason, evidence = classify_error_observations((observation,))
+    analysis = ErrorAnalysis(
+        status=status,
+        reason_code=reason,
+        observations=(observation,),
+        evidence=evidence,
+        decision_facts=error_operational_decision_facts(
+            reason_code=reason,
+            sequence=observation.sequence,
+            kind=observation.kind,
+            condition=OperationalCondition.RATE_LIMITED,
+            status_code=observation.status_code,
+        ),
+    )
+    outcome = ErrorRegressionOutcome(
+        case_id="error-case",
+        expected_verdict=Verdict.INCONCLUSIVE,
+        error_run=ErrorRunReport(
+            analysis=analysis, budget_used=1, transport_attempts=1
+        ),
+        expectation_match=True,
+        status=RegressionStatus.INCONCLUSIVE,
+    )
+    report = regression_batch_report_dict(
+        RegressionBatchResult(
+            planned_case_ids=("error-case",),
+            outcomes=(outcome,),
+            status=RegressionStatus.INCONCLUSIVE,
+            requests_used=1,
+        )
+    )
+    assert reason == "rate_limited"
+    _validate(write_report(tmp_path, report), 3)
+
+    recorded = report["outcomes"][0]
+    recorded["request_count"] = recorded["error"]["request_count"] = report[
+        "requests_used"
+    ] = 3
+    with pytest.raises(
+        ValueError,
+        match=r"runner stops at this attempt, so no further requests can be recorded\. "
+        r"Regenerate the report with the current Vintar writer\.",
+    ):
+        _validate(write_report(tmp_path, report), 3)
 
 
 def test_error_signature_schema_pairs_match_registry():

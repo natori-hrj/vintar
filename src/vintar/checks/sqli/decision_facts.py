@@ -13,6 +13,7 @@ class DecisionStage(StrEnum):
     INITIAL = "initial"
     CONFIRMATION = "confirmation"
     TIME = "time"
+    ERROR = "error"
 
 
 class OperationalCondition(StrEnum):
@@ -33,6 +34,11 @@ class TimeOperationalCondition(StrEnum):
     NON_SUCCESS_STATUS = "non_success_status"
     TRUNCATED = "truncated"
     DEADLINE = "deadline"
+
+
+class ErrorDecisionProbeKind(StrEnum):
+    BASELINE = "baseline"
+    ERROR = "error"
 
 
 def response_operational_condition(
@@ -95,7 +101,9 @@ class ConfirmationRelation(StrEnum):
     BASELINE_FALSE = "baseline_false"
 
 
-type DecisionProbeKind = ProbeKind | ConfirmationKind | TimeProbeKind
+type DecisionProbeKind = (
+    ProbeKind | ConfirmationKind | TimeProbeKind | ErrorDecisionProbeKind
+)
 type DecisionCondition = ProbeError | OperationalCondition | TimeOperationalCondition
 
 
@@ -174,6 +182,19 @@ _TIME_OPERATIONAL_REASON_CONDITIONS = {
     "truncated_response": (TimeOperationalCondition.TRUNCATED,),
 }
 
+_ERROR_OPERATIONAL_REASON_CONDITIONS: dict[str, tuple[DecisionCondition, ...]] = {
+    "probe_timeout": (ProbeError.TIMEOUT,),
+    "probe_failed": (
+        ProbeError.CONNECTION,
+        ProbeError.RESPONSE_READ,
+        ProbeError.UNKNOWN,
+    ),
+    "probe_interrupted": (ProbeError.RATE_LIMIT, ProbeError.CANCELLED),
+    "rate_limited": (OperationalCondition.RATE_LIMITED,),
+    "truncated_response": (OperationalCondition.TRUNCATED,),
+    "non_success_status": (OperationalCondition.NON_SUCCESS_STATUS,),
+}
+
 DECISION_FACT_CATEGORY_REASONS = {
     "operational": frozenset(
         _OPERATIONAL_REASON_CONDITIONS | _TIME_OPERATIONAL_REASON_CONDITIONS
@@ -204,6 +225,9 @@ class OperationalDecisionFacts:
         if self.stage is DecisionStage.TIME:
             expected_stage = DecisionStage.TIME
             conditions = _TIME_OPERATIONAL_REASON_CONDITIONS.get(self.reason_code)
+        elif self.stage is DecisionStage.ERROR:
+            expected_stage = DecisionStage.ERROR
+            conditions = _ERROR_OPERATIONAL_REASON_CONDITIONS.get(self.reason_code)
         else:
             expected = _OPERATIONAL_REASON_CONDITIONS.get(self.reason_code)
             if expected is None:
@@ -220,7 +244,12 @@ class OperationalDecisionFacts:
                 "Operational decision facts contradict the reason. Use the stage and "
                 "condition produced by the bounded runner."
             )
-        maximum_sequence = TIME_REQUESTS if self.stage is DecisionStage.TIME else 18
+        maximum_sequence = {
+            DecisionStage.INITIAL: 18,
+            DecisionStage.CONFIRMATION: 18,
+            DecisionStage.TIME: TIME_REQUESTS,
+            DecisionStage.ERROR: 4,
+        }[self.stage]
         if type(self.sequence) is not int or not 1 <= self.sequence <= maximum_sequence:
             raise ValueError(
                 "Operational decision sequence must be from 1 through "
@@ -230,6 +259,7 @@ class OperationalDecisionFacts:
             DecisionStage.INITIAL: ProbeKind,
             DecisionStage.CONFIRMATION: ConfirmationKind,
             DecisionStage.TIME: TimeProbeKind,
+            DecisionStage.ERROR: ErrorDecisionProbeKind,
         }[self.stage]
         if not isinstance(self.probe_kind, expected_kind_type):
             raise TypeError("Operational probe kind is invalid.")

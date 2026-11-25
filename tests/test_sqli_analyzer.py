@@ -3,8 +3,13 @@ from dataclasses import replace
 
 import pytest
 
-from vintar.checks.sqli.analyzer import analyze_boolean_responses
-from vintar.checks.sqli.models import ProbeKind, Verdict
+from vintar.checks.sqli.analyzer import (
+    BooleanRepeatComparison,
+    BooleanResponseSignature,
+    analyze_boolean_responses,
+    classify_boolean_signatures,
+)
+from vintar.checks.sqli.models import BOOLEAN_PROBE_ORDER, ProbeKind, Verdict
 from vintar.core.models import HttpResult
 
 
@@ -40,6 +45,73 @@ def analyze(
             false_responses if false_responses is not None else pair(b"B")
         ),
     )
+
+
+def signature(kind: ProbeKind, body: bytes, *, status: int = 200, truncated=False):
+    return BooleanResponseSignature(
+        kind=kind,
+        status_code=status,
+        body_size=len(body),
+        body_digest=hashlib.sha256(body).hexdigest(),
+        truncated=truncated,
+    )
+
+
+def stable_signatures(baseline: bytes = b"A", true: bytes = b"A", false: bytes = b"B"):
+    bodies = {
+        ProbeKind.BASELINE: baseline,
+        ProbeKind.TRUE: true,
+        ProbeKind.FALSE: false,
+    }
+    return tuple(signature(kind, bodies[kind]) for kind in BOOLEAN_PROBE_ORDER)
+
+
+def test_pure_boolean_classifier_matches_public_analyzer_candidate():
+    direct = classify_boolean_signatures(
+        signatures=stable_signatures(),
+        repeat_comparisons=tuple(
+            BooleanRepeatComparison(kind, True) for kind in ProbeKind
+        ),
+        normalization_applied=False,
+        normalized_echo_count=0,
+    )
+    result = analyze()
+
+    assert (
+        direct.verdict,
+        direct.reason_code,
+        direct.evidence,
+        direct.decision_facts,
+    ) == (
+        result.verdict,
+        result.reason_code,
+        result.evidence,
+        result.decision_facts,
+    )
+
+
+@pytest.mark.parametrize(
+    ("signatures", "reason"),
+    [
+        (stable_signatures(b"A", b"A", b"A"), "no_boolean_difference"),
+        (
+            stable_signatures(b"A", b"literal", b"literal"),
+            "no_boolean_difference_literal_input",
+        ),
+        (stable_signatures(b"A", b"B", b"C"), "unexpected_difference"),
+    ],
+)
+def test_pure_boolean_classifier_covers_stable_relations(signatures, reason):
+    result = classify_boolean_signatures(
+        signatures=signatures,
+        repeat_comparisons=tuple(
+            BooleanRepeatComparison(kind, True) for kind in ProbeKind
+        ),
+        normalization_applied=False,
+        normalized_echo_count=0,
+    )
+
+    assert result.reason_code == reason
 
 
 def test_boolean_candidate_is_inconclusive():
