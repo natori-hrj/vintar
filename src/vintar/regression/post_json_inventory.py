@@ -168,11 +168,30 @@ _SCHEMA_REASONS = {
     "$dynamicRef": SchemaDiagnosticReason.DYNAMIC_REF_UNSUPPORTED,
     "$id": SchemaDiagnosticReason.SCHEMA_ID_SCOPE_UNSUPPORTED,
 }
+_POST_REFERENCE_ANNOTATIONS = frozenset(
+    {
+        "$comment",
+        "default",
+        "deprecated",
+        "description",
+        "examples",
+        "readOnly",
+        "summary",
+        "title",
+        "writeOnly",
+    }
+)
 _BLOCKING_REASONS = (
     BlockingReason.POST_METHOD_UNSUPPORTED,
     BlockingReason.REQUEST_BODY_CASE_GENERATION_UNSUPPORTED,
 )
 _SECURITY_TYPES = frozenset({"apiKey", "http", "oauth2", "openIdConnect", "mutualTLS"})
+
+
+def _post_reference_annotation(version: str, keyword: str) -> bool:
+    if version.startswith("3.0."):
+        return keyword in {"summary", "description"}
+    return keyword in _POST_REFERENCE_ANNOTATIONS
 
 
 def _candidate_identity(
@@ -649,30 +668,34 @@ def _walk_schema(
     literal_star_positions: tuple[int, ...] = (),
 ) -> tuple[list[BodyField], list[SchemaDiagnostic]]:
     try:
-        node, definition, resolved_trail, sibling_sources = document.resolve_schema(
-            value, declared, trail
-        )
+        resolution = document.resolve_schema_result(value, declared, trail)
     except DiscoveryError as exc:
         diagnostic = _reference_diagnostic(exc, declared)
         if diagnostic is None:
             raise
-        sibling_sources = exc.schema_siblings
+        siblings = exc.schema_siblings
         return [], [
             *(
                 SchemaDiagnostic(
                     SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
-                    source.pointer,
+                    sibling.source.pointer,
                 )
-                for source in sibling_sources
+                for sibling in siblings
+                if not _post_reference_annotation(document.version, sibling.keyword)
             ),
             diagnostic,
         ]
 
+    node = resolution.schema
+    definition = resolution.definition
+    resolved_trail = resolution.trail
     diagnostics = [
         SchemaDiagnostic(
-            SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED, source.pointer
+            SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED,
+            sibling.source.pointer,
         )
-        for source in sibling_sources
+        for sibling in resolution.siblings
+        if not _post_reference_annotation(document.version, sibling.keyword)
     ]
     if isinstance(node, bool):
         diagnostics.append(

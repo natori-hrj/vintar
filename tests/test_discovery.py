@@ -240,6 +240,67 @@ def test_unknown_path_fields_and_reference_siblings_are_held(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("version", ["3.0.4", "3.1.2"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_get_shared_schema_chain_matches_pre_pr_golden(tmp_path, version, reverse):
+    def operation(label):
+        return {
+            "get": {
+                "parameters": [
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "schema": {
+                            "$ref": "#/components/schemas/Alias",
+                            "default": label,
+                        },
+                    }
+                ]
+            }
+        }
+
+    entries = [("/a", operation("a")), ("/b", operation("b"))]
+    if reverse:
+        entries.reverse()
+    path = write_spec(
+        tmp_path,
+        paths=dict(entries),
+        openapi=version,
+        components={
+            "schemas": {
+                "Alias": {
+                    "$ref": "#/components/schemas/Name",
+                    "not": {"type": "string"},
+                },
+                "Name": {"type": "string"},
+            }
+        },
+    )
+
+    inventory = load_inventory(path)
+
+    assert [
+        (
+            item.method,
+            item.path,
+            item.compatible,
+            item.compatibility_blocker,
+            item.inputs[0].compatible,
+        )
+        for item in inventory.operations
+    ] == [
+        ("GET", "/a", False, None, False),
+        ("GET", "/b", False, None, False),
+    ]
+    assert [item.source.pointer for item in inventory.held] == [
+        "/components/schemas/Alias/not",
+        "/paths/~1a/get/parameters/0",
+        "/paths/~1a/get/parameters/0/schema/default",
+        "/paths/~1b/get/parameters/0",
+        "/paths/~1b/get/parameters/0/schema/default",
+    ]
+
+
 def test_duplicate_parameters_fail_with_declaration_pointer(tmp_path):
     parameter = {"name": "q", "in": "query"}
     path = write_spec(

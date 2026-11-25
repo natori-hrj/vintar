@@ -68,7 +68,7 @@ def _candidate(
 
     add_examples(parameter, definition)
     if "schema" in parameter:
-        schema, site, _, _ = document.resolve_schema(
+        schema, site, _ = document.resolve_schema(
             parameter["schema"], definition.child("schema"), trail
         )
         if isinstance(schema, dict):
