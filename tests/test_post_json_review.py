@@ -15,6 +15,7 @@ from vintar.regression.post_json_inventory import (
 from vintar.regression.post_json_review import (
     ARRAY_PATTERN_MESSAGE,
     INVALID_BASELINE_POINTER_MESSAGE,
+    INVENTORY_SPEC_MISMATCH_MESSAGE,
     OPERATION_DEFINITION_CHANGED_MESSAGE,
     STALE_BODY_DIGEST_MESSAGE,
     STALE_INVENTORY_MESSAGE,
@@ -214,7 +215,7 @@ def test_review_rederives_candidate_and_rejects_edited_inventory(tmp_path, mutat
     with pytest.raises(PostJsonReviewError) as caught:
         resolve_post_json_review(spec, inventory, answers)
 
-    assert str(caught.value) == STALE_INVENTORY_MESSAGE
+    assert str(caught.value) == INVENTORY_SPEC_MISMATCH_MESSAGE
     assert SENTINEL not in str(caught.value)
 
 
@@ -231,7 +232,7 @@ def test_review_rejects_edited_spec_with_fixed_stale_message(tmp_path):
     with pytest.raises(PostJsonReviewError) as caught:
         resolve_post_json_review(spec, inventory, answers)
 
-    assert str(caught.value) == STALE_INVENTORY_MESSAGE
+    assert str(caught.value) == INVENTORY_SPEC_MISMATCH_MESSAGE
 
 
 @pytest.mark.parametrize(
@@ -282,6 +283,58 @@ def test_referenced_schema_change_requires_side_effect_review(tmp_path):
     assert str(caught.value) == OPERATION_DEFINITION_CHANGED_MESSAGE
 
 
+@pytest.mark.parametrize("change_target", [True, False])
+def test_schema_ref_target_and_siblings_are_hashed_separately(tmp_path, change_target):
+    spec, inventory, answers, answer = inputs(tmp_path)
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    media = document["paths"]["/items"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]
+    document["components"] = {"schemas": {"Name": {"type": "string", "minimum": 5}}}
+    media["schema"] = {
+        "$ref": "#/components/schemas/Name",
+        "minimum": 1,
+    }
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    before = refresh_inventory_and_answer(spec, inventory, answers, answer)
+    if change_target:
+        document["components"]["schemas"]["Name"]["minimum"] = 10
+    else:
+        media["schema"]["minimum"] = 2
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    after = analyze_post_json(spec).operations[0].review_candidates[0]
+
+    assert before.candidate_id == after.candidate_id
+    assert before.operation_definition_sha256 != after.operation_definition_sha256
+    with pytest.raises(PostJsonReviewError) as caught:
+        resolve_post_json_review(spec, inventory, answers)
+    assert str(caught.value) == OPERATION_DEFINITION_CHANGED_MESSAGE
+
+
+def test_recursive_response_schema_change_requires_side_effect_review(tmp_path):
+    spec, inventory, answers, answer = inputs(tmp_path)
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    node_ref = {"$ref": "#/components/schemas/Node"}
+    node = {"type": "object", "properties": {"child": node_ref}}
+    document["components"] = {"schemas": {"Node": node}}
+    document["paths"]["/items"]["post"]["responses"] = {
+        "200": {
+            "description": "Tree",
+            "content": {"application/json": {"schema": node_ref}},
+        }
+    }
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    refresh_inventory_and_answer(spec, inventory, answers, answer)
+    resolve_post_json_review(spec, inventory, answers)
+
+    node["properties"]["name"] = {"type": "string"}
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    inventory.write_text(serialize_report(analyze_post_json(spec)), encoding="utf-8")
+    with pytest.raises(PostJsonReviewError) as caught:
+        resolve_post_json_review(spec, inventory, answers)
+    assert str(caught.value) == OPERATION_DEFINITION_CHANGED_MESSAGE
+
+
 def test_unrelated_operation_change_does_not_invalidate_review(tmp_path):
     spec, inventory, answers, _ = inputs(tmp_path)
     document = json.loads(spec.read_text(encoding="utf-8"))
@@ -292,6 +345,46 @@ def test_unrelated_operation_change_does_not_invalidate_review(tmp_path):
         }
     }
     spec.write_text(json.dumps(document), encoding="utf-8")
+
+    material = resolve_post_json_review(spec, inventory, answers)
+
+    assert material.report["operation"]["path"] == "/items"
+
+
+def two_operation_review_inputs(tmp_path):
+    spec, inventory, answers, answer = inputs(tmp_path)
+    document = json.loads(spec.read_text(encoding="utf-8"))
+    document["paths"]["/other"] = json.loads(json.dumps(document["paths"]["/items"]))
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    refresh_inventory_and_answer(spec, inventory, answers, answer)
+    return spec, inventory, answers
+
+
+@pytest.mark.parametrize("swap", [True, False])
+def test_candidate_must_remain_in_its_claimed_inventory_operation(tmp_path, swap):
+    spec, inventory, answers = two_operation_review_inputs(tmp_path)
+    report = json.loads(inventory.read_text(encoding="utf-8"))
+    first, second = report["operations"]
+    if swap:
+        first["review_candidates"], second["review_candidates"] = (
+            second["review_candidates"],
+            first["review_candidates"],
+        )
+    else:
+        [moved] = first["review_candidates"]
+        first["review_candidates"] = []
+        second["review_candidates"].append(moved)
+        second["review_candidates"].sort(key=lambda item: item["candidate_id"])
+    inventory.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(PostJsonReviewError) as caught:
+        resolve_post_json_review(spec, inventory, answers)
+
+    assert str(caught.value) == INVENTORY_SPEC_MISMATCH_MESSAGE
+
+
+def test_candidate_operation_binding_accepts_unedited_inventory(tmp_path):
+    spec, inventory, answers = two_operation_review_inputs(tmp_path)
 
     material = resolve_post_json_review(spec, inventory, answers)
 
@@ -547,8 +640,7 @@ def test_named_entry_extensions_are_opaque_and_sibling_references_resolve(tmp_pa
         "x-response-metadata": literal,
     }
     operation["callbacks"] = {
-        "completed": {"$ref": "#/components/callbacks/Completed"},
-        "x-callback-metadata": literal,
+        "x-notify": {"$ref": "#/components/callbacks/Completed"},
     }
     document["components"] = {
         "schemas": {"Mode": {"type": "string", "description": "mode"}},
@@ -570,9 +662,10 @@ def test_named_entry_extensions_are_opaque_and_sibling_references_resolve(tmp_pa
         },
         "callbacks": {
             "Completed": {
+                "x-callback-metadata": literal,
                 "{$request.body#/callbackUrl}": {
                     "post": {"responses": {"204": {"description": "done"}}}
-                }
+                },
             }
         },
     }
@@ -592,7 +685,7 @@ def test_named_entry_extensions_are_opaque_and_sibling_references_resolve(tmp_pa
         lambda doc: doc["paths"]["/items"]["post"]["responses"][
             "x-response-metadata"
         ].update({"$ref": "order-456"}),
-        lambda doc: doc["paths"]["/items"]["post"]["callbacks"][
+        lambda doc: doc["components"]["callbacks"]["Completed"][
             "x-callback-metadata"
         ].update({"$ref": "order-456"}),
     )
@@ -624,6 +717,16 @@ def test_named_entry_extensions_are_opaque_and_sibling_references_resolve(tmp_pa
         assert (
             changed.operation_definition_sha256 != candidate.operation_definition_sha256
         )
+
+    callback = document["components"]["callbacks"]["Completed"][
+        "{$request.body#/callbackUrl}"
+    ]
+    callback["post"]["description"] = "Notify the subscriber"
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    inventory.write_text(serialize_report(analyze_post_json(spec)), encoding="utf-8")
+    with pytest.raises(PostJsonReviewError) as caught:
+        resolve_post_json_review(spec, inventory, answers)
+    assert str(caught.value) == OPERATION_DEFINITION_CHANGED_MESSAGE
 
 
 @pytest.mark.parametrize(
@@ -658,3 +761,46 @@ def test_serialized_inventory_candidate_is_minimal_and_unapproved(tmp_path):
         "operation_definition_sha256",
     }
     assert candidate["approval"] == "unapproved"
+
+
+def test_literal_star_and_array_item_have_distinct_review_candidates(tmp_path):
+    spec, inventory, answers, answer = inputs(tmp_path)
+    document = json.loads(spec.read_text())
+    media = document["paths"]["/items"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]
+    media["schema"] = {
+        "type": ["array", "object"],
+        "items": {"type": "string"},
+        "properties": {"*": {"type": "string"}},
+    }
+    spec.write_text(json.dumps(document))
+    report = analyze_post_json(spec)
+    inventory.write_text(serialize_report(report))
+    candidates = report.operations[0].review_candidates
+    assert (
+        len({candidate.candidate_id for candidate in candidates})
+        == len(candidates)
+        == 2
+    )
+    for candidate in candidates:
+        body, pointer = (
+            ({"*": "a"}, "/*") if candidate.literal_star_positions else (["a"], "/0")
+        )
+        answer.update(
+            candidate_id=candidate.candidate_id,
+            operation_definition_sha256=candidate.operation_definition_sha256,
+            schema_pointer=candidate.schema_pointer,
+            schema_definition_pointer=candidate.schema_definition_pointer,
+            concrete_pointer=pointer,
+            baseline={
+                "value": body,
+                "body_sha256": hashlib.sha256(
+                    json.dumps(body, separators=(",", ":")).encode()
+                ).hexdigest(),
+            },
+        )
+        write_answer(answers, answer)
+        assert resolve_post_json_review(spec, inventory, answers).pointer.tokens == (
+            pointer[1:],
+        )

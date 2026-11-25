@@ -35,6 +35,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["json_pointer", "schema_pointer", "schema_definition_pointer", "types", "required", "injectable", "reasons"],
       "properties": {
+        "literal_star_positions": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
         "json_pointer": {"$ref": "#/$defs/pattern_pointer"}, "schema_pointer": {"$ref": "#/$defs/pointer"},
         "schema_definition_pointer": {"$ref": "#/$defs/pointer"}, "types": {"$ref": "#/$defs/types"},
         "required": {"type": "boolean"}, "injectable": {"const": false},

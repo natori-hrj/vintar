@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
 from vintar.core.strict_json import DuplicateJsonKeyError, unique_object
-from vintar.regression.post_json_review import MAX_REVIEW_BYTES
+from vintar.regression.post_json_review import MAX_REVIEW_BYTES, concrete_review_pointer
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SCHEMA = _ROOT / "schemas" / "post-json-discovery-review-v1.schema.json"
@@ -38,8 +38,11 @@ def _validate(path: Path) -> None:
         raise ValueError("Side effect is not explicitly confirmed.")
     if report["environment"]["confirmed"] is not True:
         raise ValueError("Environment is not explicitly confirmed.")
-    if "*" in field["concrete_json_pointer"]:
-        raise ValueError("Concrete pointer contains a wildcard.")
+    concrete_review_pointer(
+        field["json_pointer_pattern"],
+        field["concrete_json_pointer"],
+        tuple(field.get("literal_star_positions", [])),
+    )
 
 
 def main() -> int:

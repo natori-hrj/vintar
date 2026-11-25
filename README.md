@@ -218,6 +218,9 @@ uv run --locked vintar review-post-json \
 The separate review artifact records only digests, schema provenance, the
 concrete pointer, and confirmations. It never records the baseline body and
 cannot execute HTTP or materialize a regression case.
+In a pointer pattern, `*` denotes an array index unless its zero-based token
+position is listed in `literal_star_positions`. Those positions select object
+properties named `*` and stay literal in the concrete pointer.
 Candidate IDs identify stable operation/field locations. A separate operation
 definition digest binds side-effect approval to the complete resolved operation,
 including referenced request/response schemas and path-level parameters and

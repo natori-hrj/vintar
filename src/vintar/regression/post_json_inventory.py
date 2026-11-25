@@ -86,6 +86,7 @@ class BodyField:
     schema_definition_pointer: str
     types: tuple[str, ...]
     required: bool
+    literal_star_positions: tuple[int, ...] = ()
     injectable: bool = False
     reasons: tuple[BlockingReason, ...] = (
         BlockingReason.REQUEST_BODY_CASE_GENERATION_UNSUPPORTED,
@@ -102,6 +103,7 @@ class ReviewCandidate:
     request_body_pointer: str
     operation_definition_sha256: str
     json_pointer_pattern: str
+    literal_star_positions: tuple[int, ...]
     schema_pointer: str
     schema_definition_pointer: str
     types: tuple[str, ...]
@@ -177,11 +179,10 @@ def _candidate_identity(
     path: str,
     field: BodyField,
 ) -> list[object]:
-    return [
-        "POST",
-        path,
-        field.json_pointer,
-    ]
+    identity: list[object] = ["POST", path, field.json_pointer]
+    if field.literal_star_positions:
+        identity.append(field.literal_star_positions)
+    return identity
 
 
 def post_json_candidate_id(
@@ -308,13 +309,16 @@ def _definition_value(
             _string(value["$ref"], reference_source), reference_source
         )
         if target == source or target in trail:
-            raise DiscoveryError(
-                reference_source,
-                "Reference cycle detected. Break the recursive reference chain.",
+            if kind != "schema":
+                raise DiscoveryError(
+                    reference_source,
+                    "Reference cycle detected. Break the recursive reference chain.",
+                )
+            resolved: JSON = {"$ref": f"#{target.pointer}"}
+        else:
+            resolved = _definition_value(
+                document, referenced, target, (*trail, target), kind
             )
-        resolved = _definition_value(
-            document, referenced, target, (*trail, target), kind
-        )
         siblings = _definition_map(
             document,
             {key: child for key, child in value.items() if key != "$ref"},
@@ -322,9 +326,7 @@ def _definition_value(
             trail,
             kind,
         )
-        if isinstance(resolved, dict) and isinstance(siblings, dict):
-            return resolved | siblings
-        return {"resolved": resolved, "siblings": siblings}
+        return {"$ref_target": resolved, "siblings": siblings}
     return _definition_map(document, value, source, trail, kind)
 
 
@@ -403,7 +405,7 @@ def _definition_child(
                 source,
                 trail,
                 "callback",
-                extensions_allowed=True,
+                extensions_allowed=False,
             )
         return value
     if kind == "path_item":
@@ -576,6 +578,7 @@ def _review_candidates(
                 request_body_pointer,
                 operation_definition_sha256,
                 field.json_pointer,
+                field.literal_star_positions,
                 field.schema_pointer,
                 field.schema_definition_pointer,
                 field.types,
@@ -643,9 +646,14 @@ def _walk_schema(
     trail: tuple[Source, ...],
     json_pointer: str,
     required: bool,
+    literal_star_positions: tuple[int, ...] = (),
 ) -> tuple[list[BodyField], list[SchemaDiagnostic]]:
     reference_siblings: list[SchemaDiagnostic] = []
-    if isinstance(value, dict) and "$ref" in value:
+    if (
+        document.version.startswith("3.0.")
+        and isinstance(value, dict)
+        and "$ref" in value
+    ):
         for sibling in sorted(value.keys() - {"$ref", "summary", "description"}):
             reference_siblings.append(
                 SchemaDiagnostic(
@@ -693,6 +701,7 @@ def _walk_schema(
                 definition.pointer,
                 types,
                 required,
+                literal_star_positions=literal_star_positions,
             )
         )
     if scalar_root or "$id" in node or "$dynamicRef" in node:
@@ -716,6 +725,9 @@ def _walk_schema(
             resolved_trail,
             _join_pointer(json_pointer, name),
             name in required_names,
+            (*literal_star_positions, json_pointer.count("/"))
+            if name == "*"
+            else literal_star_positions,
         )
         fields.extend(child_fields)
         diagnostics.extend(child_diagnostics)
@@ -727,6 +739,7 @@ def _walk_schema(
             resolved_trail,
             f"{json_pointer}/*",
             False,
+            literal_star_positions,
         )
         fields.extend(item_fields)
         diagnostics.extend(item_diagnostics)
@@ -982,6 +995,7 @@ def _json_value(value: object) -> object:
         return {
             name: _json_value(getattr(value, name))
             for name in value.__dataclass_fields__
+            if name != "literal_star_positions" or getattr(value, name)
         }
     return value
 

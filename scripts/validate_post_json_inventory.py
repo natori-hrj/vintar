@@ -132,6 +132,14 @@ def _semantic_validate(report: dict[str, object]) -> None:
                 )
             ):
                 raise ValueError("Invalid field pointer.")
+            tokens = field["json_pointer"].split("/")[1:]
+            if any(
+                type(index) is not int
+                or not 0 <= index < len(tokens)
+                or tokens[index] != "*"
+                for index in field.get("literal_star_positions", [])
+            ):
+                raise ValueError("Invalid literal star position.")
             types = field["types"]
             if types != sorted(types) or len(types) != len(set(types)):
                 raise ValueError("Field types are unordered or duplicated.")

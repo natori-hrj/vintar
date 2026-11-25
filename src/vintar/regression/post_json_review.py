@@ -15,6 +15,7 @@ from vintar.core.json_body import (
     JsonPointer,
     json_array_at,
     json_leaf_at,
+    json_object_at,
     replace_json_leaf,
 )
 from vintar.core.strict_json import DuplicateJsonKeyError, parse_strict_json
@@ -36,6 +37,10 @@ MAX_REVIEW_BYTES = 262_144
 STALE_INVENTORY_MESSAGE = (
     "POST JSON inventory is stale or was edited. Regenerate it with "
     "vintar inventory-post-json and review the new candidate."
+)
+INVENTORY_SPEC_MISMATCH_MESSAGE = (
+    "POST JSON inventory does not match the spec. Regenerate it with "
+    "vintar inventory-post-json."
 )
 STALE_BODY_DIGEST_MESSAGE = (
     "Baseline body digest does not match. Recompute body_sha256 from the complete "
@@ -109,24 +114,35 @@ def _exact_true(value: object, label: str) -> None:
         )
 
 
-def _concrete_pointer(pattern: str, concrete: object) -> JsonPointer:
+def concrete_review_pointer(
+    pattern: str, concrete: object, literal_star_positions: tuple[int, ...]
+) -> JsonPointer:
     if not isinstance(concrete, str):
         raise PostJsonReviewError(
-            "Concrete JSON Pointer is invalid. Use the candidate pattern with every '*' replaced by an explicit array index."
+            "Concrete JSON Pointer is invalid. Use the candidate pattern with each array wildcard replaced by an explicit index."
         )
     try:
         pattern_pointer = JsonPointer.parse(pattern)
         pointer = JsonPointer.parse(concrete)
     except (TypeError, ValueError) as exc:
         raise PostJsonReviewError(
-            "Concrete JSON Pointer is invalid. Use the candidate pattern with every '*' replaced by an explicit array index."
+            "Concrete JSON Pointer is invalid. Use the candidate pattern with each array wildcard replaced by an explicit index."
         ) from exc
     if len(pattern_pointer.tokens) != len(pointer.tokens):
         raise PostJsonReviewError(
-            "Concrete JSON Pointer does not match the candidate. Replace every '*' with one explicit array index."
+            "Concrete JSON Pointer does not match the candidate. Replace each array wildcard with an explicit index."
         )
-    for expected, actual in zip(pattern_pointer.tokens, pointer.tokens, strict=True):
-        if expected == "*":
+    if any(
+        type(i) is not int
+        or not 0 <= i < len(pattern_pointer.tokens)
+        or pattern_pointer.tokens[i] != "*"
+        for i in literal_star_positions
+    ):
+        raise PostJsonReviewError("Invalid literal star positions.")
+    for index, (expected, actual) in enumerate(
+        zip(pattern_pointer.tokens, pointer.tokens, strict=True)
+    ):
+        if expected == "*" and index not in literal_star_positions:
             if (
                 not actual.isascii()
                 or not actual.isdecimal()
@@ -252,52 +268,76 @@ def resolve_post_json_review(
     operations = inventory_value.get("operations")
     if not isinstance(operations, list):
         raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
-    supplied_candidates: dict[str, dict[str, JSON]] = {}
+    claimed_operations: list[dict[str, JSON]] = []
     for operation_value in operations:
         if not isinstance(operation_value, dict):
             raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
         candidate_values = operation_value.get("review_candidates")
         if not isinstance(candidate_values, list):
             raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
-        for candidate_value in candidate_values:
-            if not isinstance(candidate_value, dict):
-                raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
-            identifier = candidate_value.get("candidate_id")
-            if not isinstance(identifier, str) or identifier in supplied_candidates:
-                raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
-            supplied_candidates[identifier] = candidate_value
+        if any(
+            isinstance(candidate_value, dict)
+            and candidate_value.get("candidate_id") == candidate_id
+            for candidate_value in candidate_values
+        ):
+            claimed_operations.append(operation_value)
+    if len(claimed_operations) != 1:
+        raise PostJsonReviewError(INVENTORY_SPEC_MISMATCH_MESSAGE)
+    claimed_operation = claimed_operations[0]
+    claimed_candidates = claimed_operation.get("review_candidates")
+    if not isinstance(claimed_candidates, list):
+        raise PostJsonReviewError(INVENTORY_SPEC_MISMATCH_MESSAGE)
+    supplied_matches = [
+        candidate_value
+        for candidate_value in claimed_candidates
+        if isinstance(candidate_value, dict)
+        and candidate_value.get("candidate_id") == candidate_id
+    ]
+    if len(supplied_matches) != 1:
+        raise PostJsonReviewError(INVENTORY_SPEC_MISMATCH_MESSAGE)
+    supplied = supplied_matches[0]
     try:
         current = analyze_post_json(spec)
     except DiscoveryError as exc:
         raise PostJsonReviewError(STALE_INVENTORY_MESSAGE) from exc
-    current_candidates = {
-        candidate.candidate_id: candidate
+    current_operations = [
+        operation
         for operation in current.operations
-        for candidate in operation.review_candidates
-    }
-    candidate = current_candidates.get(candidate_id)
-    supplied = supplied_candidates.get(candidate_id)
-    if candidate is None:
-        raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
-    matching_fields: list[dict[str, JSON]] = []
-    for operation_value in operations:
-        if (
-            not isinstance(operation_value, dict)
-            or operation_value.get("path") != candidate.path
-            or operation_value.get("operation_pointer") != candidate.operation_pointer
-            or operation_value.get("request_body_pointer")
-            != candidate.request_body_pointer
-        ):
-            continue
-        fields = operation_value.get("fields")
-        if not isinstance(fields, list):
-            raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
-        matching_fields.extend(
-            field
-            for field in fields
-            if isinstance(field, dict)
-            and field.get("json_pointer") == candidate.json_pointer_pattern
-        )
+        if operation.path == claimed_operation.get("path")
+        and operation.operation_pointer == claimed_operation.get("operation_pointer")
+        and operation.request_body_pointer
+        == claimed_operation.get("request_body_pointer")
+    ]
+    if len(current_operations) != 1:
+        raise PostJsonReviewError(INVENTORY_SPEC_MISMATCH_MESSAGE)
+    current_operation = current_operations[0]
+    current_candidates = [
+        item
+        for item in current_operation.review_candidates
+        if item.candidate_id == candidate_id
+    ]
+    if len(current_candidates) != 1:
+        raise PostJsonReviewError(INVENTORY_SPEC_MISMATCH_MESSAGE)
+    candidate = current_candidates[0]
+    if (
+        candidate.method != "POST"
+        or candidate.path != current_operation.path
+        or candidate.operation_pointer != current_operation.operation_pointer
+        or candidate.request_body_pointer != current_operation.request_body_pointer
+    ):
+        raise PostJsonReviewError(INVENTORY_SPEC_MISMATCH_MESSAGE)
+    fields = claimed_operation.get("fields")
+    if not isinstance(fields, list):
+        raise PostJsonReviewError(INVENTORY_SPEC_MISMATCH_MESSAGE)
+    matching_fields = [
+        field
+        for field in fields
+        if isinstance(field, dict)
+        and field.get("json_pointer") == candidate.json_pointer_pattern
+        and field.get("literal_star_positions", [])
+        == list(candidate.literal_star_positions)
+        and field.get("schema_pointer") == candidate.schema_pointer
+    ]
     supplied_field = matching_fields[0] if len(matching_fields) == 1 else None
     expected_keys = {
         "version",
@@ -320,13 +360,12 @@ def resolve_post_json_review(
     if (
         supplied != _as_json(candidate)
         or supplied_field is None
-        or supplied_field.get("schema_pointer") != candidate.schema_pointer
         or supplied_field.get("schema_definition_pointer")
         != candidate.schema_definition_pointer
         or answer["schema_pointer"] != candidate.schema_pointer
         or answer["schema_definition_pointer"] != candidate.schema_definition_pointer
     ):
-        raise PostJsonReviewError(STALE_INVENTORY_MESSAGE)
+        raise PostJsonReviewError(INVENTORY_SPEC_MISMATCH_MESSAGE)
     _exact_true(answer["operation_approved"], "operation_approved")
     side_effect = answer["side_effect"]
     if not isinstance(side_effect, dict) or side_effect.keys() != {
@@ -358,19 +397,28 @@ def resolve_post_json_review(
         )
     _exact_true(environment["confirmed"], "environment.confirmed")
     body, source = _baseline(spec, candidate, answer["baseline"])
-    pointer = _concrete_pointer(
-        candidate.json_pointer_pattern, answer["concrete_pointer"]
+    pointer = concrete_review_pointer(
+        candidate.json_pointer_pattern,
+        answer["concrete_pointer"],
+        candidate.literal_star_positions,
     )
     pattern = JsonPointer.parse(candidate.json_pointer_pattern)
     for index, token in enumerate(pattern.tokens):
-        if token != "*":
-            continue
         parent_tokens = pointer.tokens[:index]
         parent_value = "".join(
             "/" + item.replace("~", "~0").replace("/", "~1") for item in parent_tokens
         )
+        parent = JsonPointer.parse(parent_value)
+        if token != "*" or index in candidate.literal_star_positions:
+            try:
+                json_object_at(body, parent)
+            except ValueError as exc:
+                raise PostJsonReviewError(
+                    "The candidate property requires a JSON object at its parent pointer."
+                ) from exc
+            continue
         try:
-            json_array_at(body, JsonPointer.parse(parent_value))
+            json_array_at(body, parent)
         except ValueError as exc:
             raise PostJsonReviewError(ARRAY_PATTERN_MESSAGE) from exc
     try:
@@ -398,6 +446,11 @@ def resolve_post_json_review(
         },
         "field": {
             "json_pointer_pattern": candidate.json_pointer_pattern,
+            **(
+                {"literal_star_positions": list(candidate.literal_star_positions)}
+                if candidate.literal_star_positions
+                else {}
+            ),
             "concrete_json_pointer": answer["concrete_pointer"],
             "schema_pointer": candidate.schema_pointer,
             "schema_definition_pointer": candidate.schema_definition_pointer,

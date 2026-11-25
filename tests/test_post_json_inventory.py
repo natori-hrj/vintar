@@ -410,10 +410,7 @@ def test_reference_sibling_and_definition_pointer(tmp_path):
     report = inventory.analyze_post_json(write_spec(tmp_path, document))
     [operation] = report.operations
     assert operation.fields[0].schema_definition_pointer.endswith("/Name/properties/x")
-    assert (
-        operation.diagnostics[0].reason
-        is inventory.SchemaDiagnosticReason.REFERENCE_SIBLING_UNSUPPORTED
-    )
+    assert operation.diagnostics == ()
 
 
 def test_reference_limit_is_operation_diagnostic(tmp_path, monkeypatch):

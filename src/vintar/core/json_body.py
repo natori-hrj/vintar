@@ -278,6 +278,12 @@ def json_leaf_at(body: JsonBody, pointer: JsonPointer) -> JsonLeaf:
     return value
 
 
+def json_object_at(body: JsonBody, pointer: JsonPointer) -> None:
+    """Require a concrete pointer to resolve to an existing JSON object."""
+    if not isinstance(_value_at(body, pointer), _JsonObject):
+        _raise_pointer_value_error("JSON Pointer does not resolve to an object.")
+
+
 def json_array_at(body: JsonBody, pointer: JsonPointer) -> None:
     """Require a concrete pointer to resolve to an existing JSON array."""
     if not isinstance(_value_at(body, pointer), _JsonArray):
