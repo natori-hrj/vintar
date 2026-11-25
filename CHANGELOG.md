@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+**Changed**
+
+- Check that the release tag matches the package version at the tagged commit
+  before running release tests, builds, or publishing.
+
 ## [0.5.2] - 2026-11-25
 
 0.5.0 and 0.5.1 were not published; their tags point at a pre-release commit and must not be used.

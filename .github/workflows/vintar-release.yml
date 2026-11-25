@@ -9,8 +9,26 @@ permissions:
   contents: read
 
 jobs:
+  tag-version:
+    name: Check release tag against package version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out tagged commit
+        if: github.ref_type == 'tag'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate release tag
+        if: github.ref_type == 'tag'
+        run: python3 scripts/check_release_tag.py -- "$GITHUB_REF_NAME"
+
   quality:
     name: Selected ref quality gates
+    needs: tag-version
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -62,7 +80,7 @@ jobs:
 
   rehearse:
     name: Verify release distributions on supported CPython versions
-    needs: quality
+    needs: [tag-version, quality]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -110,7 +128,7 @@ jobs:
   publish-pypi:
     name: Publish verified distributions to PyPI
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: rehearse
+    needs: [tag-version, rehearse]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: pypi
@@ -154,7 +172,7 @@ jobs:
   github-release:
     name: Create GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [rehearse, publish-pypi]
+    needs: [tag-version, rehearse, publish-pypi]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
