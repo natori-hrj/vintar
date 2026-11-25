@@ -78,6 +78,11 @@ def test_review_cli_failures_never_echo_body_values(tmp_path, mutation):
     ("failure", "code", "diagnostic"),
     [
         (
+            None,
+            2,
+            "Draft path review.json already has different content. Use an empty directory or move the existing file.",
+        ),
+        (
             OSError,
             2,
             "cannot complete offline POST JSON review. Check the local spec, current inventory, answers, and writable output path.",
@@ -89,20 +94,26 @@ def test_review_cli_failures_never_echo_body_values(tmp_path, mutation):
         ),
     ],
 )
-def test_review_cli_reports_failed_publication(
+def test_review_cli_preserves_output_on_publication_failure(
     tmp_path, monkeypatch, failure, code, diagnostic
 ):
     spec, inventory, answers, _ = inputs(tmp_path)
-    output = tmp_path / "review.json"
+    directory = tmp_path / "output"
+    directory.mkdir()
+    output = directory / "review.json"
     existing = b"existing review notes\n"
-    output.write_bytes(existing)
 
-    def fail_write(*args):
-        raise failure("synthetic publication failure")
+    def fail_sync(_descriptor):
+        # Another writer can publish after the destination check. Exclusive
+        # creation also catches a regression that writes directly to output.
+        with output.open("xb") as stream:
+            stream.write(existing)
+        raise failure("synthetic temporary-file sync failure")
 
-    monkeypatch.setattr(
-        "vintar.post_json_review_cli.write_post_json_review", fail_write
-    )
+    if failure is None:
+        output.write_bytes(existing)
+    else:
+        monkeypatch.setattr("vintar.regression.discovery_drafts.os.fsync", fail_sync)
     result = CliRunner().invoke(
         app,
         [
@@ -122,3 +133,4 @@ def test_review_cli_reports_failed_publication(
     assert result.stderr == f"Error: {diagnostic}\n"
     assert result.stdout == ""
     assert output.read_bytes() == existing
+    assert list(directory.iterdir()) == [output]
