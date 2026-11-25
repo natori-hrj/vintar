@@ -10,6 +10,7 @@ from rich.console import Console
 from vintar.core.http import send_request
 from vintar.discover_cli import discover_command
 from vintar.materialize_case_cli import materialize_case_command
+from vintar.post_json_inventory_cli import inventory_post_json_command
 from vintar.regression_cli import verify_command
 from vintar.review_draft_cli import review_draft_command
 from vintar.sqli_cli import sqli_app
@@ -26,6 +27,7 @@ app.command("verify")(verify_command)
 app.command("discover")(discover_command)
 app.command("review-draft")(review_draft_command)
 app.command("materialize-case")(materialize_case_command)
+app.command("inventory-post-json")(inventory_post_json_command)
 
 console = Console()
 

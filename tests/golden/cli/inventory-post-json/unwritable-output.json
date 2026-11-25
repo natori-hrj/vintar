@@ -1,0 +1,6 @@
+{
+  "exit_code": 2,
+  "report_json": null,
+  "stderr": "Error: cannot write the POST JSON inventory. Choose a writable output path separate from the spec.\n",
+  "stdout": ""
+}
