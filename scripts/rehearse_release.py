@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import tomllib
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -18,6 +17,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 from scripts.check_distributions import build_distributions, smoke_wheel
+from scripts.check_release_tag import project_version, validate_release_tag
 from scripts.run_ci_e2e import run_e2e
 from scripts.scan_git_history import main as scan_secrets
 
@@ -33,9 +33,7 @@ class AuditFindings(RuntimeError):
 
 
 def release_version(root: Path) -> str:
-    version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
-        "project"
-    ]["version"]
+    version = project_version(root)
     sections = re.split(
         r"(?m)^#{2,6} ", (root / "CHANGELOG.md").read_text(encoding="utf-8")
     )
@@ -305,17 +303,6 @@ def verify_install(
     write_sbom(
         wheel.parent / f"sbom-cpython-{python_version}.cdx.json", version, packages
     )
-
-
-def validate_release_tag(tag: str, version: str) -> None:
-    expected = f"v{version}"
-    if tag != expected or not re.fullmatch(
-        r"v(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}", tag, re.ASCII
-    ):
-        raise ValueError(
-            f"Release tag {tag!r} does not match a stable project version. "
-            f"Use the stable vMAJOR.MINOR.PATCH tag matching pyproject.toml ({expected})."
-        )
 
 
 def rehearse(output: Path, interpreters: list[str], tag: str | None = None) -> int:

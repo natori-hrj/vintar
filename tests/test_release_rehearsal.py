@@ -224,8 +224,23 @@ def test_manual_rehearsal_remains_read_only_and_artifact_only():
     }
     assert workflow["permissions"] == {"contents": "read"}
     jobs = workflow["jobs"]
-    assert set(jobs) == {"quality", "rehearse", "publish-pypi", "github-release"}
-    assert jobs["rehearse"]["needs"] == "quality"
+    assert set(jobs) == {
+        "tag-version",
+        "quality",
+        "rehearse",
+        "publish-pypi",
+        "github-release",
+    }
+    gate = jobs["tag-version"]
+    assert "needs" not in gate and "if" not in gate
+    checkout, validate = gate["steps"]
+    assert checkout["with"]["ref"] == "${{ github.sha }}"
+    assert checkout["if"] == validate["if"] == "github.ref_type == 'tag'"
+    assert (
+        validate["run"] == 'python3 scripts/check_release_tag.py -- "$GITHUB_REF_NAME"'
+    )
+    assert jobs["quality"]["needs"] == "tag-version"
+    assert jobs["rehearse"]["needs"] == ["tag-version", "quality"]
     assert all("continue-on-error" not in job for job in jobs.values())
     assert all(
         "continue-on-error" not in step
@@ -258,8 +273,8 @@ def test_publishing_jobs_are_tag_only_and_use_the_verified_artifact():
     jobs = release_workflow()["jobs"]
     pypi = jobs["publish-pypi"]
     release = jobs["github-release"]
-    assert pypi["needs"] == "rehearse"
-    assert release["needs"] == ["rehearse", "publish-pypi"]
+    assert pypi["needs"] == ["tag-version", "rehearse"]
+    assert release["needs"] == ["tag-version", "rehearse", "publish-pypi"]
     assert pypi["environment"] == "pypi"
     assert pypi["permissions"] == {"contents": "read", "id-token": "write"}
     assert release["permissions"] == {"contents": "write"}
@@ -309,12 +324,16 @@ def test_publishing_jobs_are_tag_only_and_use_the_verified_artifact():
     )
 
 
-@pytest.mark.parametrize("tag", ["v0.1.1", "0.1.0", "v0.1.0rc1", "v00.1.0"])
-def test_mismatched_release_tag_never_builds(rehearsal, monkeypatch, tmp_path, tag):
+def test_mismatched_release_tag_never_builds(rehearsal, monkeypatch, tmp_path):
+    tag = "v0.1.1"
     monkeypatch.setattr(rehearsal, "release_version", lambda root: "0.1.0")
     output = tmp_path / "dist"
-    with pytest.raises(ValueError, match=r"matching pyproject\.toml \(v0\.1\.0\)"):
+    with pytest.raises(ValueError) as error:
         rehearsal.rehearse(output, ["3.13"], tag)
+    assert str(error.value) == (
+        f"Release tag {tag!r} and package version '0.1.0' disagree. "
+        "Tag the merged release commit instead."
+    )
     assert not output.exists()
 
 
