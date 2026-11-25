@@ -3,7 +3,13 @@ from time import perf_counter
 
 import pytest
 
-from vintar.core.json_body import JsonBody, JsonPointer, replace_json_leaf
+from vintar.core.json_body import (
+    JSON_POINTER_TOO_LONG_MESSAGE,
+    MAX_JSON_POINTER_CHARACTERS,
+    JsonBody,
+    JsonPointer,
+    replace_json_leaf,
+)
 from vintar.core.strict_json import (
     JSON_INTEGER_TOO_LONG_MESSAGE,
     MAX_JSON_INTEGER_DIGITS,
@@ -203,6 +209,12 @@ def test_rejects_invalid_pointer_syntax(pointer, message):
         JsonPointer.parse(pointer)
 
 
+def test_rejects_pointer_over_character_limit_with_fixed_message():
+    with pytest.raises(ValueError) as caught:
+        JsonPointer.parse("/" + "0" * MAX_JSON_POINTER_CHARACTERS)
+    assert str(caught.value) == JSON_POINTER_TOO_LONG_MESSAGE
+
+
 @pytest.mark.parametrize(
     ("pointer", "message"),
     [
@@ -218,6 +230,26 @@ def test_rejects_non_explicit_or_missing_array_index(pointer, message):
     body = JsonBody.from_bytes(b'["zero","one"]')
     with pytest.raises(ValueError, match=message):
         replace_json_leaf(body, JsonPointer.parse(pointer), "new")
+
+
+@pytest.mark.parametrize("pointer", ["/0", "/" + "9" * 100_000])
+def test_empty_array_rejects_every_valid_index_as_out_of_range(pointer):
+    with pytest.raises(ValueError, match="array index does not exist"):
+        replace_json_leaf(JsonBody.from_bytes(b"[]"), JsonPointer.parse(pointer), "new")
+
+
+def test_one_element_array_rejects_very_long_index_as_out_of_range():
+    pointer = JsonPointer.parse("/" + "9" * 100_000)
+    with pytest.raises(ValueError, match="array index does not exist"):
+        replace_json_leaf(JsonBody.from_bytes(b"[0]"), pointer, "new")
+
+
+def test_array_index_boundary_accepts_last_and_rejects_length():
+    body = JsonBody.from_bytes(b'[0,1,2,3,4,5,6,7,8,"old"]')
+    replaced = replace_json_leaf(body, JsonPointer.parse("/9"), "new")
+    assert replaced.to_bytes() == b'[0,1,2,3,4,5,6,7,8,"new"]'
+    with pytest.raises(ValueError, match="array index does not exist"):
+        replace_json_leaf(body, JsonPointer.parse("/10"), "new")
 
 
 @pytest.mark.parametrize(

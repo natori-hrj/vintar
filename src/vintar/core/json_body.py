@@ -14,6 +14,11 @@ from vintar.core.strict_json import (
 type JsonLeaf = bool | int | float | str | None
 type _JsonValue = JsonLeaf | _JsonArray | _JsonObject
 
+MAX_JSON_POINTER_CHARACTERS = 1_048_576
+JSON_POINTER_TOO_LONG_MESSAGE = (
+    "JSON Pointer is too long. Use a pointer of at most 1048576 characters."
+)
+
 
 @dataclass(frozen=True, slots=True, repr=False)
 class _JsonArray:
@@ -124,6 +129,8 @@ class JsonPointer:
     def parse(cls, value: str) -> "JsonPointer":
         if type(value) is not str:
             raise TypeError("JSON Pointer must be a string. Use an RFC 6901 pointer.")
+        if len(value) > MAX_JSON_POINTER_CHARACTERS:
+            raise ValueError(JSON_POINTER_TOO_LONG_MESSAGE)
         if value == "":
             return cls._from_tokens(())
         if not value.startswith("/"):
@@ -167,19 +174,21 @@ def _array_index(token: str, length: int) -> int:
         raise ValueError(
             "JSON Pointer array index has a leading zero. Use its canonical decimal index."
         )
-    index = _parse_index(token)
+    if length == 0:
+        raise ValueError(
+            "JSON Pointer array index does not exist. Use an index of an existing leaf."
+        )
+    maximum = str(length - 1)
+    if len(token) > len(maximum):
+        raise ValueError(
+            "JSON Pointer array index does not exist. Use an index of an existing leaf."
+        )
+    index = int(token)
     if index >= length:
         raise ValueError(
             "JSON Pointer array index does not exist. Use an index of an existing leaf."
         )
     return index
-
-
-def _parse_index(token: str) -> int:
-    value = 0
-    for character in token:
-        value = value * 10 + ord(character) - ord("0")
-    return value
 
 
 def _replace(
