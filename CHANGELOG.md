@@ -2,14 +2,40 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-26
+
+**Added**
+
+- Support POST JSON requests for reviewed regression cases, with strict JSON
+  bodies and concrete JSON Pointers. Offline candidate review requires explicit
+  array indexes, canonical baseline digests, operation approval, a reviewed
+  `no_side_effect` classification, and isolated environment confirmation.
+  Inventory v2 candidates remain unapproved and non-injectable. Historical
+  inventory v1 still validates. (#84, #85, #88)
+- Add Case Schema v2 and offline materialization of reviewed POST JSON
+  candidates. Identity binding supports reviewed v2 GET query and POST JSON
+  cases. (#87, #89)
+- Require trusted runtime policy for v2 execution, binding approval to the
+  exact case, identity, method, path, origin, and environment class. POST
+  approval also binds the operation and baseline digests and side-effect
+  classification. Apply externally supplied Bearer, dedicated API-key header,
+  or Basic credentials at request time for approved targets. Credential names
+  and values stay out of cases and reports. (#88–#91)
+
 **Changed**
 
-- Add offline POST JSON candidate review with explicit array indexes, canonical
-  baseline digests, operation approval, reviewed `no_side_effect`, and isolated
-  environment confirmation. Inventory v2 candidates remain unapproved and all
-  inventory fields remain non-injectable; historical inventory v1 still validates.
+- Expand test coverage for CLI, review, and materialization error handling. (#86)
 - Check that the release tag matches the package version at the tagged commit
   before running release tests, builds, or publishing.
+
+**Unsupported**
+
+- Automatic POST case generation from inventory or an OpenAPI spec, and
+  execution of POST cases without explicit approval for isolated,
+  `no_side_effect` use.
+- Login, token acquisition or refresh, cookie authentication, API keys in
+  query parameters, and path-template binding.
+- Redirects, automatic retries, and POST replay.
 
 ## [0.5.2] - 2026-11-25
 
@@ -159,7 +185,8 @@
 - Validate batch reports and verify exit contracts against local fixtures in GitHub Actions.
 - Check CLI output and README examples with deterministic golden tests. CI also checks formatting, architecture, strict types, and Git history for committed secrets.
 
-[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/natori-hrj/vintar/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/natori-hrj/vintar/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/natori-hrj/vintar/compare/v0.4.0...v0.5.2
 [0.4.0]: https://github.com/natori-hrj/vintar/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/natori-hrj/vintar/compare/v0.2.1...v0.3.0
