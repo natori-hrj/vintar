@@ -262,6 +262,14 @@ def test_exact_origin_and_final_collision_are_rechecked_before_application():
             run,
             identity_id="reader",
         )
+    with pytest.raises(AuthenticationError, match="auth_collision"):
+        apply_authentication(
+            httpx.Request(
+                "GET", "https://api.example/", headers={"AUTHORIZATION": "case"}
+            ),
+            run,
+            identity_id="reader",
+        )
 
 
 @pytest.mark.parametrize("default_name", ["X-API-Key", "x-api-key", "X-Api-kEy"])
@@ -331,14 +339,6 @@ def test_streaming_body_is_not_read_or_replaced_when_auth_is_applied():
     assert request.stream is original_stream
     assert request.stream is stream
     assert stream.iterations == 0
-    with pytest.raises(AuthenticationError, match="auth_collision"):
-        apply_authentication(
-            httpx.Request(
-                "GET", "https://api.example/", headers={"AUTHORIZATION": "case"}
-            ),
-            run,
-            identity_id="reader",
-        )
 
 
 def test_redirect_response_is_not_followed_or_reapplied():
