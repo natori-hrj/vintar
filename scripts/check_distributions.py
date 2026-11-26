@@ -85,7 +85,10 @@ def check_distributions(root: Path, output: Path) -> tuple[Path, Path]:
         and (
             file.suffix == ".py"
             or file.relative_to(root / "src").as_posix()
-            == "vintar/schemas/regression-case-v2.schema.json"
+            in {
+                "vintar/schemas/authorization-case-v1.schema.json",
+                "vintar/schemas/regression-case-v2.schema.json",
+            }
         )
     }
     require(

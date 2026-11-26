@@ -103,6 +103,12 @@ source_modules = ["vintar.checks"]
 forbidden_modules = ["vintar.auth"]
 
 [[tool.importlinter.contracts]]
+name = "Authorization checks remain pure and independent of SQLi implementation."
+type = "forbidden"
+source_modules = ["vintar.checks.authorization"]
+forbidden_modules = ["vintar.checks.sqli"]
+
+[[tool.importlinter.contracts]]
 name = "Only the regression runner may compose authenticated application."
 type = "forbidden"
 source_modules = [
@@ -111,7 +117,8 @@ source_modules = [
     "vintar.regression.discovery_review", "vintar.regression.case_materialization",
     "vintar.regression.post_json_inventory", "vintar.regression.post_json_review",
     "vintar.regression.post_json_case_materialization", "vintar.regression.cases",
-    "vintar.regression.cases_v2", "vintar.cli", "vintar.sqli_cli",
+    "vintar.regression.cases_v2", "vintar.regression.authorization_cases",
+    "vintar.regression.authorization_policy", "vintar.cli", "vintar.sqli_cli",
     "vintar.regression_cli",
 ]
 forbidden_modules = ["vintar.auth.apply"]

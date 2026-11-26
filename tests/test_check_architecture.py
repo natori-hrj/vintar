@@ -168,6 +168,28 @@ def test_post_json_review_can_reuse_json_body_primitives():
     )
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["regression/authorization_cases.py", "regression/authorization_policy.py"],
+)
+def test_authorization_contract_parsers_stay_offline(path):
+    for module in ("vintar.core.executor", "vintar.regression.runner", "socket"):
+        [diagnostic] = check_source(Path(path), f"import {module}")
+        assert "must remain offline" in diagnostic
+
+
+def test_authorization_case_parser_can_use_only_pure_check_contracts():
+    assert not check_source(
+        Path("regression/authorization_cases.py"),
+        "from vintar.checks.authorization.models import AuthorizationExpectation",
+    )
+    [diagnostic] = check_source(
+        Path("regression/authorization_cases.py"),
+        "from vintar.checks.sqli.models import Verdict",
+    )
+    assert "must remain offline" in diagnostic
+
+
 def test_runner_may_import_auth_application_for_authenticated_execution():
     assert check_source(Path("regression/runner.py"), "import vintar.auth.apply") == []
 

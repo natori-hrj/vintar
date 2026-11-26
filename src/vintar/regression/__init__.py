@@ -1,5 +1,26 @@
 """Public API for security regression cases and execution."""
 
+from vintar.regression.authorization_cases import (
+    AUTHORIZATION_CASE_VERSION,
+    AuthorizationCase,
+    AuthorizationCaseValidationError,
+    AuthorizationIdentity,
+    AuthorizationOperation,
+    AuthorizationRequest,
+    load_authorization_case,
+    parse_authorization_case,
+    parse_authorization_case_mapping,
+)
+from vintar.regression.authorization_policy import (
+    AuthorizationCaseApproval,
+    AuthorizationOperationApproval,
+    AuthorizationPolicyError,
+    AuthorizationPolicyIdentity,
+    AuthorizationPolicyLimits,
+    AuthorizationRuntimePolicy,
+    load_authorization_runtime_policy,
+    parse_authorization_runtime_policy,
+)
 from vintar.regression.batch import (
     MAX_BATCH_CASES,
     RegressionBatchResult,
@@ -10,6 +31,7 @@ from vintar.regression.cases import (
     CASE_VERSION,
     MAX_CASE_BYTES,
     AnyRegressionCase,
+    AuthorizationExecutionUnavailableError,
     BooleanRegressionCase,
     ErrorRegressionCase,
     RegressionCase,
@@ -45,6 +67,7 @@ from vintar.regression.runner import (
 )
 
 __all__ = [
+    "AUTHORIZATION_CASE_VERSION",
     "BATCH_REPORT_SCHEMA_VERSION",
     "BATCH_REPORT_TYPE",
     "CASE_MAX_RESPONSE_SIZE",
@@ -53,6 +76,18 @@ __all__ = [
     "MAX_CASE_BYTES",
     "AnyRegressionCase",
     "AnyRegressionOutcome",
+    "AuthorizationCase",
+    "AuthorizationCaseApproval",
+    "AuthorizationCaseValidationError",
+    "AuthorizationExecutionUnavailableError",
+    "AuthorizationIdentity",
+    "AuthorizationOperation",
+    "AuthorizationOperationApproval",
+    "AuthorizationPolicyError",
+    "AuthorizationPolicyIdentity",
+    "AuthorizationPolicyLimits",
+    "AuthorizationRequest",
+    "AuthorizationRuntimePolicy",
     "BooleanRegressionCase",
     "CIExitCode",
     "ErrorRegressionCase",
@@ -70,8 +105,13 @@ __all__ = [
     "TimeRegressionOutcome",
     "TrustedExecutionPolicy",
     "batch_exit_code",
+    "load_authorization_case",
+    "load_authorization_runtime_policy",
     "load_post_json_runtime_policy",
     "load_regression_case",
+    "parse_authorization_case",
+    "parse_authorization_case_mapping",
+    "parse_authorization_runtime_policy",
     "parse_post_json_runtime_policy",
     "parse_regression_case",
     "regression_batch_report_dict",
