@@ -238,6 +238,35 @@ def test_policy_file_accepts_exactly_maximum_bytes(tmp_path):
     assert loaded.schema_version == 1
 
 
+def test_missing_no_follow_rejects_reader_and_policy_before_open(monkeypatch):
+    opened: list[str] = []
+
+    def forbidden_open(*_args, **_kwargs):
+        opened.append("opened")
+        raise AssertionError("open must not be reached")
+
+    monkeypatch.delattr(file_io.os, "O_NOFOLLOW")
+    monkeypatch.setattr(file_io, "_open", forbidden_open)
+    path = "/fixed/policy-path-canary.json"
+
+    with pytest.raises(file_io.NoFollowUnavailableError) as reader_error:
+        file_io.read_bounded_regular_file(path, MAX_POLICY_BYTES)
+    assert str(reader_error.value) == (
+        "This platform cannot open files without following symlinks. "
+        "Use a trusted non-file input or a platform with O_NOFOLLOW support."
+    )
+
+    with pytest.raises(PostJsonPolicyError) as policy_error:
+        load_post_json_runtime_policy({"VINTAR_RUNTIME_POLICY_FILE": path})
+    assert str(policy_error.value) == (
+        "post_json_policy_unreadable: This platform cannot open policy files "
+        "without following symlinks. Supply the policy through "
+        "VINTAR_RUNTIME_POLICY_JSON instead."
+    )
+    assert "policy-path-canary" not in str(policy_error.value)
+    assert opened == []
+
+
 def test_policy_file_rejects_directory_oversize_and_non_utf8(tmp_path):
     directory = tmp_path / "directory"
     directory.mkdir()

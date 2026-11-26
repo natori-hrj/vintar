@@ -11,7 +11,10 @@ from typing import cast
 from vintar.core.scope import AllowedOrigin
 from vintar.core.strict_json import DuplicateJsonKeyError, parse_strict_json
 from vintar.regression.binding import parse_runtime_origin
-from vintar.regression.file_io import read_bounded_regular_file
+from vintar.regression.file_io import (
+    NoFollowUnavailableError,
+    read_bounded_regular_file,
+)
 
 MAX_POLICY_BYTES = 262_144
 MAX_POLICY_APPROVALS = 128
@@ -237,6 +240,12 @@ def _read_policy_file(path_text: str) -> bytes:
         if not data:
             raise OSError
         return data
+    except NoFollowUnavailableError:
+        raise _fail(
+            "post_json_policy_unreadable",
+            "This platform cannot open policy files without following symlinks.",
+            "Supply the policy through VINTAR_RUNTIME_POLICY_JSON instead.",
+        ) from None
     except (OSError, ValueError):
         raise _fail(
             "post_json_policy_unreadable",

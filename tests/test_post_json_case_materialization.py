@@ -18,7 +18,8 @@ from test_post_json_review import (
 from typer.testing import CliRunner
 
 from vintar.cli import app
-from vintar.regression import batch, runner
+from vintar.regression import batch, file_io, runner
+from vintar.regression import post_json_case_materialization as materialization_module
 from vintar.regression.cases import (
     MAX_CASE_BYTES,
     load_regression_case,
@@ -38,6 +39,36 @@ from vintar.regression.post_json_review import (
 )
 
 ORIGIN = "https://materialize.invalid"
+
+
+def test_materializer_rejects_missing_no_follow_before_open(monkeypatch):
+    opened: list[str] = []
+
+    def forbidden_open(*_args, **_kwargs):
+        opened.append("opened")
+        raise AssertionError("open must not be reached")
+
+    monkeypatch.delattr(file_io.os, "O_NOFOLLOW")
+    monkeypatch.setattr(file_io, "_open", forbidden_open)
+    path = Path("/fixed/materializer-path-canary")
+
+    with pytest.raises(PostJsonCaseMaterializationError) as review_error:
+        materialization_module._read_review(path)
+    assert str(review_error.value) == (
+        "post_json_review_schema_invalid: This platform cannot open review files "
+        "without following symlinks. Run materialization on a platform with "
+        "O_NOFOLLOW support."
+    )
+
+    with pytest.raises(PostJsonCaseMaterializationError) as config_error:
+        materialization_module._read_config(path)
+    assert str(config_error.value) == (
+        "post_json_config_invalid: This platform cannot open config files without "
+        "following symlinks. Run materialization on a platform with O_NOFOLLOW support."
+    )
+    assert "materializer-path-canary" not in str(review_error.value)
+    assert "materializer-path-canary" not in str(config_error.value)
+    assert opened == []
 
 
 def _config(path: Path, *, check_type: str = "sqli.boolean") -> Path:

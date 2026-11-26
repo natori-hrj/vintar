@@ -10,15 +10,26 @@ _read = os.read
 _close = os.close
 
 
+class NoFollowUnavailableError(OSError):
+    """The platform cannot safely open an operator-selected local file."""
+
+
 def read_bounded_regular_file(path: str | Path, limit: int) -> bytes:
     """Read one regular file through the same bounded, no-follow descriptor."""
     if type(limit) is not int or limit < 0:
         raise ValueError("Invalid file size limit.")
 
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if type(nofollow) is not int or nofollow == 0:
+        raise NoFollowUnavailableError(
+            "This platform cannot open files without following symlinks. "
+            "Use a trusted non-file input or a platform with O_NOFOLLOW support."
+        )
+
     flags = os.O_RDONLY
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOINHERIT", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= nofollow
     flags |= getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_BINARY", 0)
 

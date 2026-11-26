@@ -18,7 +18,10 @@ from vintar.regression.cases import MAX_CASE_BYTES, parse_regression_case
 from vintar.regression.cases_v2 import PostJsonRegressionCase
 from vintar.regression.discovery import JSON, DiscoveryError
 from vintar.regression.discovery_drafts import DraftExportError, write_drafts
-from vintar.regression.file_io import read_bounded_regular_file
+from vintar.regression.file_io import (
+    NoFollowUnavailableError,
+    read_bounded_regular_file,
+)
 from vintar.regression.post_json_review import (
     MAX_REVIEW_BYTES,
     PostJsonReviewError,
@@ -62,6 +65,12 @@ def _read_review(path: Path) -> dict[str, JSON]:
         return cast(dict[str, JSON], result)
     except PostJsonCaseMaterializationError:
         raise
+    except NoFollowUnavailableError:
+        raise _error(
+            "post_json_review_schema_invalid",
+            "This platform cannot open review files without following symlinks.",
+            "Run materialization on a platform with O_NOFOLLOW support.",
+        ) from None
     except (DiscoveryError, OSError, DuplicateJsonKeyError, UnicodeError, ValueError):
         raise _error(
             "post_json_review_schema_invalid",
@@ -75,6 +84,12 @@ def _read_config(path: Path) -> dict[str, object]:
         value: object = tomllib.loads(
             read_bounded_regular_file(path, MAX_CASE_BYTES).decode("utf-8")
         )
+    except NoFollowUnavailableError:
+        raise _error(
+            "post_json_config_invalid",
+            "This platform cannot open config files without following symlinks.",
+            "Run materialization on a platform with O_NOFOLLOW support.",
+        ) from None
     except (DiscoveryError, OSError, UnicodeError, ValueError, RecursionError):
         raise _error(
             "post_json_config_invalid",
