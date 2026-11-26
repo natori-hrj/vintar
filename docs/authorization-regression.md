@@ -1,0 +1,32 @@
+# Authorization regression contracts
+
+Authorization Case v1 records only explicit, operator-reviewed allow and deny
+expectations. Vintar does not infer policy, roles, ownership, tenants, resource
+identifiers, or operations from OpenAPI documents or observed responses.
+
+Case aliases are limited to lowercase ASCII letters, digits, `_`, and `-`, with
+a maximum length of 64 characters. Reviewers must still choose non-identifying
+aliases: the schema cannot determine whether an otherwise valid alias contains
+PII or sensitive business data.
+
+Case v1 is read-only and accepts only literal GET targets. It rejects path
+templates, runtime object-ID substitution, enumeration, and denial represented
+as a 2xx empty result. Every identity and exact origin requires its own positive
+control. This includes an explicitly unauthenticated identity, whose control can
+be a reviewed public endpoint.
+
+The separate `authorization_execution` policy is trusted operator input. It
+binds case digests, identities, exact origins, literal GET operations, expected
+allow or deny outcomes, environment classes, and aggregate limits. It never
+contains credential values. Authorization Case v1 remains offline-only until a
+dedicated command is introduced; the existing verification CLI rejects it with
+`authorization_execution_unavailable`.
+
+Future credential-bearing authorization jobs must run only in a protected
+environment. They must not run for forks or other untrusted pull requests. No
+credential-bearing workflow is provided by the initial contracts work.
+
+Future reports must not contain response bodies, response headers, response
+values, or response-body digests. Assertions expose only bounded assertion IDs
+and decision facts; validators must reject fields that could carry the omitted
+material.

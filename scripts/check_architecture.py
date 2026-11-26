@@ -145,6 +145,25 @@ def discovery_diagnostics(path, tree):
             "vintar.core.json_body",
             "vintar.core.scope",
         }
+    if path == Path("regression/authorization_cases.py"):
+        allowed = DISCOVERY_IMPORTS | {
+            "httpx",
+            "importlib",
+            "vintar.checks.authorization.models",
+            "vintar.core.json_body",
+            "vintar.core.scope",
+            "vintar.regression.file_io",
+        }
+    if path == Path("regression/authorization_policy.py"):
+        allowed = DISCOVERY_IMPORTS | {
+            "httpx",
+            "vintar.auth.contracts",
+            "vintar.checks.authorization.models",
+            "vintar.core.scope",
+            "vintar.core.strict_json",
+            "vintar.regression.binding",
+            "vintar.regression.file_io",
+        }
     if path == Path("checks/sqli/presets.py"):
         allowed = {"collections.abc", "dataclasses", "types"}
     for node in ast.walk(tree):
@@ -199,6 +218,8 @@ def check_source(path: Path, source: str) -> list[str]:
         Path("checks/sqli/presets.py"),
         Path("regression/case_materialization.py"),
         Path("regression/cases_v2.py"),
+        Path("regression/authorization_cases.py"),
+        Path("regression/authorization_policy.py"),
         Path("regression/post_json_case_materialization.py"),
         Path("regression/discovery_review.py"),
         Path("regression/post_json_inventory.py"),

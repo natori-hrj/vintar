@@ -482,6 +482,10 @@ class ReviewDraftError(ValueError):
     """A review draft requires human decisions before verification."""
 
 
+class AuthorizationExecutionUnavailableError(ValueError):
+    """Authorization cases remain non-executable until their dedicated CLI ships."""
+
+
 def parse_regression_case(source: str) -> AnyRegressionCase:
     """Validate one versioned TOML case without executing HTTP requests."""
     try:
@@ -504,6 +508,10 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
                     "A draft review report cannot be verified. Supply a separately reviewed Schema v1 TOML case to --cases."
                 )
         data: object = tomllib.loads(source)
+        if isinstance(data, dict) and data.get("type") == "authorization.access":
+            raise AuthorizationExecutionUnavailableError(
+                "authorization_execution_unavailable: Why: authorization Case v1 is an offline-only artifact in this release. Instead: validate and review the case, then wait for the dedicated authorization command before execution."
+            )
         if isinstance(data, dict) and data.get("kind") == "vintar_review_draft":
             raise ReviewDraftError(
                 "Review draft cannot be verified. Resolve route mapping, baseline query values, "
@@ -834,6 +842,7 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
 
     except (
         ReviewDraftError,
+        AuthorizationExecutionUnavailableError,
         TimeCaseValidationError,
         ErrorCaseValidationError,
         CaseV2ValidationError,
