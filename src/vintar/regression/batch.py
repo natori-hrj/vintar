@@ -176,7 +176,14 @@ def run_regression_batch(
     schedule = batch_execution_schedule(selected, policy)
 
     # Validate every case before any network request.
-    scopes: list[ScopePolicy] = [_effective_scope(case, policy) for case in selected]
+    scopes: list[ScopePolicy] = [
+        _effective_scope(
+            case,
+            policy,
+            requests_per_second=schedule.requests_per_second,
+        )
+        for case in selected
+    ]
 
     required_requests = sum(case.max_requests for case in selected)
 

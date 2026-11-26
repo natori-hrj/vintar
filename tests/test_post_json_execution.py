@@ -502,6 +502,61 @@ def _two_case_policy(first, second, *, expires_at):
     )
 
 
+def _time_batch_policy(first, second, *, time_deadline):
+    first_policy = runtime_policy(first)
+    second_policy = runtime_policy(second)
+    combined = replace(
+        first_policy,
+        approvals=first_policy.approvals + second_policy.approvals,
+    )
+    return TrustedExecutionPolicy(
+        scope=first.scope,
+        max_requests=first.max_requests + second.max_requests,
+        max_requests_per_second=10.0,
+        max_timeout_seconds=10.0,
+        max_time_execution_seconds=time_deadline,
+        post_json_policy=combined,
+    )
+
+
+def test_post_time_preflight_uses_shared_batch_rate_before_dispatch():
+    first = replace(load_case(), requests_per_second=0.1)
+    second = replace(
+        load_case("post-json-time-v2.toml"),
+        requests_per_second=10.0,
+    )
+    requests = []
+    with pytest.raises(ValueError, match="deadline cannot accommodate"):
+        run_regression_batch(
+            [first, second],
+            policy=_time_batch_policy(first, second, time_deadline=20.0),
+            environ={"VINTAR_TEST_TOKEN": "example-token-value"},
+            transport=httpx.MockTransport(
+                lambda request: requests.append(request) or httpx.Response(200)
+            ),
+        )
+    assert requests == []
+
+
+def test_post_time_preflight_shared_rate_passing_batch_runs():
+    first = replace(load_case(), requests_per_second=10.0)
+    second = replace(
+        load_case("post-json-time-v2.toml"),
+        requests_per_second=10.0,
+    )
+    requests = []
+    result = run_regression_batch(
+        [first, second],
+        policy=_time_batch_policy(first, second, time_deadline=20.0),
+        environ={"VINTAR_TEST_TOKEN": "example-token-value"},
+        transport=httpx.MockTransport(
+            lambda request: requests.append(request) or httpx.Response(200)
+        ),
+    )
+    assert len(result.outcomes) == 2
+    assert len(requests) == 15
+
+
 def test_batch_expiry_uses_shared_slowest_rate_before_any_dispatch(monkeypatch):
     now = datetime(2030, 1, 1, tzinfo=UTC)
     first = replace(load_case(), requests_per_second=10.0)

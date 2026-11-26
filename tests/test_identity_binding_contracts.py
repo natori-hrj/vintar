@@ -334,11 +334,13 @@ def _get_time_case():
     return parse_regression_case(source)
 
 
-def _get_execution_policy(cases, *, timeout):
+def _get_execution_policy(cases, *, timeout, rate=2.0, time_deadline=45.0):
     value = policy_value()
     value["approvals"][0]["origin"] = "https://case.invalid"
     value["limits"]["max_requests"] = sum(case.max_requests for case in cases)
     value["limits"]["max_timeout_seconds"] = timeout
+    value["limits"]["max_requests_per_second"] = rate
+    value["limits"]["max_time_execution_seconds"] = time_deadline
     approvals = []
     for case in cases:
         approval = dict(value["approvals"][0])
@@ -349,7 +351,9 @@ def _get_execution_policy(cases, *, timeout):
     return TrustedExecutionPolicy(
         scope=cases[0].scope,
         max_requests=sum(case.max_requests for case in cases),
+        max_requests_per_second=rate,
         max_timeout_seconds=timeout,
+        max_time_execution_seconds=time_deadline,
         post_json_policy=runtime_policy,
     )
 
@@ -386,6 +390,55 @@ def test_later_get_v2_time_preflight_failure_dispatches_no_earlier_case():
             ),
         )
     assert requests == []
+
+
+def test_get_v2_time_preflight_uses_shared_batch_rate_before_dispatch():
+    first = replace(
+        parse_regression_case(GET_CASE),
+        requests_per_second=0.1,
+    )
+    second = replace(
+        _get_time_case(),
+        case_id="get-query-time",
+        requests_per_second=10.0,
+        timeout_seconds=1.0,
+    )
+    requests = []
+    with pytest.raises(ValueError, match="deadline cannot accommodate"):
+        run_regression_batch(
+            [first, second],
+            policy=_get_execution_policy(
+                (first, second), timeout=1.0, rate=10.0, time_deadline=20.0
+            ),
+            environ={"VINTAR_BILLING_CREDENTIAL": "example-token-value"},
+            transport=httpx.MockTransport(
+                lambda request: requests.append(request) or httpx.Response(200)
+            ),
+        )
+    assert requests == []
+
+
+def test_get_v2_time_preflight_shared_rate_passing_batch_runs():
+    first = replace(parse_regression_case(GET_CASE), requests_per_second=10.0)
+    second = replace(
+        _get_time_case(),
+        case_id="get-query-time",
+        requests_per_second=10.0,
+        timeout_seconds=1.0,
+    )
+    requests = []
+    result = run_regression_batch(
+        [first, second],
+        policy=_get_execution_policy(
+            (first, second), timeout=1.0, rate=10.0, time_deadline=20.0
+        ),
+        environ={"VINTAR_BILLING_CREDENTIAL": "example-token-value"},
+        transport=httpx.MockTransport(
+            lambda request: requests.append(request) or httpx.Response(200)
+        ),
+    )
+    assert len(result.outcomes) == 2
+    assert len(requests) == 15
 
 
 @pytest.mark.parametrize(

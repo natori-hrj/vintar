@@ -253,7 +253,11 @@ def test_mixed_batch_budget_preflight_rejects_eight_remaining_before_http():
                 make_case(),
                 time_case("http://localhost:8000", "safe", "not_detected"),
             ],
-            policy=policy(max_requests=14, max_timeout_seconds=10.0),
+            policy=policy(
+                max_requests=14,
+                max_timeout_seconds=10.0,
+                max_time_execution_seconds=31.0,
+            ),
             transport=httpx.MockTransport(
                 lambda request: calls.append(request) or httpx.Response(200)
             ),

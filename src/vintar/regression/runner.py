@@ -372,6 +372,8 @@ def _classify(
 def _effective_scope(
     case: AnyRegressionCase,
     policy: TrustedExecutionPolicy,
+    *,
+    requests_per_second: float,
 ) -> ScopePolicy:
     """Preflight the complete probe plan without sending HTTP."""
     if not isinstance(case, AnyRegressionCase):
@@ -440,9 +442,6 @@ def _effective_scope(
             TimeRegressionCase | PostJsonRegressionCase | QueryRegressionCaseV2,
             case,
         )
-        effective_rate = min(
-            time_case.requests_per_second, policy.max_requests_per_second
-        )
         effective_timeout = min(time_case.timeout_seconds, policy.max_timeout_seconds)
         expected_delay = time_case.expected_delay_seconds
         if expected_delay is None:
@@ -452,7 +451,8 @@ def _effective_scope(
                 "Trusted timeout is too short for the time case. Increase max_timeout_seconds to at least expected_delay_seconds + 0.5, or use a smaller reviewed delay."
             )
         minimum_window = (
-            TIME_REQUESTS * effective_timeout + (TIME_REQUESTS - 1) / effective_rate
+            TIME_REQUESTS * effective_timeout
+            + (TIME_REQUESTS - 1) / requests_per_second
         )
         if minimum_window > policy.max_time_execution_seconds:
             raise TimeExecutionPolicyError(
@@ -795,7 +795,15 @@ def _run_with_resources(
     execution_clock: Callable[[], float] = time.monotonic,
 ) -> AnyRegressionOutcome:
     """Internal execution path for single-case and batch runners."""
-    effective_scope = scope if scope is not None else _effective_scope(case, policy)
+    effective_scope = (
+        scope
+        if scope is not None
+        else _effective_scope(
+            case,
+            policy,
+            requests_per_second=rate_limiter.requests_per_second,
+        )
+    )
 
     is_time = isinstance(case, TimeRegressionCase) or (
         isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2))
@@ -1017,7 +1025,11 @@ def run_regression_case(
         raise TypeError("policy must be a TrustedExecutionPolicy.")
 
     schedule = batch_execution_schedule((case,), policy)
-    scope = _effective_scope(case, policy)
+    scope = _effective_scope(
+        case,
+        policy,
+        requests_per_second=schedule.requests_per_second,
+    )
 
     if policy.max_requests < case.max_requests:
         raise ValueError("Trusted request budget is insufficient.")

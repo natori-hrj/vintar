@@ -30,7 +30,7 @@ def policy(requests: int) -> TrustedExecutionPolicy:
         max_requests=requests,
         max_requests_per_second=10.0,
         max_timeout_seconds=3.0,
-        max_time_execution_seconds=30.0,
+        max_time_execution_seconds=31.0,
     )
 
 
