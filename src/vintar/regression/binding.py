@@ -57,16 +57,13 @@ def bind_runtime_target(
     *,
     target: AllowedOrigin,
     trusted_scope: ScopePolicy,
+    post_json_policy: object | None = None,
 ) -> AnyRegressionCase:
     """Copy a validated case onto an independently authorized origin.
 
     Schema v1's original absolute origin is a placeholder in this workflow.
     The raw request path and all injection inputs remain unchanged.
     """
-    if isinstance(case, PostJsonRegressionCase):
-        raise TypeError(
-            "Schema v2 POST JSON cases cannot be rebound before trusted POST execution is implemented."
-        )
     if not isinstance(case, AnyRegressionCase):
         raise TypeError("Invalid regression case.")
     if type(target) is not AllowedOrigin:
@@ -77,7 +74,10 @@ def bind_runtime_target(
     if target not in trusted_scope.allowed_origins:
         raise ValueError("Runtime target is not authorized.")
 
-    original = httpx.URL(case.template.url)
+    original_url = (
+        case.url if isinstance(case, PostJsonRegressionCase) else case.template.url
+    )
+    original = httpx.URL(original_url)
     rebound_url = original.copy_with(
         scheme=target.scheme,
         host=target.host,
@@ -86,6 +86,56 @@ def bind_runtime_target(
 
     if rebound_url.raw_path != original.raw_path:
         raise ValueError("Runtime target binding changed the request path.")
+
+    if isinstance(case, PostJsonRegressionCase):
+        from vintar.regression.post_json_policy import PostJsonRuntimePolicy
+
+        if post_json_policy is None:
+            raise ValueError(
+                "post_json_runtime_policy_required: POST JSON target binding has no trusted runtime policy. Supply trusted operator policy independently of the case and specification."
+            )
+        if not isinstance(post_json_policy, PostJsonRuntimePolicy):
+            raise TypeError("Invalid POST JSON runtime policy.")
+        candidates = tuple(
+            approval
+            for approval in post_json_policy.approvals
+            if approval.case_id == case.case_id
+        )
+        if not candidates:
+            raise ValueError(
+                "post_json_case_not_approved: The trusted runtime policy does not approve this case identifier. Add an exact operator-controlled approval or bind a different reviewed case."
+            )
+        matches = tuple(
+            approval
+            for approval in candidates
+            if approval.method == case.approval.method
+            and approval.path == case.approval.path
+            and approval.origin == target
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                "post_json_operation_not_approved: The trusted runtime policy does not approve the exact POST operation and origin. Approve the bound origin and reviewed literal path in trusted operator configuration."
+            )
+        approval = matches[0]
+        if (
+            approval.operation_definition_sha256
+            != case.approval.operation_definition_sha256
+            or approval.baseline_body_sha256 != case.approval.baseline_body_sha256
+            or case.approval.environment_class
+            not in approval.allowed_environment_classes
+            or case.approval.side_effect != "no_side_effect"
+            or approval.allowed_side_effect != "no_side_effect"
+        ):
+            raise ValueError(
+                "post_json_approval_mismatch: The reviewed case does not intersect the trusted runtime approval. Review the operation, baseline, environment, and no_side_effect classification, then update trusted policy independently."
+            )
+        post_rebound = replace(
+            case,
+            url=str(rebound_url),
+            scope=ScopePolicy(allowed_origins=frozenset({target})),
+        )
+        validate_scope(post_rebound.url, trusted_scope)
+        return post_rebound
 
     rebound = replace(
         case,

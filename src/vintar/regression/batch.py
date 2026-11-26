@@ -10,7 +10,6 @@ from vintar.core.budget import RequestBudget
 from vintar.core.rate_limit import RateLimiter
 from vintar.core.scope import ScopePolicy
 from vintar.regression.cases import AnyRegressionCase
-from vintar.regression.cases_v2 import PostJsonRegressionCase
 from vintar.regression.errors import BatchRequestBudgetError
 from vintar.regression.runner import (
     _CASE_ID_PATTERN,
@@ -145,12 +144,6 @@ def run_regression_batch(
     Origin matching does not protect against DNS rebinding. Enforce
     network-level egress restrictions in sensitive CI environments.
     """
-    if type(cases) in (tuple, list) and any(
-        isinstance(case, PostJsonRegressionCase) for case in cases
-    ):
-        raise ValueError(
-            "Schema v2 POST JSON cases are not executable yet. Re-materialize only after trusted POST execution and explicit identity binding are available."
-        )
     if not isinstance(policy, TrustedExecutionPolicy):
         raise TypeError("policy must be a TrustedExecutionPolicy.")
 

@@ -261,7 +261,7 @@ def test_schema_and_semantics_both_reject_unknown_or_changed_values(tmp_path):
         parse_regression_case(source.replace(SENTINEL, "changed-baseline"))
 
 
-def test_runner_and_batch_reject_v2_before_resource_or_transport_construction(
+def test_runner_and_batch_require_policy_before_resource_or_transport_construction(
     tmp_path, monkeypatch
 ):
     spec, inventory, answers, review, config, _ = _materialization_inputs(tmp_path)
@@ -280,9 +280,14 @@ def test_runner_and_batch_reject_v2_before_resource_or_transport_construction(
     monkeypatch.setattr(runner, "RateLimiter", forbidden)
     monkeypatch.setattr(batch, "RateLimiter", forbidden)
 
-    with pytest.raises(TypeError, match="not executable"):
+    policy = runner.TrustedExecutionPolicy(scope=case.scope)
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
+        runner.run_regression_case(case, policy=policy)
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
+        batch.run_regression_batch([case], policy=policy)
+    with pytest.raises(TypeError, match="TrustedExecutionPolicy"):
         runner.run_regression_case(case, policy=object())
-    with pytest.raises(ValueError, match="not executable"):
+    with pytest.raises(TypeError, match="TrustedExecutionPolicy"):
         batch.run_regression_batch([case], policy=object())
     assert calls == []
 

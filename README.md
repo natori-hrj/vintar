@@ -115,7 +115,20 @@ timeout_seconds = 5.0
 
 ### Configure the Authorized Target
 
-Run verification only against systems you own or have explicit permission to test. `--authorized` is your attestation. Set both `VINTAR_TARGET_ORIGIN` and `VINTAR_ALLOWED_ORIGIN` to the authorized service's exact origin in the trusted CI environment. Vintar replaces the case's placeholder origin with the runtime target and preserves the case path. Keep credentials and secrets out of origins and case files.
+Run verification only against systems you own or have explicit permission to test. `--authorized` is your attestation. Set both `VINTAR_TARGET_ORIGIN` and `VINTAR_ALLOWED_ORIGIN` to the authorized service's exact origin in the trusted CI environment for Schema v1 cases. Vintar replaces the case's placeholder origin with the runtime target and preserves the case path. Keep credentials and secrets out of origins and case files.
+
+Reviewed Schema v2 POST JSON cases additionally require a strict trusted runtime
+policy supplied through `VINTAR_RUNTIME_POLICY_JSON` or
+`VINTAR_RUNTIME_POLICY_FILE`. Inline JSON takes complete precedence and an
+invalid selected source never falls back to the file. The policy must approve
+the exact case, POST path, origin, operation and baseline digests, environment
+class, and `no_side_effect` classification. Case files and specifications grant
+no execution permission. In CI, inject inline policy from protected runner
+configuration or point at a protected file outside the PR-controlled checkout.
+A policy committed to the repository grants nothing by itself; it is used only
+when an operator independently selects it. Policy files must be regular,
+non-symlink, bounded UTF-8 strict JSON files. Authentication, credentials,
+cookies, and authorization headers are not supported for Schema v2 execution.
 
 ### Run `vintar verify`
 

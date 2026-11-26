@@ -374,9 +374,11 @@ implemented; it must not be folded into POST SQLi Case Schema v2 merely to reuse
 a version number.
 
 PR 3 omits `identity_id`: identity binding belongs to the later authentication
-work. Authenticated execution must not silently reinterpret an existing v2 case
-without identity binding. Such a case remains unexecutable until it is explicitly
-reviewed and re-materialized with the future identity-binding contract. PR 3 also
+work. An unauthenticated v2 case may execute under the independent trusted runtime
+policy introduced by PR 4. Future authenticated execution must not silently
+reinterpret a v2 case without identity binding; it must remain unavailable to an
+authenticated execution path until explicitly reviewed and re-materialized with
+that future contract. PR 3 also
 rejects operation paths containing path parameters and requires the configured
 target path to equal the reviewed literal path. Path-template binding is deferred
 to a later design and may not be inferred during execution.

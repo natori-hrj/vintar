@@ -55,7 +55,7 @@ def _validate_injection_point(point: object) -> None:
         raise TypeError("Invalid time injection point.")
     if type(point.location) is not InjectionLocation:
         raise TypeError("Invalid time injection location.")
-    if type(point.name) is not str or not point.name:
+    if type(point.name) is not str:
         raise TypeError("Invalid time injection point name.")
     if type(point.occurrence) is not int or point.occurrence < 0:
         raise TypeError("Invalid time injection occurrence.")

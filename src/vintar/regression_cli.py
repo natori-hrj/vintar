@@ -4,7 +4,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import Annotated, NoReturn
+from typing import Annotated, NoReturn, cast
 
 import typer
 
@@ -21,8 +21,18 @@ from vintar.regression import (
 )
 from vintar.regression.binding import bind_runtime_target, parse_runtime_origin
 from vintar.regression.cases import ReviewDraftError
+from vintar.regression.cases_v2 import PostJsonRegressionCase
 from vintar.regression.errors import BatchRequestBudgetError
-from vintar.regression.runner import TimeExecutionPolicyError, TimeRequestBudgetError
+from vintar.regression.post_json_policy import (
+    PostJsonPolicyError,
+    PostJsonRuntimePolicy,
+    load_post_json_runtime_policy,
+)
+from vintar.regression.runner import (
+    PostJsonExecutionError,
+    TimeExecutionPolicyError,
+    TimeRequestBudgetError,
+)
 
 _GENERIC_ERROR = "Error: regression verification could not be completed."
 _AUTH_ERROR = "Error: explicit testing authorization is required."
@@ -71,20 +81,28 @@ def _case_paths(source: str) -> tuple[Path, ...]:
     return tuple(sorted(selected, key=lambda p: p.name))
 
 
-def _load_bound_cases(
+def _load_cases(
     source: str,
+) -> tuple[AnyRegressionCase, ...]:
+    return tuple(load_regression_case(path) for path in _case_paths(source))
+
+
+def _bind_cases(
+    selected: tuple[AnyRegressionCase, ...],
     *,
     target: AllowedOrigin,
     trusted_scope: ScopePolicy,
+    post_json_policy: PostJsonRuntimePolicy | None = None,
 ) -> tuple[AnyRegressionCase, ...]:
     """Load and bind every case before starting network execution."""
     return tuple(
         bind_runtime_target(
-            load_regression_case(path),
+            case,
             target=target,
             trusted_scope=trusted_scope,
+            post_json_policy=post_json_policy,
         )
-        for path in _case_paths(source)
+        for case in selected
     )
 
 
@@ -154,7 +172,8 @@ def verify_command(
 ) -> None:
     """Run authorized regression cases using runtime target binding.
 
-    VINTAR_TARGET_ORIGIN and VINTAR_ALLOWED_ORIGIN are required.
+    VINTAR_TARGET_ORIGIN is required. Schema v1 also requires
+    VINTAR_ALLOWED_ORIGIN. Schema v2 requires a trusted runtime policy.
     They are environment-only inputs so command-line arguments cannot
     override the trusted allowed origin or expose origins in process lists.
 
@@ -173,33 +192,62 @@ def verify_command(
     target_origin = os.environ.get("VINTAR_TARGET_ORIGIN")
     allow_origin = os.environ.get("VINTAR_ALLOWED_ORIGIN")
 
-    if not target_origin or not allow_origin:
+    if not target_origin:
         _abort(_GENERIC_ERROR)
 
     try:
         target = parse_runtime_origin(target_origin)
-        allowed = parse_runtime_origin(allow_origin)
+        loaded = _load_cases(cases)
+        has_v2 = any(isinstance(case, PostJsonRegressionCase) for case in loaded)
+        has_v1 = any(not isinstance(case, PostJsonRegressionCase) for case in loaded)
+        post_json_policy = load_post_json_runtime_policy(os.environ) if has_v2 else None
 
-        trusted_scope = ScopePolicy(allowed_origins=frozenset({allowed}))
+        permitted_origins = set()
+        if has_v1:
+            if not allow_origin:
+                raise ValueError("Schema v1 requires an allowed origin.")
+            permitted_origins.add(parse_runtime_origin(allow_origin))
+        if post_json_policy is not None:
+            permitted_origins.update(item.origin for item in post_json_policy.approvals)
+        trusted_scope = ScopePolicy(allowed_origins=frozenset(permitted_origins))
 
-        # Reject target/permission mismatch before loading cases
-        # or initiating network activity.
         if target not in trusted_scope.allowed_origins:
             raise ValueError("Runtime target is not authorized.")
 
-        policy = TrustedExecutionPolicy(
-            scope=trusted_scope,
-            max_requests=max_requests,
-            max_requests_per_second=rps,
-            max_timeout_seconds=timeout,
-            max_time_execution_seconds=time_deadline,
-            max_response_size=max_response_size,
+        if has_v1 and target != parse_runtime_origin(cast(str, allow_origin)):
+            raise ValueError("Schema v1 runtime target is not authorized.")
+
+        policy_limits = (
+            post_json_policy.limits if post_json_policy is not None else None
         )
 
-        selected = _load_bound_cases(
-            cases,
+        policy = TrustedExecutionPolicy(
+            scope=ScopePolicy(allowed_origins=frozenset({target})),
+            max_requests=min(max_requests, policy_limits.max_requests)
+            if policy_limits is not None
+            else max_requests,
+            max_requests_per_second=min(rps, policy_limits.max_requests_per_second)
+            if policy_limits is not None
+            else rps,
+            max_timeout_seconds=min(timeout, policy_limits.max_timeout_seconds)
+            if policy_limits is not None
+            else timeout,
+            max_time_execution_seconds=min(
+                time_deadline, policy_limits.max_time_execution_seconds
+            )
+            if policy_limits is not None
+            else time_deadline,
+            max_response_size=min(max_response_size, policy_limits.max_response_size)
+            if policy_limits is not None
+            else max_response_size,
+            post_json_policy=post_json_policy,
+        )
+
+        selected = _bind_cases(
+            loaded,
             target=target,
-            trusted_scope=trusted_scope,
+            trusted_scope=policy.scope,
+            post_json_policy=post_json_policy,
         )
 
         # The batch runner preflights all cases and limits
@@ -218,6 +266,10 @@ def verify_command(
     except KeyboardInterrupt:
         _abort(_CANCEL_ERROR, code=130)
     except ReviewDraftError as exc:
+        _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
+    except PostJsonPolicyError as exc:
+        _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
+    except PostJsonExecutionError as exc:
         _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
     except BatchRequestBudgetError:
         _abort(
