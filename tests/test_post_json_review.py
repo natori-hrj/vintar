@@ -85,6 +85,7 @@ def inputs(tmp_path: Path, *, nested: bool = False) -> tuple[Path, Path, Path, d
     ).encode("ascii")
     answer = {
         "version": 1,
+        "identity_id": "reviewed-user",
         "candidate_id": candidate.candidate_id,
         "operation_definition_sha256": candidate.operation_definition_sha256,
         "schema_pointer": candidate.schema_pointer,
@@ -648,6 +649,7 @@ def test_literal_ref_data_is_opaque_but_bound_to_operation_digest(tmp_path):
     canonical = b'{"$ref":"order-123"}'
     answer = {
         "version": 1,
+        "identity_id": "reviewed-user",
         "candidate_id": candidate.candidate_id,
         "operation_definition_sha256": candidate.operation_definition_sha256,
         "schema_pointer": candidate.schema_pointer,

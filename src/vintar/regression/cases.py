@@ -27,6 +27,7 @@ from vintar.core.template import validate_template
 from vintar.regression.cases_v2 import (
     CaseV2ValidationError,
     PostJsonRegressionCase,
+    QueryRegressionCaseV2,
     parse_case_v2_mapping,
 )
 
@@ -307,7 +308,11 @@ class ErrorRegressionCase:
 
 BooleanRegressionCase = RegressionCase
 AnyRegressionCase = (
-    RegressionCase | TimeRegressionCase | ErrorRegressionCase | PostJsonRegressionCase
+    RegressionCase
+    | TimeRegressionCase
+    | ErrorRegressionCase
+    | PostJsonRegressionCase
+    | QueryRegressionCaseV2
 )
 
 

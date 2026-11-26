@@ -134,7 +134,7 @@ def test_materializes_each_closed_sqli_union_deterministically(tmp_path, check_t
     assert parsed.check_type == check_type
     assert parsed.pointer.tokens == ("orders", "0", "sku")
     assert SENTINEL in parsed.json_body.to_bytes().decode("ascii")
-    assert "identity_id" not in first.content.decode("utf-8")
+    assert parsed.identity_id == "reviewed-user"
 
 
 def test_committed_v2_goldens_pass_loader_and_independent_validator():
@@ -174,7 +174,7 @@ def test_approval_metadata_comes_from_re_resolved_review_not_config(tmp_path):
         materialize_post_json_case(spec, inventory, answers, review, config)
 
 
-@pytest.mark.parametrize("version", [None, 2, True, 1.0])
+@pytest.mark.parametrize("version", [None, 1, True, 2.0])
 def test_post_review_schema_version_is_checked_before_integrity_comparison(
     tmp_path, version
 ):
@@ -312,9 +312,9 @@ def test_runner_and_batch_require_policy_before_resource_or_transport_constructi
     monkeypatch.setattr(batch, "RateLimiter", forbidden)
 
     policy = runner.TrustedExecutionPolicy(scope=case.scope)
-    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
+    with pytest.raises(ValueError, match="authenticated_execution_unavailable"):
         runner.run_regression_case(case, policy=policy)
-    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
+    with pytest.raises(ValueError, match="authenticated_execution_unavailable"):
         batch.run_regression_batch([case], policy=policy)
     with pytest.raises(TypeError, match="TrustedExecutionPolicy"):
         runner.run_regression_case(case, policy=object())

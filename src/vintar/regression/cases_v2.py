@@ -52,6 +52,7 @@ class PostJsonRegressionCase:
     """A materialized, deliberately unexecutable POST JSON SQLi case."""
 
     schema_version: int
+    identity_id: str
     case_id: str
     check_type: str
     expected_verdict: Verdict
@@ -65,6 +66,148 @@ class PostJsonRegressionCase:
     requests_per_second: float
     timeout_seconds: float
     approval: PostJsonApproval
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class QueryRegressionCaseV2:
+    """A reviewed identity-bound GET query case awaiting auth integration."""
+
+    schema_version: int
+    identity_id: str
+    case_id: str
+    check_type: str
+    expected_verdict: Verdict
+    url: str
+    params: tuple[tuple[str, str], ...]
+    injection_name: str
+    injection_occurrence: int
+    injection_mode: str
+    probes: tuple[str, ...]
+    expected_delay_seconds: float | None
+    max_requests: int
+    max_response_size: int
+    requests_per_second: float
+    timeout_seconds: float
+    scope: ScopePolicy
+    environment_class: str
+
+
+def _require_byte_preserved_request_path(url: str, reviewed_path: str) -> None:
+    """Reject a URL parser rewrite of the reviewed literal request target."""
+    try:
+        reviewed_bytes = reviewed_path.encode("ascii")
+    except UnicodeEncodeError:
+        raise _fail(
+            "case_request_target_changed",
+            "The request target would differ from the reviewed literal path.",
+            "Review and approve the byte-preserved normalized literal path instead.",
+        ) from None
+    if httpx.URL(url).raw_path != reviewed_bytes:
+        raise _fail(
+            "case_request_target_changed",
+            "The request target would differ from the reviewed literal path.",
+            "Review and approve the byte-preserved normalized literal path instead.",
+        )
+
+
+def _parse_get_case_v2(
+    root: dict[str, object],
+    *,
+    identity_id: str,
+    case_id: str,
+    check_type: str,
+    expected: Verdict,
+    request: dict[str, object],
+    url: str,
+    origin: AllowedOrigin,
+) -> QueryRegressionCaseV2:
+    try:
+        params_value = request["params"]
+        if type(params_value) is not list:
+            raise ValueError
+        params = tuple(
+            (cast(str, item[0]), cast(str, item[1])) for item in params_value
+        )
+        injection = _mapping(root["injection"])
+        injection_name = cast(str, injection["name"])
+        injection_occurrence = cast(int, injection["occurrence"])
+        injection_mode = cast(str, injection["mode"])
+        matches = tuple(
+            index for index, item in enumerate(params) if item[0] == injection_name
+        )
+        if injection_occurrence not in range(len(matches)):
+            raise ValueError
+        approval = _mapping(root["approval"])
+        parsed_url = urlsplit(url)
+        if parsed_url.path != approval["path"] or "{" in parsed_url.path:
+            raise ValueError
+        _require_byte_preserved_request_path(url, approval["path"])
+        environment_class = _text(approval["environment_class"], 64)
+        probes_value = _mapping(root["probes"])
+        delay: float | None = None
+        probes: tuple[str, ...]
+        if check_type == "sqli.boolean":
+            probes = (
+                _text(probes_value["true_payload"], 512),
+                _text(probes_value["false_payload"], 512),
+            )
+            required_requests = 6
+        elif check_type == "sqli.time":
+            probes = (
+                _text(probes_value["delay_payload"], 512),
+                _text(probes_value["control_payload"], 512),
+            )
+            delay = _number(probes_value["expected_delay_seconds"], 0.25, 2.0)
+            required_requests = 9
+        else:
+            probes = (validate_error_probe_payload(probes_value["error_payload"]),)
+            required_requests = 4
+        limits = _mapping(root["limits"])
+        max_requests = limits["max_requests"]
+        if type(max_requests) is not int or max_requests != required_requests:
+            raise ValueError
+        rps = _number(limits["requests_per_second"], 0.1, 10.0)
+        timeout = _number(limits["timeout_seconds"], 0.1, 60.0)
+        if check_type == "sqli.time" and (
+            timeout > 8.0 or timeout < cast(float, delay) + 0.5
+        ):
+            raise ValueError
+        scope = ScopePolicy(allowed_origins=frozenset({origin}))
+        selected_index = matches[injection_occurrence]
+        planned_values = tuple(
+            (params[selected_index][1] + probe if injection_mode == "append" else probe)
+            for probe in probes
+        )
+        if len({params[selected_index][1], *planned_values}) != len(planned_values) + 1:
+            raise ValueError
+    except CaseV2ValidationError:
+        raise
+    except (KeyError, TypeError, ValueError, OverflowError, UnicodeError):
+        raise _fail(
+            "get_case_semantic_invalid",
+            "The Case Schema v2 values violate the bounded GET query contracts.",
+            "Re-materialize with an explicit identity, literal target, query point, and check-specific limits.",
+        ) from None
+    return QueryRegressionCaseV2(
+        schema_version=CASE_V2_VERSION,
+        identity_id=identity_id,
+        case_id=case_id,
+        check_type=check_type,
+        expected_verdict=expected,
+        url=url,
+        params=params,
+        injection_name=injection_name,
+        injection_occurrence=injection_occurrence,
+        injection_mode=injection_mode,
+        probes=probes,
+        expected_delay_seconds=delay,
+        max_requests=max_requests,
+        max_response_size=1_048_576,
+        requests_per_second=rps,
+        timeout_seconds=timeout,
+        scope=scope,
+        environment_class=environment_class,
+    )
 
 
 def _fail(code: str, reason: str, action: str) -> CaseV2ValidationError:
@@ -149,10 +292,17 @@ def _number(value: object, minimum: float, maximum: float) -> float:
     return result
 
 
-def parse_case_v2_mapping(value: object) -> PostJsonRegressionCase:
+def parse_case_v2_mapping(
+    value: object,
+) -> PostJsonRegressionCase | QueryRegressionCaseV2:
     """Run semantic checks after JSON Schema validation, without I/O or execution."""
     root = validate_case_v2_schema(value)
     try:
+        identity_id = _text(root["identity_id"], 64)
+        if identity_id[0] not in _ID_CHARS - frozenset("_.-") or any(
+            character not in _ID_CHARS for character in identity_id
+        ):
+            raise ValueError
         case_id = _text(root["id"], 64)
         if case_id[0] not in _ID_CHARS - frozenset("_.-") or any(
             character not in _ID_CHARS for character in case_id
@@ -176,6 +326,17 @@ def parse_case_v2_mapping(value: object) -> PostJsonRegressionCase:
         actual_origin, _ = _origin(f"{parsed_url.scheme}://{parsed_url.netloc}")
         if actual_origin != origin:
             raise ValueError
+        if request["method"] == "GET":
+            return _parse_get_case_v2(
+                root,
+                identity_id=identity_id,
+                case_id=case_id,
+                check_type=check_type,
+                expected=expected,
+                request=request,
+                url=url,
+                origin=origin,
+            )
         body = JsonBody.from_bytes(_text(request["json_body"], 65_536).encode("utf-8"))
         injection = _mapping(root["injection"])
         pointer = JsonPointer.parse(cast(str, injection["pointer"]))
@@ -206,6 +367,7 @@ def parse_case_v2_mapping(value: object) -> PostJsonRegressionCase:
                 "The target path does not exactly match the reviewed literal operation path.",
                 "Set request.url to the reviewed path on the selected origin.",
             )
+        _require_byte_preserved_request_path(url, approval.path)
         if "{" in approval.path or "}" in approval.path:
             raise _fail(
                 "post_json_path_parameter_unsupported",
@@ -271,6 +433,7 @@ def parse_case_v2_mapping(value: object) -> PostJsonRegressionCase:
         ) from None
     return PostJsonRegressionCase(
         schema_version=CASE_V2_VERSION,
+        identity_id=identity_id,
         case_id=case_id,
         check_type=check_type,
         expected_verdict=expected,

@@ -12,7 +12,10 @@ from vintar.core.strict_json import DuplicateJsonKeyError, unique_object
 from vintar.regression.post_json_review import MAX_REVIEW_BYTES, concrete_review_pointer
 
 _ROOT = Path(__file__).resolve().parents[1]
-_SCHEMA = _ROOT / "schemas" / "post-json-discovery-review-v1.schema.json"
+_SCHEMAS = {
+    1: _ROOT / "schemas" / "post-json-discovery-review-v1.schema.json",
+    2: _ROOT / "schemas" / "post-json-discovery-review-v2.schema.json",
+}
 _ERROR = (
     "Vintar: POST JSON review validation failed. Regenerate the review from the "
     "current inventory and explicit answers."
@@ -24,12 +27,15 @@ def _validate(path: Path) -> None:
     if len(data) > MAX_REVIEW_BYTES:
         raise ValueError("Review exceeds its size limit.")
     report = json.loads(data.decode("utf-8"), object_pairs_hook=unique_object)
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    if not isinstance(report, dict):
+        raise TypeError("Invalid review shape.")
+    schema_path = _SCHEMAS.get(report.get("schema_version"))
+    if schema_path is None:
+        raise ValueError("Unsupported review schema version.")
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema)
     validator.check_schema(schema)
     validator.validate(report)
-    if not isinstance(report, dict):
-        raise TypeError("Invalid review shape.")
     operation = report["operation"]
     field = report["field"]
     if operation["approved"] is not True:

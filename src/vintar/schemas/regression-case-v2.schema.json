@@ -5,7 +5,10 @@
   "oneOf": [
     {"$ref": "#/$defs/boolean_case"},
     {"$ref": "#/$defs/time_case"},
-    {"$ref": "#/$defs/error_case"}
+    {"$ref": "#/$defs/error_case"},
+    {"$ref": "#/$defs/get_boolean_case"},
+    {"$ref": "#/$defs/get_time_case"},
+    {"$ref": "#/$defs/get_error_case"}
   ],
   "$defs": {
     "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -13,35 +16,54 @@
     "base": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "id", "type", "expected_verdict", "request", "injection", "probes", "limits", "approval"],
+      "required": ["version", "identity_id", "id", "type", "expected_verdict", "request", "injection", "probes", "limits", "approval"],
       "properties": {
         "version": {"const": 2},
+        "identity_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
         "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
         "type": {"enum": ["sqli.boolean", "sqli.time", "sqli.error"]},
         "expected_verdict": {"enum": ["not_detected", "inconclusive", "vulnerable"]},
-        "request": {"$ref": "#/$defs/request"},
-        "injection": {"$ref": "#/$defs/injection"},
+        "request": {"type": "object"},
+        "injection": {"type": "object"},
         "probes": {"type": "object"},
         "limits": {"$ref": "#/$defs/limits"},
-        "approval": {"$ref": "#/$defs/approval"}
+        "approval": {"type": "object"}
       }
     },
     "boolean_case": {
       "allOf": [
         {"$ref": "#/$defs/base"},
-        {"properties": {"type": {"const": "sqli.boolean"}, "probes": {"$ref": "#/$defs/boolean_probes"}}}
+        {"properties": {"type": {"const": "sqli.boolean"}, "request": {"$ref": "#/$defs/request"}, "injection": {"$ref": "#/$defs/injection"}, "probes": {"$ref": "#/$defs/boolean_probes"}, "approval": {"$ref": "#/$defs/approval"}}}
       ]
     },
     "time_case": {
       "allOf": [
         {"$ref": "#/$defs/base"},
-        {"properties": {"type": {"const": "sqli.time"}, "probes": {"$ref": "#/$defs/time_probes"}}}
+        {"properties": {"type": {"const": "sqli.time"}, "request": {"$ref": "#/$defs/request"}, "injection": {"$ref": "#/$defs/injection"}, "probes": {"$ref": "#/$defs/time_probes"}, "approval": {"$ref": "#/$defs/approval"}}}
       ]
     },
     "error_case": {
       "allOf": [
         {"$ref": "#/$defs/base"},
-        {"properties": {"type": {"const": "sqli.error"}, "probes": {"$ref": "#/$defs/error_probes"}}}
+        {"properties": {"type": {"const": "sqli.error"}, "request": {"$ref": "#/$defs/request"}, "injection": {"$ref": "#/$defs/injection"}, "probes": {"$ref": "#/$defs/error_probes"}, "approval": {"$ref": "#/$defs/approval"}}}
+      ]
+    },
+    "get_boolean_case": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"properties": {"type": {"const": "sqli.boolean"}, "request": {"$ref": "#/$defs/get_request"}, "injection": {"$ref": "#/$defs/get_injection"}, "probes": {"$ref": "#/$defs/boolean_probes"}, "approval": {"$ref": "#/$defs/get_approval"}}}
+      ]
+    },
+    "get_time_case": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"properties": {"type": {"const": "sqli.time"}, "request": {"$ref": "#/$defs/get_request"}, "injection": {"$ref": "#/$defs/get_injection"}, "probes": {"$ref": "#/$defs/time_probes"}, "approval": {"$ref": "#/$defs/get_approval"}}}
+      ]
+    },
+    "get_error_case": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"properties": {"type": {"const": "sqli.error"}, "request": {"$ref": "#/$defs/get_request"}, "injection": {"$ref": "#/$defs/get_injection"}, "probes": {"$ref": "#/$defs/error_probes"}, "approval": {"$ref": "#/$defs/get_approval"}}}
       ]
     },
     "request": {
@@ -54,6 +76,16 @@
         "json_body": {"type": "string", "minLength": 1, "maxLength": 65536}
       }
     },
+    "get_request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "url", "allowed_origin", "params"],
+      "properties": {
+        "method": {"const": "GET"},
+        "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "allowed_origin": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "params": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "array", "prefixItems": [{"type": "string", "minLength": 1, "maxLength": 256}, {"type": "string", "maxLength": 2048}], "items": false, "minItems": 2, "maxItems": 2}}
+      }
+    },
     "injection": {
       "type": "object", "additionalProperties": false,
       "required": ["location", "pointer", "mode"],
@@ -61,6 +93,16 @@
         "location": {"const": "json_body"},
         "pointer": {"$ref": "#/$defs/pointer"},
         "mode": {"const": "replace"}
+      }
+    },
+    "get_injection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["location", "name", "occurrence", "mode"],
+      "properties": {
+        "location": {"const": "query"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "occurrence": {"type": "integer", "minimum": 0},
+        "mode": {"enum": ["replace", "append"]}
       }
     },
     "boolean_probes": {
@@ -110,11 +152,20 @@
         "review": {"$ref": "#/$defs/review"}
       }
     },
+    "get_approval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "path", "environment_class"],
+      "properties": {
+        "method": {"const": "GET"},
+        "path": {"type": "string", "pattern": "^/"},
+        "environment_class": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}
+      }
+    },
     "review": {
       "type": "object", "additionalProperties": false,
       "required": ["schema_version", "report_type"],
       "properties": {
-        "schema_version": {"const": 1},
+        "schema_version": {"const": 2},
         "report_type": {"const": "post_json_discovery_review"}
       }
     }

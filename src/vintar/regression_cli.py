@@ -21,7 +21,7 @@ from vintar.regression import (
 )
 from vintar.regression.binding import bind_runtime_target, parse_runtime_origin
 from vintar.regression.cases import ReviewDraftError
-from vintar.regression.cases_v2 import PostJsonRegressionCase
+from vintar.regression.cases_v2 import PostJsonRegressionCase, QueryRegressionCaseV2
 from vintar.regression.errors import BatchRequestBudgetError
 from vintar.regression.post_json_policy import (
     PostJsonPolicyError,
@@ -38,6 +38,10 @@ _GENERIC_ERROR = "Error: regression verification could not be completed."
 _AUTH_ERROR = "Error: explicit testing authorization is required."
 _OUTPUT_ERROR = "Error: regression report output failed."
 _CANCEL_ERROR = "Error: regression verification was cancelled."
+
+
+class MixedSchemaBatchError(ValueError):
+    """Schema generations require separate trusted runtime contracts."""
 
 
 def _case_paths(source: str) -> tuple[Path, ...]:
@@ -198,8 +202,13 @@ def verify_command(
     try:
         target = parse_runtime_origin(target_origin)
         loaded = _load_cases(cases)
-        has_v2 = any(isinstance(case, PostJsonRegressionCase) for case in loaded)
-        has_v1 = any(not isinstance(case, PostJsonRegressionCase) for case in loaded)
+        v2_types = (PostJsonRegressionCase, QueryRegressionCaseV2)
+        has_v2 = any(isinstance(case, v2_types) for case in loaded)
+        has_v1 = any(not isinstance(case, v2_types) for case in loaded)
+        if has_v1 and has_v2:
+            raise MixedSchemaBatchError(
+                "Mixed Schema v1 and v2 batches are not supported because their runtime trust contracts differ. Run v1 and v2 cases in separate verify invocations."
+            )
         post_json_policy = load_post_json_runtime_policy(os.environ) if has_v2 else None
 
         permitted_origins = set()
@@ -266,6 +275,8 @@ def verify_command(
     except KeyboardInterrupt:
         _abort(_CANCEL_ERROR, code=130)
     except ReviewDraftError as exc:
+        _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
+    except MixedSchemaBatchError as exc:
         _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))
     except PostJsonPolicyError as exc:
         _abort(f"Error: {exc}", code=int(CIExitCode.ERROR))

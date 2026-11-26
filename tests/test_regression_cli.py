@@ -14,6 +14,7 @@ from vintar import regression_cli
 from vintar.cli import app
 from vintar.core import http
 from vintar.regression import batch as batch_module
+from vintar.regression import runner as runner_module
 
 cli = CliRunner()
 
@@ -107,6 +108,40 @@ requests_per_second = 10.0
 timeout_seconds = 3.0
 """
 
+GET_V2_CASE_SOURCE = """
+version = 2
+identity_id = "cli-reader"
+id = "get-v2-case"
+type = "sqli.boolean"
+expected_verdict = "not_detected"
+
+[request]
+method = "GET"
+url = "http://placeholder.invalid:8000/products"
+allowed_origin = "http://placeholder.invalid:8000"
+params = [["category", "Pets"]]
+
+[injection]
+location = "query"
+name = "category"
+occurrence = 0
+mode = "replace"
+
+[probes]
+true_payload = "true-probe"
+false_payload = "false-probe"
+
+[limits]
+max_requests = 6
+requests_per_second = 2.0
+timeout_seconds = 10.0
+
+[approval]
+method = "GET"
+path = "/products"
+environment_class = "isolated_test"
+"""
+
 ENV = {
     "VINTAR_TARGET_ORIGIN": "http://127.0.0.1:8765",
     "VINTAR_ALLOWED_ORIGIN": "http://127.0.0.1:8765",
@@ -120,9 +155,20 @@ def post_json_policy_json(
         {
             "schema_version": 1,
             "policy_type": "post_json_execution",
+            "identities": [
+                {
+                    "identity_id": "reviewed-user",
+                    "credential_kind": "bearer",
+                    "env_var": "VINTAR_TEST_TOKEN",
+                    "header_name": "Authorization",
+                }
+            ],
             "approvals": [
                 {
                     "case_id": "post-json-boolean",
+                    "identity_id": "reviewed-user",
+                    "credential_kind": "bearer",
+                    "credential_env_var": "VINTAR_TEST_TOKEN",
                     "method": "POST",
                     "path": "/items",
                     "origin": origin,
@@ -135,6 +181,42 @@ def post_json_policy_json(
             "limits": {
                 "max_requests": max_requests,
                 "max_requests_per_second": 10.0,
+                "max_timeout_seconds": 10.0,
+                "max_response_size": 1_048_576,
+                "max_time_execution_seconds": 45.0,
+            },
+        }
+    )
+
+
+def get_v2_policy_json() -> str:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "policy_type": "post_json_execution",
+            "identities": [
+                {
+                    "identity_id": "cli-reader",
+                    "credential_kind": "bearer",
+                    "env_var": "VINTAR_CLI_TOKEN",
+                    "header_name": "Authorization",
+                }
+            ],
+            "approvals": [
+                {
+                    "case_id": "get-v2-case",
+                    "identity_id": "cli-reader",
+                    "credential_kind": "bearer",
+                    "credential_env_var": "VINTAR_CLI_TOKEN",
+                    "method": "GET",
+                    "path": "/products",
+                    "origin": ENV["VINTAR_TARGET_ORIGIN"],
+                    "allowed_environment_classes": ["isolated_test"],
+                }
+            ],
+            "limits": {
+                "max_requests": 6,
+                "max_requests_per_second": 2.0,
                 "max_timeout_seconds": 10.0,
                 "max_response_size": 1_048_576,
                 "max_time_execution_seconds": 45.0,
@@ -300,17 +382,59 @@ def test_post_json_cli_requires_and_applies_independent_runtime_policy(
 
     result = cli.invoke(app, args_for(case), env=env)
 
-    assert result.exit_code == 0
-    assert result.stderr == ""
-    report = json.loads(result.stdout)
-    assert report["schema_version"] == 1
-    assert report["requests_used"] == 6
-    assert len(received) == 6
-    assert all(request.method == "POST" for request in received)
-    assert all(request.url.path == "/items" for request in received)
-    assert all(
-        request.headers["content-type"] == "application/json" for request in received
+    assert result.exit_code == 2
+    assert "authenticated_execution_unavailable" in result.stderr
+    assert "Wait for the authenticated runner integration" in result.stderr
+    assert result.stdout == ""
+    assert received == []
+
+
+def test_get_v2_cli_loads_policy_without_v1_allow_origin_and_fails_closed(
+    tmp_path, monkeypatch
+):
+    case = tmp_path / "get-v2.toml"
+    case.write_text(GET_V2_CASE_SOURCE, encoding="utf-8")
+    constructed: list[str] = []
+
+    def forbidden_context(*_args, **_kwargs):
+        constructed.append("constructed")
+        raise AssertionError("transport context must not be constructed")
+
+    monkeypatch.setattr(runner_module, "ExecutionContext", forbidden_context)
+    result = cli.invoke(
+        app,
+        args_for(case),
+        env={
+            "VINTAR_TARGET_ORIGIN": ENV["VINTAR_TARGET_ORIGIN"],
+            "VINTAR_RUNTIME_POLICY_JSON": get_v2_policy_json(),
+        },
     )
+
+    assert result.exit_code == 2
+    assert "authenticated_execution_unavailable" in result.stderr
+    assert "Wait for the authenticated runner integration" in result.stderr
+    assert "allowed origin" not in result.stderr
+    assert constructed == []
+
+
+def test_cli_rejects_mixed_v1_v2_batches_with_separate_invocation_guidance(tmp_path):
+    cases = tmp_path / "cases"
+    cases.mkdir()
+    (cases / "v1.toml").write_text(CASE_SOURCE, encoding="utf-8")
+    (cases / "v2.toml").write_text(GET_V2_CASE_SOURCE, encoding="utf-8")
+
+    result = cli.invoke(
+        app,
+        args_for(cases, max_requests=12),
+        env={
+            "VINTAR_TARGET_ORIGIN": ENV["VINTAR_TARGET_ORIGIN"],
+            "VINTAR_RUNTIME_POLICY_JSON": get_v2_policy_json(),
+        },
+    )
+
+    assert result.exit_code == 2
+    assert "runtime trust contracts differ" in result.stderr
+    assert "separate verify invocations" in result.stderr
 
 
 def test_post_json_cli_policy_error_is_actionable_and_does_not_echo_canary(
@@ -353,7 +477,7 @@ def test_post_json_cli_cannot_widen_smaller_policy_budget(tmp_path, mock_http):
     )
 
     assert result.exit_code == 2
-    assert "trusted batch request budget" in result.stderr
+    assert "authenticated_execution_unavailable" in result.stderr
     assert received == []
 
 

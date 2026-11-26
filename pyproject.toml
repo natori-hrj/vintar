@@ -88,6 +88,15 @@ source_modules = ["vintar.regression"]
 forbidden_modules = ["vintar.cli", "vintar.sqli_cli", "vintar.regression_cli"]
 
 [[tool.importlinter.contracts]]
+name = "Authentication contracts must stay independent of checks, regression, and CLI."
+type = "forbidden"
+source_modules = ["vintar.auth"]
+forbidden_modules = [
+    "vintar.checks", "vintar.regression", "vintar.cli",
+    "vintar.sqli_cli", "vintar.regression_cli",
+]
+
+[[tool.importlinter.contracts]]
 name = "Direct core.http access bypasses scope, request budgets, and rate limits. Use vintar.core.executor.ExecutionContext."
 type = "forbidden"
 source_modules = ["vintar.checks"]

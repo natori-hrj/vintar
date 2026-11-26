@@ -44,7 +44,7 @@ from vintar.regression.cases import (
     ErrorRegressionCase,
     TimeRegressionCase,
 )
-from vintar.regression.cases_v2 import PostJsonRegressionCase
+from vintar.regression.cases_v2 import PostJsonRegressionCase, QueryRegressionCaseV2
 from vintar.regression.errors import BatchRequestBudgetError
 from vintar.regression.post_json_policy import (
     PostJsonPolicyApproval,
@@ -357,8 +357,10 @@ def _effective_scope(
     if not isinstance(policy, TrustedExecutionPolicy):
         raise TypeError("policy must be a TrustedExecutionPolicy.")
 
-    if isinstance(case, PostJsonRegressionCase):
-        _post_json_execution_inputs(case, policy)
+    if isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2)):
+        raise PostJsonExecutionError(
+            "authenticated_execution_unavailable: This Schema v2 case names an identity, but authenticated execution is not available yet. Wait for the authenticated runner integration or use a separately reviewed Schema v1 unauthenticated case."
+        )
 
     allowed = case.scope.allowed_origins & policy.scope.allowed_origins
 
@@ -456,7 +458,7 @@ def _post_json_approval(
     candidates = tuple(
         approval
         for approval in runtime_policy.approvals
-        if approval.case_id == case.case_id
+        if approval.case_id == case.case_id and approval.identity_id == case.identity_id
     )
     if not candidates:
         raise _post_json_error(
@@ -557,6 +559,10 @@ def _run_with_resources(
     observation_sink: SqliObservationSink | None = None,
 ) -> AnyRegressionOutcome:
     """Internal execution path for single-case and batch runners."""
+    if isinstance(case, QueryRegressionCaseV2):
+        raise PostJsonExecutionError(
+            "authenticated_execution_unavailable: This Schema v2 case names an identity, but authenticated execution is not available yet. Wait for the authenticated runner integration or use a separately reviewed Schema v1 unauthenticated case."
+        )
     effective_scope = scope if scope is not None else _effective_scope(case, policy)
 
     is_time = isinstance(case, TimeRegressionCase) or (

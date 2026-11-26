@@ -347,6 +347,7 @@ def resolve_post_json_review(
     expected_keys = {
         "version",
         "candidate_id",
+        "identity_id",
         "operation_definition_sha256",
         "schema_pointer",
         "schema_definition_pointer",
@@ -366,6 +367,14 @@ def resolve_post_json_review(
         )
     if answer["operation_definition_sha256"] != candidate.operation_definition_sha256:
         raise PostJsonReviewError(OPERATION_DEFINITION_CHANGED_MESSAGE)
+    identity_id = answer["identity_id"]
+    if (
+        not isinstance(identity_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", identity_id) is None
+    ):
+        raise PostJsonReviewError(
+            "Identity label is invalid. Name one explicit runtime identity using a bounded symbolic label."
+        )
     if (
         canonical_strict_json_bytes(supplied)
         != canonical_strict_json_bytes(_as_json(candidate))
@@ -443,9 +452,10 @@ def resolve_post_json_review(
             "Reviewed JSON Pointer does not select a string. Supply a baseline whose selected field is a JSON string."
         )
     report: dict[str, JSON] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "report_type": "post_json_discovery_review",
         "candidate_id": candidate.candidate_id,
+        "identity_id": identity_id,
         "operation": {
             "approved": True,
             "method": "POST",

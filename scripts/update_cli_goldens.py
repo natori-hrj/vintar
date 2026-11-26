@@ -577,6 +577,7 @@ def capture_post_review(name, scenario, folder, args, env):
     ).encode("ascii")
     answer = {
         "version": 1,
+        "identity_id": "reviewed-user",
         "candidate_id": candidate.candidate_id,
         "operation_definition_sha256": candidate.operation_definition_sha256,
         "schema_pointer": candidate.schema_pointer,
