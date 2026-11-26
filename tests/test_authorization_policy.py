@@ -1,6 +1,7 @@
 """Trusted authorization_execution policy v1 parsing."""
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 
@@ -78,6 +79,33 @@ def test_policy_is_separate_closed_and_secret_free():
     assert "api.example.test" not in repr(policy)
 
 
+def test_authenticated_identity_accepts_optional_utc_expiry():
+    value = policy_value()
+    value["identities"][0]["expires_at"] = "2030-01-02T03:04:05Z"
+    policy = parse_authorization_runtime_policy(policy_bytes(value))
+    assert policy.identities[0].credential_source is not None
+    assert policy.identities[0].credential_source.expires_at == datetime(
+        2030, 1, 2, 3, 4, 5, tzinfo=UTC
+    )
+
+
+@pytest.mark.parametrize(
+    "expiry",
+    ["2030-01-02T03:04:05", "2030-01-02T04:04:05+01:00", "not-a-time"],
+)
+def test_authenticated_identity_rejects_non_utc_or_naive_expiry(expiry):
+    value = policy_value()
+    value["identities"][0]["expires_at"] = expiry
+    with pytest.raises(AuthorizationPolicyError) as caught:
+        parse_authorization_runtime_policy(policy_bytes(value))
+    assert str(caught.value) == (
+        "authorization_policy_expiry_invalid: Why: an authenticated identity "
+        "expiry is not an RFC 3339 UTC timestamp. Instead: use a timestamp ending "
+        "in Z with an explicit date and time, or omit expires_at."
+    )
+    assert expiry not in str(caught.value)
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -146,6 +174,13 @@ def test_policy_origin_defaults_only_when_port_is_absent():
     assert implicit_https.approvals[0].origin.port == 443
     assert implicit_http.approvals[0].origin == explicit_http.approvals[0].origin
     assert implicit_http.approvals[0].origin.port == 80
+
+
+def test_policy_canonicalizes_international_origin_host_to_ascii():
+    value = policy_value()
+    value["approvals"][0]["origin"] = "https://bücher.example.test"
+    policy = parse_authorization_runtime_policy(policy_bytes(value))
+    assert policy.approvals[0].origin.host == "xn--bcher-kva.example.test"
 
 
 @pytest.mark.parametrize("port", ["0", "65536"])

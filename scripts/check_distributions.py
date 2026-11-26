@@ -87,6 +87,7 @@ def check_distributions(root: Path, output: Path) -> tuple[Path, Path]:
             or file.relative_to(root / "src").as_posix()
             in {
                 "vintar/schemas/authorization-case-v1.schema.json",
+                "vintar/schemas/authorization-execution-policy-v1.schema.json",
                 "vintar/schemas/regression-case-v2.schema.json",
             }
         )

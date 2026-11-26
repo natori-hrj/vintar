@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
@@ -170,25 +172,42 @@ def _identity(value: object) -> AuthorizationPolicyIdentity:
     if mode is AuthenticationMode.NONE:
         root = _closed(item, frozenset({"identity_id", "authentication"}))
         return AuthorizationPolicyIdentity(_alias(root["identity_id"]), mode, None)
-    root = _closed(
-        item,
-        frozenset(
-            {
-                "identity_id",
-                "authentication",
-                "credential_kind",
-                "env_var",
-                "header_name",
-            }
-        ),
+    required = frozenset(
+        {"identity_id", "authentication", "credential_kind", "env_var", "header_name"}
     )
+    if frozenset(item) not in {required, required | {"expires_at"}}:
+        raise ValueError
+    root = item
     identity_id = _alias(root["identity_id"])
+    expires_at: datetime | None = None
+    if "expires_at" in root:
+        expiry = _text(root["expires_at"], 64)
+        if (
+            re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z",
+                expiry,
+            )
+            is None
+        ):
+            raise _fail(
+                "authorization_policy_expiry_invalid",
+                "an authenticated identity expiry is not an RFC 3339 UTC timestamp.",
+                "use a timestamp ending in Z with an explicit date and time, or omit expires_at.",
+            )
+        try:
+            expires_at = datetime.fromisoformat(expiry)
+        except ValueError:
+            raise _fail(
+                "authorization_policy_expiry_invalid",
+                "an authenticated identity expiry is not an RFC 3339 UTC timestamp.",
+                "use a timestamp ending in Z with an explicit date and time, or omit expires_at.",
+            ) from None
     source = IdentityCredentialSource(
         identity_id,
         CredentialKind(_text(root["credential_kind"], 32)),
         _text(root["env_var"], 128),
         _text(root["header_name"], 128),
-        None,
+        expires_at,
     )
     return AuthorizationPolicyIdentity(identity_id, mode, source)
 

@@ -22,6 +22,22 @@ contains credential values. Authorization Case v1 remains offline-only until a
 dedicated command is introduced; the existing verification CLI rejects it with
 `authorization_execution_unavailable`.
 
+Policy v1 authenticated identities may declare an optional `expires_at` RFC
+3339 UTC timestamp ending in `Z`. When present, it must cover the conservative
+duration of the complete multi-identity run plus the authentication safety
+margin. Omitting it means that the policy declares no expiry metadata; it does
+not cause Vintar to infer an expiry from credential material.
+
+The internal execution composition builds a separate HTTP client, cookie jar,
+transport, and connection pool for every identity, including unauthenticated
+identities. Request budget, rate limiting, and the run deadline are shared
+across identities. Provider-owned header names form one run-wide reserved set
+and are checked against both client defaults and the final request for every
+identity. Credential environment values are resolved only after complete
+secret-free preflight and are never included in diagnostics or representations.
+This composition is intentionally unreachable from the CLI and regression
+batch in this release; it performs no authorization run by itself.
+
 Future credential-bearing authorization jobs must run only in a protected
 environment. They must not run for forks or other untrusted pull requests. No
 credential-bearing workflow is provided by the initial contracts work.

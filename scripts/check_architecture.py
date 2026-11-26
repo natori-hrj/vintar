@@ -6,7 +6,11 @@ from importlib.util import resolve_name
 from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "vintar"
-HTTP_FILES = {Path("core/http.py"), Path("core/executor.py")}
+HTTP_FILES = {
+    Path("core/http.py"),
+    Path("core/executor.py"),
+    Path("regression/authorization_execution.py"),
+}
 HTTPX_SEND_APIS = {
     f"httpx.{name}"
     for name in (
@@ -25,6 +29,7 @@ HTTPX_SEND_APIS = {
 }
 SEND_TEMPLATE = "vintar.core.template.send_template"
 AUTH_APPLY = "vintar.auth.apply"
+AUTHORIZATION_EXECUTION = "vintar.regression.authorization_execution"
 JSON_BODY_LOCATION = "vintar.core.request.InjectionLocation.JSON_BODY"
 JSON_BODY_PRIMITIVE_FILES = {
     Path("core/request.py"),
@@ -35,6 +40,7 @@ DISCOVERY_IMPORTS = {
     "__future__",
     "collections.abc",
     "dataclasses",
+    "datetime",
     "enum",
     "hashlib",
     "json",
@@ -244,8 +250,15 @@ def check_source(path: Path, source: str) -> list[str]:
         elif isinstance(node, ast.ImportFrom):
             direct_modules = (node.module or "",)
         for module in direct_modules:
-            if module == AUTH_APPLY and path != Path("regression/runner.py"):
+            if module == AUTH_APPLY and path not in {
+                Path("regression/runner.py"),
+                Path("regression/authorization_execution.py"),
+            }:
                 violations.add((node.lineno, AUTH_APPLY))
+            if module == AUTHORIZATION_EXECUTION and path != Path(
+                "regression/authorization_runner.py"
+            ):
+                violations.add((node.lineno, AUTHORIZATION_EXECUTION))
             if in_checks and (
                 module == "vintar.auth" or module.startswith("vintar.auth.")
             ):
@@ -296,8 +309,10 @@ def check_source(path: Path, source: str) -> list[str]:
             f"{path}:{line}: JSON body injection may be constructed only by core primitives "
             "or the trusted POST execution adapter in regression/runner.py."
             if name == JSON_BODY_LOCATION
-            else f"{path}:{line}: Authentication application may be composed only by regression/runner.py."
+            else f"{path}:{line}: Authentication application may be composed only by regression/runner.py or regression/authorization_execution.py."
             if name == AUTH_APPLY
+            else f"{path}:{line}: Authorization execution composition may be imported only by the dedicated future authorization runner."
+            if name == AUTHORIZATION_EXECUTION
             else f"{path}:{line}: Checks cannot import authentication or touch credential material."
             if name == "vintar.auth"
             else f"{path}:{line}: Credential headers may be applied only by vintar.auth.apply."
