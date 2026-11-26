@@ -262,6 +262,75 @@ def test_exact_origin_and_final_collision_are_rechecked_before_application():
             run,
             identity_id="reader",
         )
+
+
+@pytest.mark.parametrize("default_name", ["X-API-Key", "x-api-key", "X-Api-kEy"])
+def test_dispatch_rejects_other_identity_header_from_client_defaults(default_name):
+    reader = binding()
+    writer_origin = AllowedOrigin("https", "writer.example", 443)
+    writer = CredentialBinding(
+        source(
+            CredentialKind.API_KEY_HEADER,
+            identity="writer",
+            env_var="VINTAR_WRITER_KEY",
+            header="X-API-Key",
+        ),
+        frozenset({writer_origin}),
+    )
+    prepared = preflight_authentication(
+        (reader, writer),
+        (
+            PlannedAuthenticatedRequest(
+                "reader", RequestTemplate("GET", "https://api.example/items")
+            ),
+            PlannedAuthenticatedRequest(
+                "writer", RequestTemplate("GET", "https://writer.example/items")
+            ),
+        ),
+        planned_max_run_seconds=30,
+        now=NOW,
+    )
+    run = resolve_credentials(
+        prepared,
+        {
+            "VINTAR_READER_TOKEN": CANARY,
+            "VINTAR_WRITER_KEY": "writer-key-canary",
+        },
+        now=NOW,
+    )
+    with httpx.Client(headers={default_name: "client-default-canary"}) as client:
+        request = client.build_request("GET", "https://api.example/items")
+
+    with pytest.raises(AuthenticationError, match="auth_collision") as caught:
+        apply_authentication(request, run, identity_id="reader")
+
+    diagnostic = str(caught.value)
+    assert "client-default-canary" not in diagnostic
+    assert "writer-key-canary" not in diagnostic
+    assert "Why:" in diagnostic
+    assert "Instead:" in diagnostic
+
+
+def test_streaming_body_is_not_read_or_replaced_when_auth_is_applied():
+    class CanaryStream(httpx.SyncByteStream):
+        def __init__(self):
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            yield b"streaming-body-canary"
+
+    stream = CanaryStream()
+    request = httpx.Request("POST", "https://api.example/items", stream=stream)
+    original_stream = request.stream
+    run = resolve_credentials(plan(), {"VINTAR_READER_TOKEN": CANARY}, now=NOW)
+
+    apply_authentication(request, run, identity_id="reader")
+
+    assert request.headers["Authorization"] == f"Bearer {CANARY}"
+    assert request.stream is original_stream
+    assert request.stream is stream
+    assert stream.iterations == 0
     with pytest.raises(AuthenticationError, match="auth_collision"):
         apply_authentication(
             httpx.Request(

@@ -351,16 +351,34 @@ def apply_authentication(
             "the final request origin is outside the credential binding.",
             "dispatch only to the exact origin approved for this identity.",
         )
-    reserved = reserved_header_names(credential.binding.source)
+    reserved = frozenset().union(
+        *(reserved_header_names(item.binding.source) for item in run._credentials)
+    )
     existing = [name.casefold() for name in request.headers]
     if reserved.intersection(existing):
         raise _fail(
             "auth_collision",
-            "the final request already contains a provider-owned header.",
-            "remove the header and let the authentication boundary set it once.",
+            "the final request contains a provider-owned header before authentication application.",
+            "remove credential headers from case and client defaults and let the authentication boundary set only the selected identity's header.",
         )
-    before = (request.method, request.url, request.content)
+    applied_header = credential.binding.source.header_name.casefold()
+    before = (
+        request.method,
+        request.url,
+        request.url.raw_path,
+        tuple(request.headers.multi_items()),
+    )
+    before_stream = request.stream
     request.headers[credential.binding.source.header_name] = credential.value._value
-    after = (request.method, request.url, request.content)
-    if after != before:
+    after = (
+        request.method,
+        request.url,
+        request.url.raw_path,
+        tuple(
+            (name, value)
+            for name, value in request.headers.multi_items()
+            if name.casefold() != applied_header
+        ),
+    )
+    if after != before or request.stream is not before_stream:
         raise RuntimeError("Authentication application changed a non-header field.")
