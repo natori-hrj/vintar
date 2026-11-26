@@ -19,6 +19,7 @@
         "string"
       ]
     },
+    "identity_id": "reviewed-user",
     "operation": {
       "approved": true,
       "method": "POST",
@@ -28,7 +29,7 @@
       "request_body_pointer": "/paths/~1items/post/requestBody/content/application~1json"
     },
     "report_type": "post_json_discovery_review",
-    "schema_version": 1,
+    "schema_version": 2,
     "side_effect": {
       "class": "no_side_effect",
       "confirmed": true

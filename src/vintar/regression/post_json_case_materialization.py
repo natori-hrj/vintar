@@ -174,6 +174,7 @@ def _serialize(config: dict[str, object], report: dict[str, JSON], body: str) ->
     check_type = cast(str, config["type"])
     lines = [
         "version = 2",
+        f"identity_id = {_toml_string(cast(str, report['identity_id']))}",
         f"id = {_toml_string(cast(str, config['id']))}",
         f"type = {_toml_string(check_type)}",
         f"expected_verdict = {_toml_string(cast(str, config['expected_verdict']))}",
@@ -226,7 +227,7 @@ def _serialize(config: dict[str, object], report: dict[str, JSON], body: str) ->
             f"environment_class = {_toml_string(cast(str, environment['class']))}",
             "",
             "[approval.review]",
-            "schema_version = 1",
+            "schema_version = 2",
             'report_type = "post_json_discovery_review"',
         )
     )
@@ -268,10 +269,10 @@ def materialize_post_json_case(
     """Re-resolve approval and produce one validated Schema v2 case."""
     supplied_review = _read_review(review)
     schema_version = supplied_review.get("schema_version")
-    if type(schema_version) is not int or schema_version != 1:
+    if type(schema_version) is not int or schema_version != 2:
         raise _error(
             "post_json_review_schema_invalid",
-            "The review artifact requires schema_version as the integer 1.",
+            "The identity-bound review artifact requires schema_version as the integer 2.",
             "Regenerate it with vintar review-post-json.",
         )
     try:

@@ -28,9 +28,20 @@ def policy_for(
     value = {
         "schema_version": 1,
         "policy_type": "post_json_execution",
+        "identities": [
+            {
+                "identity_id": case.identity_id,
+                "credential_kind": "bearer",
+                "env_var": "VINTAR_TEST_TOKEN",
+                "header_name": "Authorization",
+            }
+        ],
         "approvals": [
             {
                 "case_id": case_id or case.case_id,
+                "identity_id": case.identity_id,
+                "credential_kind": "bearer",
+                "credential_env_var": "VINTAR_TEST_TOKEN",
                 "method": "POST",
                 "path": case.approval.path,
                 "origin": "https://golden.invalid",

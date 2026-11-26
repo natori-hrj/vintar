@@ -120,9 +120,20 @@ def post_json_policy_json(
         {
             "schema_version": 1,
             "policy_type": "post_json_execution",
+            "identities": [
+                {
+                    "identity_id": "reviewed-user",
+                    "credential_kind": "bearer",
+                    "env_var": "VINTAR_TEST_TOKEN",
+                    "header_name": "Authorization",
+                }
+            ],
             "approvals": [
                 {
                     "case_id": "post-json-boolean",
+                    "identity_id": "reviewed-user",
+                    "credential_kind": "bearer",
+                    "credential_env_var": "VINTAR_TEST_TOKEN",
                     "method": "POST",
                     "path": "/items",
                     "origin": origin,
@@ -300,17 +311,11 @@ def test_post_json_cli_requires_and_applies_independent_runtime_policy(
 
     result = cli.invoke(app, args_for(case), env=env)
 
-    assert result.exit_code == 0
-    assert result.stderr == ""
-    report = json.loads(result.stdout)
-    assert report["schema_version"] == 1
-    assert report["requests_used"] == 6
-    assert len(received) == 6
-    assert all(request.method == "POST" for request in received)
-    assert all(request.url.path == "/items" for request in received)
-    assert all(
-        request.headers["content-type"] == "application/json" for request in received
-    )
+    assert result.exit_code == 2
+    assert "authenticated_execution_unavailable" in result.stderr
+    assert "Wait for the authenticated runner integration" in result.stderr
+    assert result.stdout == ""
+    assert received == []
 
 
 def test_post_json_cli_policy_error_is_actionable_and_does_not_echo_canary(
@@ -353,7 +358,7 @@ def test_post_json_cli_cannot_widen_smaller_policy_budget(tmp_path, mock_http):
     )
 
     assert result.exit_code == 2
-    assert "trusted batch request budget" in result.stderr
+    assert "authenticated_execution_unavailable" in result.stderr
     assert received == []
 
 

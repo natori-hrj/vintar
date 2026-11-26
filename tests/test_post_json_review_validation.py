@@ -36,6 +36,19 @@ def test_review_validator_accepts_generated_redacted_artifact(tmp_path):
     completed = run(path)
 
     assert (completed.returncode, completed.stdout, completed.stderr) == (0, "", "")
+
+
+def test_review_validator_retains_v1_backward_compatibility(tmp_path):
+    spec, inventory, answers, _ = inputs(tmp_path)
+    report = resolve_post_json_review(spec, inventory, answers).report
+    report["schema_version"] = 1
+    report.pop("identity_id")
+    path = tmp_path / "legacy-review-v1.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    completed = run(path)
+
+    assert (completed.returncode, completed.stdout, completed.stderr) == (0, "", "")
     assert SENTINEL not in path.read_text(encoding="utf-8")
 
 

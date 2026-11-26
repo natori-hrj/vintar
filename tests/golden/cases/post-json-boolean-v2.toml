@@ -1,4 +1,5 @@
 version = 2
+identity_id = "reviewed-user"
 id = "post-json-boolean"
 type = "sqli.boolean"
 expected_verdict = "not_detected"
@@ -35,5 +36,5 @@ side_effect = "no_side_effect"
 environment_class = "isolated_test"
 
 [approval.review]
-schema_version = 1
+schema_version = 2
 report_type = "post_json_discovery_review"

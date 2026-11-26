@@ -23,9 +23,20 @@ def policy_value() -> dict[str, object]:
     return {
         "schema_version": 1,
         "policy_type": "post_json_execution",
+        "identities": [
+            {
+                "identity_id": "reviewed-user",
+                "credential_kind": "bearer",
+                "env_var": "VINTAR_TEST_TOKEN",
+                "header_name": "Authorization",
+            }
+        ],
         "approvals": [
             {
                 "case_id": "post-json-boolean",
+                "identity_id": "reviewed-user",
+                "credential_kind": "bearer",
+                "credential_env_var": "VINTAR_TEST_TOKEN",
                 "method": "POST",
                 "path": "/items",
                 "origin": "https://golden.invalid",
