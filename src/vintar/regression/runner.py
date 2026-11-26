@@ -86,6 +86,7 @@ class BatchExecutionSchedule:
 
     requests_per_second: float
     planned_max_run_seconds: float
+    initial_wait_seconds: tuple[float, ...]
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -374,6 +375,7 @@ def _effective_scope(
     policy: TrustedExecutionPolicy,
     *,
     requests_per_second: float,
+    initial_wait_seconds: float,
 ) -> ScopePolicy:
     """Preflight the complete probe plan without sending HTTP."""
     if not isinstance(case, AnyRegressionCase):
@@ -452,6 +454,7 @@ def _effective_scope(
             )
         minimum_window = (
             TIME_REQUESTS * effective_timeout
+            + initial_wait_seconds
             + (TIME_REQUESTS - 1) / requests_per_second
         )
         if minimum_window > policy.max_time_execution_seconds:
@@ -728,17 +731,21 @@ def batch_execution_schedule(
     )
     duration = 0.0
     requests_before = 0
+    initial_waits: list[float] = []
     for case in cases:
+        initial_wait = int(requests_before > 0) / shared_rate
+        initial_waits.append(initial_wait)
         if case.check_type == "sqli.time":
+            # The Time deadline starts before its first rate-limit wait, so the
+            # initial wait is already bounded by the full deadline here.
             duration += policy.max_time_execution_seconds
         else:
             duration += case.max_requests * min(
                 case.timeout_seconds, policy.max_timeout_seconds
             )
-            waits = case.max_requests - 1 + int(requests_before > 0)
-            duration += waits / shared_rate
+            duration += (case.max_requests - 1) / shared_rate + initial_wait
         requests_before += case.max_requests
-    return BatchExecutionSchedule(shared_rate, duration)
+    return BatchExecutionSchedule(shared_rate, duration, tuple(initial_waits))
 
 
 @dataclass(slots=True)
@@ -802,6 +809,7 @@ def _run_with_resources(
             case,
             policy,
             requests_per_second=rate_limiter.requests_per_second,
+            initial_wait_seconds=0.0,
         )
     )
 
@@ -1029,6 +1037,7 @@ def run_regression_case(
         case,
         policy,
         requests_per_second=schedule.requests_per_second,
+        initial_wait_seconds=schedule.initial_wait_seconds[0],
     )
 
     if policy.max_requests < case.max_requests:

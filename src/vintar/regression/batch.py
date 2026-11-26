@@ -181,8 +181,13 @@ def run_regression_batch(
             case,
             policy,
             requests_per_second=schedule.requests_per_second,
+            initial_wait_seconds=initial_wait,
         )
-        for case in selected
+        for case, initial_wait in zip(
+            selected,
+            schedule.initial_wait_seconds,
+            strict=True,
+        )
     ]
 
     required_requests = sum(case.max_requests for case in selected)

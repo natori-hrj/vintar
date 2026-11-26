@@ -1,6 +1,7 @@
 """Unit tests for time-case policy preflight and batch accounting."""
 
 import math
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -107,6 +108,100 @@ def test_time_deadline_preflight_rejects_just_over_boundary_before_http():
         )
 
     assert calls == []
+
+
+def _batch_clock(monkeypatch):
+    clock = [0.0]
+
+    def limiter(*, requests_per_second: float) -> RateLimiter:
+        return RateLimiter(
+            requests_per_second=requests_per_second,
+            _clock=lambda: clock[0],
+            _sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+    monkeypatch.setattr(batch_module, "RateLimiter", limiter)
+    return clock
+
+
+def test_second_time_case_counts_initial_shared_rate_wait_before_dispatch():
+    first = replace(make_case(), requests_per_second=0.1)
+    second = replace(
+        time_case("http://localhost:8000", "safe", "not_detected"),
+        requests_per_second=0.1,
+        timeout_seconds=1.0,
+    )
+    calls = []
+
+    with pytest.raises(ValueError, match=r"deadline cannot accommodate"):
+        run_regression_batch(
+            [first, second],
+            policy=policy(
+                max_requests=15,
+                max_requests_per_second=0.1,
+                max_timeout_seconds=1.0,
+                max_time_execution_seconds=89.0,
+            ),
+            transport=httpx.MockTransport(
+                lambda request: calls.append(request) or httpx.Response(200)
+            ),
+        )
+
+    assert calls == []
+
+
+def test_first_time_case_does_not_count_an_initial_rate_wait(monkeypatch):
+    clock = _batch_clock(monkeypatch)
+    case = replace(
+        time_case("http://localhost:8000", "safe", "not_detected"),
+        requests_per_second=0.1,
+        timeout_seconds=1.0,
+    )
+    calls = []
+
+    result = run_regression_batch(
+        [case],
+        policy=policy(
+            max_requests_per_second=0.1,
+            max_timeout_seconds=1.0,
+            max_time_execution_seconds=89.0,
+        ),
+        transport=httpx.MockTransport(
+            lambda request: calls.append(request) or httpx.Response(200)
+        ),
+        execution_clock=lambda: clock[0],
+    )
+
+    assert result.requests_used == 9
+    assert len(calls) == 9
+
+
+def test_second_time_case_runs_when_initial_wait_exactly_fits(monkeypatch):
+    clock = _batch_clock(monkeypatch)
+    first = replace(make_case(), requests_per_second=0.1)
+    second = replace(
+        time_case("http://localhost:8000", "safe", "not_detected"),
+        requests_per_second=0.1,
+        timeout_seconds=1.0,
+    )
+    calls = []
+
+    result = run_regression_batch(
+        [first, second],
+        policy=policy(
+            max_requests=15,
+            max_requests_per_second=0.1,
+            max_timeout_seconds=1.0,
+            max_time_execution_seconds=99.0,
+        ),
+        transport=httpx.MockTransport(
+            lambda request: calls.append(request) or httpx.Response(200)
+        ),
+        execution_clock=lambda: clock[0],
+    )
+
+    assert result.requests_used == 15
+    assert len(calls) == 15
 
 
 @pytest.mark.parametrize("value", [True, 0.0, 120.01, float("inf")])
@@ -256,7 +351,7 @@ def test_mixed_batch_budget_preflight_rejects_eight_remaining_before_http():
             policy=policy(
                 max_requests=14,
                 max_timeout_seconds=10.0,
-                max_time_execution_seconds=31.0,
+                max_time_execution_seconds=31.5,
             ),
             transport=httpx.MockTransport(
                 lambda request: calls.append(request) or httpx.Response(200)
