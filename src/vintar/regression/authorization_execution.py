@@ -87,21 +87,21 @@ def _approved_dispatch(
     return dispatch if dispatch in approved else None
 
 
-def _canonical_host(origin: AllowedOrigin) -> str:
+def _canonical_host(origin: AllowedOrigin) -> bytes:
     host = f"[{origin.host}]" if ":" in origin.host else origin.host
     default_port = 443 if origin.scheme == "https" else 80
-    return host if origin.port == default_port else f"{host}:{origin.port}"
+    authority = host if origin.port == default_port else f"{host}:{origin.port}"
+    return authority.encode("ascii").lower()
 
 
 def _validate_host_header(request: httpx.Request, approved: _ApprovedDispatch) -> None:
     values = tuple(
-        value
-        for name, value in request.headers.multi_items()
-        if name.casefold() == _HOST_HEADER_NAME
+        value for name, value in request.headers.raw if name.lower() == b"host"
     )
     if (
         len(values) != 1
-        or values[0].casefold() != _canonical_host(approved.origin).casefold()
+        or any(not 0x21 <= byte <= 0x7E for byte in values[0])
+        or values[0].lower() != _canonical_host(approved.origin)
     ):
         raise _fail(
             "authorization_host_header_invalid",

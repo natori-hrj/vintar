@@ -9,7 +9,9 @@ from vintar.regression.authorization_cases import parse_authorization_case
 from vintar.regression.authorization_execution import (
     AuthorizationExecution,
     AuthorizationExecutionError,
+    _ApprovedDispatch,
     _build_authorization_execution,
+    _FinalAuthorizationDispatchGuard,
 )
 from vintar.regression.authorization_policy import parse_authorization_runtime_policy
 
@@ -355,6 +357,58 @@ def test_dispatch_rejects_noncanonical_or_duplicate_host_before_authentication(
     assert "other-host-canary" not in str(caught.value)
     assert "api.example.test" not in str(caught.value)
     assert all(not transport.requests for transport in transports.values())
+
+
+@pytest.mark.parametrize("identity_id", ["reader-a", "public-user"])
+@pytest.mark.parametrize(
+    ("host", "accepted"),
+    [
+        pytest.param("api.example.te\u017ft".encode(), False, id="unicode-casefold"),
+        pytest.param(b"api.example.te\xfft", False, id="high-bit"),
+        pytest.param(b"api.example.test ", False, id="space"),
+        pytest.param(b"api.example.test\t", False, id="tab"),
+        pytest.param(b"api.example.test\x00", False, id="control"),
+        pytest.param(b"api.example.test\x7f", False, id="del"),
+        pytest.param(b"API.EXAMPLE.TEST", True, id="uppercase"),
+        pytest.param(b"api.example.test", True, id="canonical"),
+    ],
+)
+def test_dispatch_validates_raw_host_at_both_guards(identity_id, host, accepted):
+    case, _policy = inputs()
+    operation = next(op for op in case.operations if op.identity_id == identity_id)
+    composed, transports, _environment = execution()
+    approved = _ApprovedDispatch(
+        operation.request.method,
+        operation.request.origin,
+        operation.request.path.encode("ascii"),
+    )
+    pool = StatefulTransport(identity_id)
+    final = _FinalAuthorizationDispatchGuard(pool, frozenset({approved}))
+
+    with composed as active:
+        client = active.client_for(identity_id)
+        request = client.build_request(
+            approved.method, operation.request.url, headers=[(b"HoSt", host)]
+        )
+        final_request = httpx.Request(
+            approved.method, operation.request.url, headers=[(b"HoSt", host)]
+        )
+        if accepted:
+            assert client.send(request).status_code == 200
+            assert final.handle_request(final_request).status_code == 200
+        else:
+            with pytest.raises(AuthorizationExecutionError) as outer_error:
+                client.send(request)
+            with pytest.raises(AuthorizationExecutionError) as final_error:
+                final.handle_request(final_request)
+            assert str(outer_error.value) == str(final_error.value)
+            assert str(outer_error.value).startswith(
+                "authorization_host_header_invalid:"
+            )
+            assert "Authorization" not in request.headers
+            assert "X-Reader-B-Key" not in request.headers
+            assert all(not transport.requests for transport in transports.values())
+            assert not pool.requests
 
 
 @pytest.mark.parametrize("identity_id", ["reader-a", "reader-b", "public-user"])

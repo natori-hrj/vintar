@@ -176,6 +176,13 @@ def test_policy_origin_defaults_only_when_port_is_absent():
     assert implicit_http.approvals[0].origin.port == 80
 
 
+def test_policy_canonicalizes_international_origin_host_to_ascii():
+    value = policy_value()
+    value["approvals"][0]["origin"] = "https://bücher.example.test"
+    policy = parse_authorization_runtime_policy(policy_bytes(value))
+    assert policy.approvals[0].origin.host == "xn--bcher-kva.example.test"
+
+
 @pytest.mark.parametrize("port", ["0", "65536"])
 def test_policy_rejects_out_of_range_origin_port_with_fixed_diagnostic(port):
     value = policy_value()
