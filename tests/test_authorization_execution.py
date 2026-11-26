@@ -222,13 +222,51 @@ def test_cookie_credentials_and_pool_state_never_cross_identities():
     assert "Cookie" not in public_request.headers
 
 
+@pytest.mark.parametrize(
+    ("identity_id", "method", "url"),
+    [
+        ("reader-a", "GET", "https://api.example.test/different"),
+        ("reader-a", "POST", "https://api.example.test/a"),
+        ("reader-a", "GET", "https://api.example.test/a?query=different"),
+        ("reader-a", "GET", "https://api.example.test/a/"),
+        ("reader-a", "GET", "https://api.example.test/%61"),
+        ("reader-b", "GET", "https://api.example.test/a"),
+    ],
+)
+def test_dispatch_rejects_every_unapproved_identity_method_or_raw_target(
+    identity_id, method, url
+):
+    composed, transports, _environment = execution()
+    observed: list[httpx.Request] = []
+    with composed as active:
+        client = active.client_for(identity_id)
+        client.event_hooks["request"].append(observed.append)
+        with pytest.raises(AuthorizationExecutionError) as caught:
+            client.request(method, url)
+    assert str(caught.value) == (
+        "authorization_operation_unapproved: Why: the final request is not an "
+        "exact operation approved for this identity. Instead: dispatch only the "
+        "approved method, origin, and byte-preserved request target through its "
+        "bound identity."
+    )
+    assert len(observed) == 1
+    assert "Authorization" not in observed[0].headers
+    assert "X-Reader-B-Key" not in observed[0].headers
+    assert all(not transport.requests for transport in transports.values())
+
+
 @pytest.mark.parametrize("identity_id", ["reader-a", "reader-b", "public-user"])
 def test_run_wide_reserved_union_rejects_client_default_collision(identity_id):
     composed, transports, _environment = execution()
+    approved_url = {
+        "reader-a": "https://api.example.test/a",
+        "reader-b": "https://api.example.test/b",
+        "public-user": "https://api.example.test/public",
+    }[identity_id]
     with composed as active:
         active.client_for(identity_id).headers["X-Reader-B-Key"] = "collision-canary"
         with pytest.raises(AuthorizationExecutionError) as caught:
-            active.client_for(identity_id).get("https://api.example.test/public")
+            active.client_for(identity_id).get(approved_url)
     assert str(caught.value).startswith("auth_collision:")
     assert "collision-canary" not in str(caught.value)
     assert all(not transport.requests for transport in transports.values())

@@ -51,14 +51,51 @@ class AuthorizationExecutionSchedule:
     planned_max_run_seconds: float
 
 
-class _ReservedHeaderTransport(httpx.BaseTransport):
+@dataclass(frozen=True, slots=True)
+class _ApprovedDispatch:
+    method: str
+    origin: AllowedOrigin
+    raw_path: bytes
+
+
+def _request_origin(url: httpx.URL) -> AllowedOrigin | None:
+    if (
+        url.scheme not in {"http", "https"}
+        or not url.host
+        or url.username
+        or url.password
+    ):
+        return None
+    port = url.port if url.port is not None else (443 if url.scheme == "https" else 80)
+    try:
+        return AllowedOrigin(url.scheme, url.host, port)
+    except ValueError:
+        return None
+
+
+class _AuthorizationDispatchGuard(httpx.BaseTransport):
     def __init__(
-        self, transport: httpx.BaseTransport, reserved: frozenset[str]
+        self,
+        transport: httpx.BaseTransport,
+        reserved: frozenset[str],
+        approved: frozenset[_ApprovedDispatch],
     ) -> None:
         self._transport = transport
         self._reserved = reserved
+        self._approved = approved
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        origin = _request_origin(request.url)
+        if (
+            origin is None
+            or _ApprovedDispatch(request.method, origin, request.url.raw_path)
+            not in self._approved
+        ):
+            raise _fail(
+                "authorization_operation_unapproved",
+                "the final request is not an exact operation approved for this identity.",
+                "dispatch only the approved method, origin, and byte-preserved request target through its bound identity.",
+            )
         if self._reserved.intersection(name.casefold() for name in request.headers):
             raise _fail(
                 "auth_collision",
@@ -131,6 +168,7 @@ def _preflight(
     case: AuthorizationCase, policy: AuthorizationRuntimePolicy
 ) -> tuple[
     dict[str, frozenset[AllowedOrigin]],
+    dict[str, frozenset[_ApprovedDispatch]],
     tuple[CredentialBinding, ...],
     tuple[PlannedAuthenticatedRequest, ...],
     frozenset[str],
@@ -196,9 +234,19 @@ def _preflight(
             "increase the trusted limit or reduce the reviewed case before execution.",
         )
     origins: dict[str, set[AllowedOrigin]] = {name: set() for name in case_identities}
+    dispatches: dict[str, set[_ApprovedDispatch]] = {
+        name: set() for name in case_identities
+    }
     requests: list[PlannedAuthenticatedRequest] = []
     for operation in case.operations:
         origins[operation.identity_id].add(operation.request.origin)
+        dispatches[operation.identity_id].add(
+            _ApprovedDispatch(
+                operation.request.method,
+                operation.request.origin,
+                operation.request.path.encode("ascii"),
+            )
+        )
         if (
             case_identities[operation.identity_id].authentication
             is AuthenticationMode.REQUIRED
@@ -220,6 +268,7 @@ def _preflight(
     schedule = _schedule(len(case.operations), policy)
     return (
         {name: frozenset(values) for name, values in origins.items()},
+        {name: frozenset(values) for name, values in dispatches.items()},
         bindings,
         tuple(requests),
         reserved,
@@ -244,7 +293,9 @@ def _build_authorization_execution(
         or type(policy) is not AuthorizationRuntimePolicy
     ):
         raise TypeError("Invalid authorization execution input.")
-    origins, bindings, requests, reserved, schedule = _preflight(case, policy)
+    origins, dispatches, bindings, requests, reserved, schedule = _preflight(
+        case, policy
+    )
     run = None
     if bindings:
         try:
@@ -279,7 +330,9 @@ def _build_authorization_execution(
                 active = AuthenticatedTransport(
                     scoped, run, identity_id=identity.identity_id, close_underlying=True
                 )
-            guarded = _ReservedHeaderTransport(active, reserved)
+            guarded = _AuthorizationDispatchGuard(
+                active, reserved, dispatches[identity.identity_id]
+            )
             client = httpx.Client(
                 transport=guarded,
                 cookies=httpx.Cookies(),
