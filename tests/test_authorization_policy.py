@@ -160,13 +160,38 @@ def test_policy_rejects_out_of_range_origin_port_with_fixed_diagnostic(port):
     assert port not in str(caught.value)
 
 
-@pytest.mark.parametrize("path", ["/{id}", "/items/{id}/x", "/%7Bid%7D"])
+@pytest.mark.parametrize(
+    "path",
+    ["/{id}", "/items/{id}/x", "/%7Bid%7D", "/%7Bid%7D/../items", "/%7bid%7d/./x"],
+)
 def test_policy_rejects_plain_and_encoded_path_templates(path):
     value = policy_value()
     value["approvals"][0]["operations"][0]["path"] = path
     with pytest.raises(
         AuthorizationPolicyError,
         match="authorization_policy_path_template_unsupported",
+    ) as caught:
+        parse_authorization_runtime_policy(policy_bytes(value))
+    assert path not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("path", "diagnostic"),
+    [
+        ("/a/../b", "path_dot_segment_unsupported"),
+        ("/a/%2e%2e/b", "path_dot_segment_unsupported"),
+        ("/a/./b", "path_dot_segment_unsupported"),
+        ("/a/%2E./b", "path_dot_segment_unsupported"),
+        ("/a/%2e/b", "path_dot_segment_unsupported"),
+        ("/a/<b>", "request_target_changed"),
+    ],
+)
+def test_policy_rejects_dot_segments_and_path_rewrites(path, diagnostic):
+    value = policy_value()
+    value["approvals"][0]["operations"][0]["path"] = path
+    with pytest.raises(
+        AuthorizationPolicyError,
+        match=rf"authorization_policy_{diagnostic}: Why: .* Instead: ",
     ) as caught:
         parse_authorization_runtime_policy(policy_bytes(value))
     assert path not in str(caught.value)

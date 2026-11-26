@@ -126,7 +126,7 @@ def _url(value: str) -> httpx.URL:
 def _literal_path(url: str, parsed: httpx.URL) -> str:
     original_path = urlsplit(url).path
     raw_path = parsed.raw_path.decode("ascii")
-    encoded = raw_path.casefold()
+    encoded = original_path.casefold()
     if (
         "{" in original_path
         or "}" in original_path
@@ -139,6 +139,20 @@ def _literal_path(url: str, parsed: httpx.URL) -> str:
             "authorization_case_path_template_unsupported",
             "an authorization case request path contains a template marker.",
             "supply one reviewed literal path without braces or encoded braces.",
+        )
+    if any(
+        segment in {".", ".."} for segment in encoded.replace("%2e", ".").split("/")
+    ):
+        raise _fail(
+            "authorization_case_path_dot_segment_unsupported",
+            "an authorization case request path contains a dot segment.",
+            "supply one reviewed literal path without raw or percent-encoded dot segments.",
+        )
+    if original_path != raw_path:
+        raise _fail(
+            "authorization_case_request_target_changed",
+            "the request target would differ from the reviewed literal path.",
+            "review and approve the byte-preserved normalized literal path instead.",
         )
     return raw_path
 

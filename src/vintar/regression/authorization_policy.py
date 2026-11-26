@@ -132,7 +132,7 @@ def _origin(value: object) -> AllowedOrigin:
 
 def _literal_path(value: object) -> str:
     path = _text(value, 2048)
-    path.encode("ascii")
+    path_bytes = path.encode("ascii")
     encoded = path.casefold()
     if (
         not path.startswith("/")
@@ -144,6 +144,20 @@ def _literal_path(value: object) -> str:
             "authorization_policy_path_template_unsupported",
             "an authorization policy operation path is not one literal path.",
             "supply one ASCII path without query, fragment, braces, or encoded braces.",
+        )
+    if any(
+        segment in {".", ".."} for segment in encoded.replace("%2e", ".").split("/")
+    ):
+        raise _fail(
+            "authorization_policy_path_dot_segment_unsupported",
+            "an authorization policy operation path contains a dot segment.",
+            "supply one reviewed literal path without raw or percent-encoded dot segments.",
+        )
+    if httpx.URL(f"https://placeholder.invalid{path}").raw_path != path_bytes:
+        raise _fail(
+            "authorization_policy_request_target_changed",
+            "the request target would differ from the reviewed literal path.",
+            "review and approve the byte-preserved normalized literal path instead.",
         )
     return path
 

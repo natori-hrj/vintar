@@ -125,6 +125,8 @@ def test_case_preserves_percent_encoded_literal_path():
         "https://placeholder.invalid/items/{id}/x",
         "https://placeholder.invalid/%7Bid%7D",
         "https://placeholder.invalid/%7bid%7d",
+        "https://placeholder.invalid/%7Bid%7D/../items",
+        "https://placeholder.invalid/%7bid%7d/./x",
     ],
 )
 def test_case_rejects_plain_and_encoded_path_templates(url):
@@ -139,6 +141,27 @@ def test_case_rejects_plain_and_encoded_path_templates(url):
     ) as caught:
         parse_authorization_case(source)
     assert url not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("path", "diagnostic"),
+    [
+        ("/a/../b", "path_dot_segment_unsupported"),
+        ("/a/%2e%2e/b", "path_dot_segment_unsupported"),
+        ("/a/./b", "path_dot_segment_unsupported"),
+        ("/a/%2E./b", "path_dot_segment_unsupported"),
+        ("/a/%2e/b", "path_dot_segment_unsupported"),
+        ("/a/<b>", "request_target_changed"),
+    ],
+)
+def test_case_rejects_dot_segments_and_path_rewrites(path, diagnostic):
+    source = CASE.replace("/documents/own", path, 1)
+    with pytest.raises(
+        AuthorizationCaseValidationError,
+        match=rf"authorization_case_{diagnostic}: Why: .* Instead: ",
+    ) as caught:
+        parse_authorization_case(source)
+    assert path not in str(caught.value)
 
 
 def test_case_origin_defaults_only_when_port_is_absent():
