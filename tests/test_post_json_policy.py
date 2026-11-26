@@ -2,10 +2,13 @@
 
 import json
 import os
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from vintar.regression import file_io
 from vintar.regression.post_json_policy import (
     MAX_POLICY_BYTES,
     PostJsonPolicyError,
@@ -146,6 +149,93 @@ def test_policy_file_is_regular_bounded_and_not_a_symlink(tmp_path):
     link.symlink_to(policy_file)
     with pytest.raises(PostJsonPolicyError, match="post_json_policy_unreadable"):
         load_post_json_runtime_policy({"VINTAR_RUNTIME_POLICY_FILE": str(link)})
+
+
+def test_policy_file_rejects_fifo_and_directory_without_blocking(tmp_path):
+    fifo = tmp_path / "policy.fifo"
+    os.mkfifo(fifo)
+    directory = tmp_path / "policy-directory"
+    directory.mkdir()
+
+    for path in (fifo, directory):
+        with pytest.raises(PostJsonPolicyError, match="post_json_policy_unreadable"):
+            load_post_json_runtime_policy({"VINTAR_RUNTIME_POLICY_FILE": str(path)})
+
+
+def test_policy_path_swap_reads_originally_opened_descriptor(tmp_path, monkeypatch):
+    policy_file = tmp_path / "policy.json"
+    policy_file.write_bytes(policy_bytes())
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text("not-the-approved-policy", encoding="utf-8")
+    real_open = file_io._open
+
+    def open_then_swap(path, flags):
+        descriptor = real_open(path, flags)
+        os.replace(replacement, policy_file)
+        return descriptor
+
+    monkeypatch.setattr(file_io, "_open", open_then_swap)
+    loaded = load_post_json_runtime_policy(
+        {"VINTAR_RUNTIME_POLICY_FILE": str(policy_file)}
+    )
+
+    assert loaded.policy_type == "post_json_execution"
+    assert policy_file.read_text(encoding="utf-8") == "not-the-approved-policy"
+
+
+def test_policy_growth_is_bounded_by_limit_plus_one(monkeypatch):
+    descriptor = 73
+    requested: list[int] = []
+    total = 0
+
+    def fake_open(_path, flags):
+        assert flags & getattr(os, "O_NOFOLLOW", 0)
+        assert flags & getattr(os, "O_CLOEXEC", 0)
+        assert flags & getattr(os, "O_NONBLOCK", 0)
+        return descriptor
+
+    def fake_fstat(received):
+        assert received == descriptor
+        return SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=1)
+
+    def fake_read(received, size):
+        nonlocal total
+        assert received == descriptor
+        requested.append(size)
+        total += size
+        return b"x" * size
+
+    closed: list[int] = []
+    monkeypatch.setattr(file_io, "_open", fake_open)
+    monkeypatch.setattr(file_io, "_fstat", fake_fstat)
+    monkeypatch.setattr(file_io, "_read", fake_read)
+    monkeypatch.setattr(file_io, "_close", closed.append)
+
+    with pytest.raises(
+        PostJsonPolicyError, match="post_json_policy_unreadable"
+    ) as caught:
+        load_post_json_runtime_policy(
+            {"VINTAR_RUNTIME_POLICY_FILE": "/fixed/policy-canary.json"}
+        )
+
+    assert total == MAX_POLICY_BYTES + 1
+    assert requested
+    assert all(size <= MAX_POLICY_BYTES + 1 for size in requested)
+    assert closed == [descriptor]
+    assert "policy-canary" not in str(caught.value)
+
+
+def test_policy_file_accepts_exactly_maximum_bytes(tmp_path):
+    source = policy_bytes()
+    source += b" " * (MAX_POLICY_BYTES - len(source))
+    assert len(source) == MAX_POLICY_BYTES
+    policy_file = tmp_path / "policy.json"
+    policy_file.write_bytes(source)
+
+    loaded = load_post_json_runtime_policy(
+        {"VINTAR_RUNTIME_POLICY_FILE": str(policy_file)}
+    )
+    assert loaded.schema_version == 1
 
 
 def test_policy_file_rejects_directory_oversize_and_non_utf8(tmp_path):

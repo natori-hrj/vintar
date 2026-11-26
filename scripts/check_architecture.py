@@ -128,6 +128,7 @@ def discovery_diagnostics(path, tree):
             "vintar.regression.cases_v2",
             "vintar.regression.discovery",
             "vintar.regression.discovery_drafts",
+            "vintar.regression.file_io",
             "vintar.regression.post_json_review",
         }
     if path == Path("regression/cases_v2.py"):

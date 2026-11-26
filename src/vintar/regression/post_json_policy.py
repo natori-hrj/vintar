@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import os
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -12,6 +11,7 @@ from typing import cast
 from vintar.core.scope import AllowedOrigin
 from vintar.core.strict_json import DuplicateJsonKeyError, parse_strict_json
 from vintar.regression.binding import parse_runtime_origin
+from vintar.regression.file_io import read_bounded_regular_file
 
 MAX_POLICY_BYTES = 262_144
 MAX_POLICY_APPROVALS = 128
@@ -233,13 +233,10 @@ def parse_post_json_runtime_policy(data: bytes) -> PostJsonRuntimePolicy:
 
 def _read_policy_file(path_text: str) -> bytes:
     try:
-        path = Path(path_text)
-        metadata = os.lstat(path)
-        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        data = read_bounded_regular_file(Path(path_text), MAX_POLICY_BYTES)
+        if not data:
             raise OSError
-        if not 1 <= metadata.st_size <= MAX_POLICY_BYTES:
-            raise OSError
-        return path.read_bytes()
+        return data
     except (OSError, ValueError):
         raise _fail(
             "post_json_policy_unreadable",
