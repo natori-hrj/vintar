@@ -92,6 +92,24 @@ class QueryRegressionCaseV2:
     environment_class: str
 
 
+def _require_byte_preserved_request_path(url: str, reviewed_path: str) -> None:
+    """Reject a URL parser rewrite of the reviewed literal request target."""
+    try:
+        reviewed_bytes = reviewed_path.encode("ascii")
+    except UnicodeEncodeError:
+        raise _fail(
+            "case_request_target_changed",
+            "The request target would differ from the reviewed literal path.",
+            "Review and approve the byte-preserved normalized literal path instead.",
+        ) from None
+    if httpx.URL(url).raw_path != reviewed_bytes:
+        raise _fail(
+            "case_request_target_changed",
+            "The request target would differ from the reviewed literal path.",
+            "Review and approve the byte-preserved normalized literal path instead.",
+        )
+
+
 def _parse_get_case_v2(
     root: dict[str, object],
     *,
@@ -123,6 +141,7 @@ def _parse_get_case_v2(
         parsed_url = urlsplit(url)
         if parsed_url.path != approval["path"] or "{" in parsed_url.path:
             raise ValueError
+        _require_byte_preserved_request_path(url, cast(str, approval["path"]))
         environment_class = _text(approval["environment_class"], 64)
         probes_value = _mapping(root["probes"])
         delay: float | None = None
@@ -161,6 +180,8 @@ def _parse_get_case_v2(
         )
         if len({params[selected_index][1], *planned_values}) != len(planned_values) + 1:
             raise ValueError
+    except CaseV2ValidationError:
+        raise
     except (KeyError, TypeError, ValueError, OverflowError, UnicodeError):
         raise _fail(
             "get_case_semantic_invalid",
@@ -346,6 +367,7 @@ def parse_case_v2_mapping(
                 "The target path does not exactly match the reviewed literal operation path.",
                 "Set request.url to the reviewed path on the selected origin.",
             )
+        _require_byte_preserved_request_path(url, approval.path)
         if "{" in approval.path or "}" in approval.path:
             raise _fail(
                 "post_json_path_parameter_unsupported",

@@ -246,7 +246,6 @@ def test_get_binding_requires_exact_identity_approval():
         ("/a%2Fb", "/a/b"),
         ("/a%2fb", "/a%2Fb"),
         ("/a/%2e%2e/b", "/a/../b"),
-        ("/a/../b", "/a/%2e%2e/b"),
     ],
 )
 def test_get_binding_compares_byte_preserved_paths(case_path, approved_path):
@@ -269,7 +268,20 @@ def test_get_binding_compares_byte_preserved_paths(case_path, approved_path):
     assert approved_path not in str(caught.value)
 
 
-@pytest.mark.parametrize("path", ["/a%2Fb", "/a%2fb", "/a/%2e%2e/b", "/a//b"])
+@pytest.mark.parametrize("path", ["/a/../b", "/a/./b"])
+def test_get_case_load_rejects_httpx_literal_path_rewrite(path):
+    with pytest.raises(ValueError, match="case_request_target_changed") as caught:
+        parse_regression_case(GET_CASE.replace("/items", path))
+
+    assert "request target would differ" in str(caught.value)
+    assert "normalized literal path" in str(caught.value)
+    assert path not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/a%2Fb", "/a%2fb", "/a/%2e/b", "/a/%2E%2E/b", "/a//b"],
+)
 def test_get_binding_dispatch_path_is_byte_identical_to_approval(path):
     case = parse_regression_case(GET_CASE.replace("/items", path))
     assert isinstance(case, QueryRegressionCaseV2)

@@ -162,3 +162,17 @@ def test_post_binding_uses_byte_preserved_path_for_approval_and_dispatch():
         post_json_policy=policy_for(parsed),
     )
     assert httpx.URL(rebound.url).raw_path == b"/a%2Fb"
+
+
+@pytest.mark.parametrize("path", ["/a/../b", "/a/./b"])
+def test_post_case_load_rejects_httpx_literal_path_rewrite(path):
+    source = Path("tests/golden/cases/post-json-boolean-v2.toml").read_text(
+        encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="case_request_target_changed") as caught:
+        parse_regression_case(source.replace("/items", path))
+
+    assert "request target would differ" in str(caught.value)
+    assert "normalized literal path" in str(caught.value)
+    assert path not in str(caught.value)
