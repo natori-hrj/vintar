@@ -25,7 +25,11 @@ HTTPX_SEND_APIS = {
 }
 SEND_TEMPLATE = "vintar.core.template.send_template"
 JSON_BODY_LOCATION = "vintar.core.request.InjectionLocation.JSON_BODY"
-JSON_BODY_PRIMITIVE_FILES = {Path("core/request.py"), Path("core/injector.py")}
+JSON_BODY_PRIMITIVE_FILES = {
+    Path("core/request.py"),
+    Path("core/injector.py"),
+    Path("regression/runner.py"),
+}
 DISCOVERY_IMPORTS = {
     "__future__",
     "collections.abc",
@@ -124,6 +128,7 @@ def discovery_diagnostics(path, tree):
             "vintar.regression.cases_v2",
             "vintar.regression.discovery",
             "vintar.regression.discovery_drafts",
+            "vintar.regression.file_io",
             "vintar.regression.post_json_review",
         }
     if path == Path("regression/cases_v2.py"):
@@ -233,8 +238,8 @@ def check_source(path: Path, source: str) -> list[str]:
 
     return [
         (
-            f"{path}:{line}: JSON body injection is a request primitive only in PR 1. "
-            "Do not construct a JSON_BODY injection point in checks, CLI, regression, or execution paths."
+            f"{path}:{line}: JSON body injection may be constructed only by core primitives "
+            "or the trusted POST execution adapter in regression/runner.py."
             if name == JSON_BODY_LOCATION
             else f"{path}:{line}: {name} bypasses scope, request budgets, and rate limits. "
             "Use vintar.core.executor.ExecutionContext."

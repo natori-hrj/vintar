@@ -1,6 +1,6 @@
 import pytest
 
-from vintar.core.injector import inject
+from vintar.core.injector import inject, value_at_injection_point
 from vintar.core.json_body import JsonBody, JsonPointer
 from vintar.core.request import (
     InjectionLocation,
@@ -49,6 +49,24 @@ def test_append_payload():
 
     assert result.params == (("category", "Pets'"),)
     assert template.params == (("category", "Pets"),)
+
+
+def test_query_value_lookup_preserves_v1_name_and_occurrence_behavior():
+    template = RequestTemplate(
+        method="GET",
+        url="http://localhost/filter",
+        params=(("id", "first"), ("id", "second")),
+    )
+    point = InjectionPoint(
+        location=InjectionLocation.QUERY,
+        name="id",
+        occurrence=1,
+    )
+    assert value_at_injection_point(template, point) == "second"
+
+    missing = InjectionPoint(location=InjectionLocation.QUERY, name="missing")
+    with pytest.raises(ValueError, match="disappeared after preflight"):
+        value_at_injection_point(template, missing)
 
 
 def test_missing_injection_point():

@@ -29,7 +29,7 @@ from vintar.checks.sqli.observation_sink import (
 )
 from vintar.core.budget import RequestBudgetExceededError
 from vintar.core.executor import ExecutionContext
-from vintar.core.injector import inject
+from vintar.core.injector import inject, value_at_injection_point
 from vintar.core.models import HttpResult
 from vintar.core.rate_limit import RateLimitInterruptedError
 from vintar.core.request import InjectionPoint, RequestTemplate
@@ -66,17 +66,8 @@ def classify_probe_error(exc: httpx.RequestError) -> ProbeError:
 
 
 def query_value_at_point(template: RequestTemplate, point: InjectionPoint) -> str:
-    occurrence = 0
-    for name, value in template.params:
-        if name != point.name:
-            continue
-        if occurrence == point.occurrence:
-            return value
-        occurrence += 1
-    raise ValueError(
-        "The Boolean injection target disappeared after preflight. Check the "
-        "request template and injection occurrence instead of executing probes."
-    )
+    """Return the selected value for legacy callers and generalized injection."""
+    return value_at_injection_point(template, point)
 
 
 def _emit_in_request_order(

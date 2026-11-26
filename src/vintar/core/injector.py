@@ -1,12 +1,39 @@
 from dataclasses import replace
 
-from vintar.core.json_body import replace_json_leaf
+from vintar.core.json_body import json_leaf_at, replace_json_leaf
 from vintar.core.request import (
     InjectionLocation,
     InjectionMode,
     InjectionPoint,
     RequestTemplate,
 )
+
+
+def value_at_injection_point(template: RequestTemplate, point: InjectionPoint) -> str:
+    """Return the reviewed string selected by either supported injection kind."""
+    if point.location is InjectionLocation.JSON_BODY:
+        if template.json_body is None or point.pointer is None:
+            raise ValueError(
+                "JSON body injection target is unavailable. Supply the reviewed body and pointer."
+            )
+        value = json_leaf_at(template.json_body, point.pointer)
+        if type(value) is not str:
+            raise ValueError(
+                "JSON body injection target is not a string. Select a reviewed string leaf."
+            )
+        return value
+
+    occurrence = 0
+    for name, value in template.params:
+        if name != point.name:
+            continue
+        if occurrence == point.occurrence:
+            return value
+        occurrence += 1
+    raise ValueError(
+        "The Boolean injection target disappeared after preflight. Check the "
+        "request template and injection occurrence instead of executing probes."
+    )
 
 
 def inject(

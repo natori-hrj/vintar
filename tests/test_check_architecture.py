@@ -62,17 +62,32 @@ def check(client: httpx.Client, other: httpx.AsyncClient):
 
 @pytest.mark.parametrize(
     "path",
-    ["checks/sqli/example.py", "cli.py", "regression/runner.py", "core/executor.py"],
+    [
+        "checks/sqli/example.py",
+        "cli.py",
+        "regression/batch.py",
+        "regression/binding.py",
+        "regression/report.py",
+        "core/executor.py",
+    ],
 )
-def test_json_body_injection_is_not_available_to_execution_paths(path):
+def test_json_body_injection_is_rejected_outside_narrow_allowlist(path):
     source = """
 from vintar.core.request import InjectionLocation
 
 location = InjectionLocation.JSON_BODY
 """
     [diagnostic] = check_source(Path(path), source)
-    assert "request primitive only in PR 1" in diagnostic
-    assert "Do not construct a JSON_BODY injection point" in diagnostic
+    assert "trusted POST execution adapter" in diagnostic
+
+
+def test_json_body_injection_is_available_to_trusted_runner_adapter():
+    source = """
+from vintar.core.request import InjectionLocation
+
+location = InjectionLocation.JSON_BODY
+"""
+    assert not check_source(Path("regression/runner.py"), source)
 
 
 @pytest.mark.parametrize(

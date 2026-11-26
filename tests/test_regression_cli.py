@@ -113,6 +113,36 @@ ENV = {
 }
 
 
+def post_json_policy_json(
+    *, origin: str = ENV["VINTAR_TARGET_ORIGIN"], max_requests: int = 6
+) -> str:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "policy_type": "post_json_execution",
+            "approvals": [
+                {
+                    "case_id": "post-json-boolean",
+                    "method": "POST",
+                    "path": "/items",
+                    "origin": origin,
+                    "operation_definition_sha256": "0" * 64,
+                    "baseline_body_sha256": "5e5c0546e15bd689be19e8e151d0517b1ae9f6c96edfda7fbf930a72ae99056d",
+                    "allowed_environment_classes": ["isolated_test"],
+                    "allowed_side_effect": "no_side_effect",
+                }
+            ],
+            "limits": {
+                "max_requests": max_requests,
+                "max_requests_per_second": 10.0,
+                "max_timeout_seconds": 10.0,
+                "max_response_size": 1_048_576,
+                "max_time_execution_seconds": 45.0,
+            },
+        }
+    )
+
+
 def write_case(
     directory: Path,
     case_id: str = "case-one",
@@ -255,6 +285,76 @@ def test_verify_enum_json_and_exit_code_are_contract(
     assert outcome["expected_verdict"] == expected
     assert outcome["actual_verdict"] == verdict
     assert outcome["verification"]["verdict"] == verdict
+
+
+def test_post_json_cli_requires_and_applies_independent_runtime_policy(
+    tmp_path, mock_http
+):
+    case = tmp_path / "post-json.toml"
+    case.write_bytes(Path("tests/golden/cases/post-json-boolean-v2.toml").read_bytes())
+    received, _ = mock_http
+    env = {
+        "VINTAR_TARGET_ORIGIN": ENV["VINTAR_TARGET_ORIGIN"],
+        "VINTAR_RUNTIME_POLICY_JSON": post_json_policy_json(),
+    }
+
+    result = cli.invoke(app, args_for(case), env=env)
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    report = json.loads(result.stdout)
+    assert report["schema_version"] == 1
+    assert report["requests_used"] == 6
+    assert len(received) == 6
+    assert all(request.method == "POST" for request in received)
+    assert all(request.url.path == "/items" for request in received)
+    assert all(
+        request.headers["content-type"] == "application/json" for request in received
+    )
+
+
+def test_post_json_cli_policy_error_is_actionable_and_does_not_echo_canary(
+    tmp_path, mock_http
+):
+    case = tmp_path / "post-json.toml"
+    case.write_bytes(Path("tests/golden/cases/post-json-boolean-v2.toml").read_bytes())
+    received, _ = mock_http
+    canary = "runtime-policy-json-secret-canary"
+
+    result = cli.invoke(
+        app,
+        args_for(case),
+        env={
+            "VINTAR_TARGET_ORIGIN": ENV["VINTAR_TARGET_ORIGIN"],
+            "VINTAR_RUNTIME_POLICY_JSON": "invalid-" + canary,
+        },
+    )
+
+    assert result.exit_code == 2
+    assert "post_json_policy_schema_invalid" in result.stderr
+    assert "Supply strict JSON" in result.stderr
+    assert canary not in result.stderr
+    assert canary not in result.stdout
+    assert received == []
+
+
+def test_post_json_cli_cannot_widen_smaller_policy_budget(tmp_path, mock_http):
+    case = tmp_path / "post-json.toml"
+    case.write_bytes(Path("tests/golden/cases/post-json-boolean-v2.toml").read_bytes())
+    received, _ = mock_http
+
+    result = cli.invoke(
+        app,
+        args_for(case, max_requests=48),
+        env={
+            "VINTAR_TARGET_ORIGIN": ENV["VINTAR_TARGET_ORIGIN"],
+            "VINTAR_RUNTIME_POLICY_JSON": post_json_policy_json(max_requests=5),
+        },
+    )
+
+    assert result.exit_code == 2
+    assert "trusted batch request budget" in result.stderr
+    assert received == []
 
 
 def test_time_case_cli_emits_time_report_and_existing_exit_contract(
