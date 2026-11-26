@@ -3,7 +3,7 @@
 ## Supported Versions
 
 Before 1.0, only the latest minor release series receives security fixes.
-Vintar 0.4.x receives security fixes. Vintar 0.3.x and earlier series are no longer supported.
+Only Vintar 0.6.x receives security fixes.
 
 ## Reporting a Vulnerability
 
