@@ -59,6 +59,7 @@ class _ApprovedDispatch:
 
 
 _ALLOWED_REQUEST_EXTENSION_NAMES = frozenset({"timeout"})
+_HOST_HEADER_NAME = "host"
 
 
 def _request_origin(url: httpx.URL) -> AllowedOrigin | None:
@@ -76,14 +77,37 @@ def _request_origin(url: httpx.URL) -> AllowedOrigin | None:
         return None
 
 
-def _is_approved_dispatch(
+def _approved_dispatch(
     request: httpx.Request, approved: frozenset[_ApprovedDispatch]
-) -> bool:
+) -> _ApprovedDispatch | None:
     origin = _request_origin(request.url)
-    return (
-        origin is not None
-        and _ApprovedDispatch(request.method, origin, request.url.raw_path) in approved
+    if origin is None:
+        return None
+    dispatch = _ApprovedDispatch(request.method, origin, request.url.raw_path)
+    return dispatch if dispatch in approved else None
+
+
+def _canonical_host(origin: AllowedOrigin) -> str:
+    host = f"[{origin.host}]" if ":" in origin.host else origin.host
+    default_port = 443 if origin.scheme == "https" else 80
+    return host if origin.port == default_port else f"{host}:{origin.port}"
+
+
+def _validate_host_header(request: httpx.Request, approved: _ApprovedDispatch) -> None:
+    values = tuple(
+        value
+        for name, value in request.headers.multi_items()
+        if name.casefold() == _HOST_HEADER_NAME
     )
+    if (
+        len(values) != 1
+        or values[0].casefold() != _canonical_host(approved.origin).casefold()
+    ):
+        raise _fail(
+            "authorization_host_header_invalid",
+            "the final request does not contain exactly one canonical Host header for its approved origin.",
+            "remove explicit Host headers and let the isolated authorization client generate the canonical value.",
+        )
 
 
 def _validate_request_extensions(request: httpx.Request) -> None:
@@ -108,12 +132,14 @@ class _FinalAuthorizationDispatchGuard(httpx.BaseTransport):
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         _validate_request_extensions(request)
-        if not _is_approved_dispatch(request, self._approved):
+        approved = _approved_dispatch(request, self._approved)
+        if approved is None:
             raise _fail(
                 "authorization_operation_unapproved",
                 "the final request is not an exact operation approved for this identity.",
                 "dispatch only the approved method, origin, and byte-preserved request target through its bound identity.",
             )
+        _validate_host_header(request, approved)
         return self._transport.handle_request(request)
 
     def close(self) -> None:
@@ -133,13 +159,16 @@ class _AuthorizationDispatchGuard(httpx.BaseTransport):
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         _validate_request_extensions(request)
-        if not _is_approved_dispatch(request, self._approved):
+        approved = _approved_dispatch(request, self._approved)
+        if approved is None:
             raise _fail(
                 "authorization_operation_unapproved",
                 "the final request is not an exact operation approved for this identity.",
                 "dispatch only the approved method, origin, and byte-preserved request target through its bound identity.",
             )
-        if self._reserved.intersection(name.casefold() for name in request.headers):
+        _validate_host_header(request, approved)
+        credential_headers = self._reserved - {_HOST_HEADER_NAME}
+        if credential_headers.intersection(name.casefold() for name in request.headers):
             raise _fail(
                 "auth_collision",
                 "the final request contains a provider-owned header.",
@@ -305,7 +334,7 @@ def _preflight(
         for name, identity in policy_identities.items()
         if identity.credential_source is not None
     )
-    reserved = frozenset().union(
+    reserved = frozenset({_HOST_HEADER_NAME}).union(
         *(reserved_header_names(binding.source) for binding in bindings)
     )
     schedule = _schedule(len(case.operations), policy)

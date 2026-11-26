@@ -196,7 +196,11 @@ def test_builds_isolated_clients_cookie_jars_transports_and_pools():
         assert len({id(identity.transport) for identity in active.identities}) == 3
         assert len({id(item) for item in transports.values()}) == 3
         assert environment.reads == ["AUTH_A", "AUTH_B"]
-        assert active.reserved_headers == {"authorization", "x-reader-b-key"}
+        assert active.reserved_headers == {
+            "authorization",
+            "host",
+            "x-reader-b-key",
+        }
         assert active.budget is active.budget
         assert active.rate_limiter is active.rate_limiter
     assert all(transport.close_count == 1 for transport in transports.values())
@@ -306,6 +310,51 @@ def test_normal_approved_request_reaches_the_identity_transport(identity_id, url
         response = active.client_for(identity_id).get(url)
     assert response.status_code == 200
     assert len(transports[identity_id].requests) == 1
+
+
+@pytest.mark.parametrize("identity_id", ["reader-a", "public-user"])
+@pytest.mark.parametrize(
+    "host_kind",
+    ["client_default", "request", "duplicate", "explicit_default_port"],
+)
+def test_dispatch_rejects_noncanonical_or_duplicate_host_before_authentication(
+    identity_id, host_kind
+):
+    composed, transports, _environment = execution()
+    approved_url = {
+        "reader-a": "https://api.example.test/a",
+        "public-user": "https://api.example.test/public",
+    }[identity_id]
+    observed: list[httpx.Request] = []
+    with composed as active:
+        client = active.client_for(identity_id)
+        client.event_hooks["request"].append(observed.append)
+        if host_kind == "client_default":
+            client.headers["Host"] = "other-host-canary"
+            headers = None
+        elif host_kind == "request":
+            headers = {"Host": "other-host-canary"}
+        elif host_kind == "duplicate":
+            headers = [
+                ("Host", "api.example.test"),
+                ("Host", "other-host-canary"),
+            ]
+        else:
+            headers = {"Host": "api.example.test:443"}
+        with pytest.raises(AuthorizationExecutionError) as caught:
+            client.get(approved_url, headers=headers)
+    assert str(caught.value) == (
+        "authorization_host_header_invalid: Why: the final request does not "
+        "contain exactly one canonical Host header for its approved origin. "
+        "Instead: remove explicit Host headers and let the isolated authorization "
+        "client generate the canonical value."
+    )
+    assert len(observed) == 1
+    assert "Authorization" not in observed[0].headers
+    assert "X-Reader-B-Key" not in observed[0].headers
+    assert "other-host-canary" not in str(caught.value)
+    assert "api.example.test" not in str(caught.value)
+    assert all(not transport.requests for transport in transports.values())
 
 
 @pytest.mark.parametrize("identity_id", ["reader-a", "reader-b", "public-user"])
