@@ -168,12 +168,14 @@ def test_post_json_review_can_reuse_json_body_primitives():
     )
 
 
-@pytest.mark.parametrize(
-    "path", ["regression/runner.py", "regression/batch.py", "cli.py"]
-)
-def test_public_execution_cannot_import_auth_application_until_5c(path):
+def test_runner_may_import_auth_application_for_authenticated_execution():
+    assert check_source(Path("regression/runner.py"), "import vintar.auth.apply") == []
+
+
+@pytest.mark.parametrize("path", ["regression/batch.py", "cli.py", "regression_cli.py"])
+def test_only_runner_may_import_auth_application(path):
     [diagnostic] = check_source(Path(path), "import vintar.auth.apply")
-    assert "unavailable from the public runner and CLI until PR 5c" in diagnostic
+    assert "only by regression/runner.py" in diagnostic
 
 
 def test_checks_cannot_import_authentication_material():
@@ -188,10 +190,14 @@ def test_only_auth_apply_can_mutate_request_headers():
     assert not check_source(Path("auth/apply.py"), source)
 
 
-def test_repository_public_execution_modules_do_not_import_auth_apply():
+def test_repository_only_runner_imports_auth_apply():
     for path in (
-        Path("src/vintar/regression/runner.py"),
         Path("src/vintar/regression/batch.py"),
         Path("src/vintar/cli.py"),
+        Path("src/vintar/regression_cli.py"),
+        Path("src/vintar/regression/report.py"),
     ):
         assert "vintar.auth.apply" not in path.read_text(encoding="utf-8")
+    assert "vintar.auth.apply" in Path("src/vintar/regression/runner.py").read_text(
+        encoding="utf-8"
+    )

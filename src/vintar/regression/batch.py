@@ -1,5 +1,8 @@
 """Sequential regression batches with aggregate safety limits."""
 
+import os
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import httpx
@@ -18,6 +21,7 @@ from vintar.regression.runner import (
     RegressionStatus,
     TrustedExecutionPolicy,
     _effective_scope,
+    _resolve_authentication,
     _run_with_resources,
 )
 
@@ -127,6 +131,8 @@ def run_regression_batch(
     policy: TrustedExecutionPolicy,
     transport: httpx.BaseTransport | None = None,
     observation_sink: SqliObservationSink | None = None,
+    environ: Mapping[str, str] | None = None,
+    execution_clock: Callable[[], float] = time.monotonic,
 ) -> RegressionBatchResult:
     """Run a bounded batch with one shared budget and rate limiter.
 
@@ -184,22 +190,36 @@ def run_regression_batch(
         )
     )
 
+    authentication = _resolve_authentication(
+        selected,
+        policy,
+        transport=transport,
+        environ=os.environ if environ is None else environ,
+    )
+
     outcomes: list[AnyRegressionOutcome] = []
+    try:
+        for case, scope in zip(selected, scopes, strict=True):
+            outcome = _run_with_resources(
+                case,
+                policy=policy,
+                scope=scope,
+                budget=budget,
+                rate_limiter=rate_limiter,
+                transport=transport,
+                observation_sink=observation_sink,
+                authenticated_transport=(
+                    authentication.transport if authentication is not None else None
+                ),
+                execution_clock=execution_clock,
+            )
+            outcomes.append(outcome)
 
-    for case, scope in zip(selected, scopes, strict=True):
-        outcome = _run_with_resources(
-            case,
-            policy=policy,
-            scope=scope,
-            budget=budget,
-            rate_limiter=rate_limiter,
-            transport=transport,
-            observation_sink=observation_sink,
-        )
-        outcomes.append(outcome)
-
-        if _must_stop_batch(outcome):
-            break
+            if _must_stop_batch(outcome):
+                break
+    finally:
+        if authentication is not None:
+            authentication.close()
 
     completed = tuple(outcomes)
 

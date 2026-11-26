@@ -117,18 +117,43 @@ timeout_seconds = 5.0
 
 Run verification only against systems you own or have explicit permission to test. `--authorized` is your attestation. Set both `VINTAR_TARGET_ORIGIN` and `VINTAR_ALLOWED_ORIGIN` to the authorized service's exact origin in the trusted CI environment for Schema v1 cases. Vintar replaces the case's placeholder origin with the runtime target and preserves the case path. Keep credentials and secrets out of origins and case files.
 
-Reviewed Schema v2 POST JSON cases additionally require a strict trusted runtime
+Reviewed identity-bearing Schema v2 GET query and POST JSON cases additionally require a strict trusted runtime
 policy supplied through `VINTAR_RUNTIME_POLICY_JSON` or
 `VINTAR_RUNTIME_POLICY_FILE`. Inline JSON takes complete precedence and an
 invalid selected source never falls back to the file. The policy must approve
-the exact case, POST path, origin, operation and baseline digests, environment
-class, and `no_side_effect` classification. Case files and specifications grant
+the exact case, identity, method, path, origin, and environment class. POST
+approvals also bind operation and baseline digests plus the `no_side_effect`
+classification. Case files and specifications grant
 no execution permission. In CI, inject inline policy from protected runner
 configuration or point at a protected file outside the PR-controlled checkout.
 A policy committed to the repository grants nothing by itself; it is used only
 when an operator independently selects it. Policy files must be regular,
-non-symlink, bounded UTF-8 strict JSON files. Authentication, credentials,
-cookies, and authorization headers are not supported for Schema v2 execution.
+non-symlink, bounded UTF-8 strict JSON files.
+
+The policy selects an externally supplied Bearer, dedicated API-key header, or
+Basic credential by environment-variable name. Cases and reports never contain
+that name or value. For example, protected CI configuration can contain this
+synthetic identity entry:
+
+```json
+{"identity_id":"example-reader","credential_kind":"bearer","env_var":"VINTAR_EXAMPLE_CREDENTIAL","header_name":"Authorization"}
+```
+
+```bash
+VINTAR_EXAMPLE_CREDENTIAL=example-token-value \
+VINTAR_TARGET_ORIGIN=https://staging.example.com \
+VINTAR_RUNTIME_POLICY_FILE=/run/vintar/runtime-policy.json \
+uv run --locked vintar verify --cases security/cases/v2 --authorized
+```
+
+Use a short-lived, least-privilege test credential in an isolated environment.
+Keep policy and credentials in protected CI configuration outside an untrusted
+checkout, and never expose them to fork or untrusted PR jobs. Vintar does not
+perform login, token fetch, refresh, retry, or POST replay. Cookie auth, query
+API keys, and path-template binding are unsupported. Redirects are not followed.
+Exact-origin checks do not replace DNS/IP and network egress controls. HTTP 401,
+403, or 407 during probes is inconclusive and stops the batch; the same response
+to the initial baseline is an error with no report.
 
 ### Run `vintar verify`
 

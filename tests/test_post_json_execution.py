@@ -1,5 +1,6 @@
 """Schema v2 identity-bound cases fail closed until auth integration."""
 
+import base64
 import hashlib
 import json
 from dataclasses import replace
@@ -17,6 +18,7 @@ from vintar.regression import (
     run_regression_batch,
     run_regression_case,
 )
+from vintar.regression import runner as runner_module
 from vintar.regression.batch import RegressionBatchResult
 from vintar.regression.cases_v2 import PostJsonRegressionCase
 from vintar.regression.post_json_policy import parse_post_json_runtime_policy
@@ -117,7 +119,7 @@ def run_pre_auth_layer(case, *, policy, transport):
         "post-json-error-v2.toml",
     ],
 )
-def test_identity_bound_post_cases_fail_closed_before_transport(name):
+def test_identity_bound_post_cases_require_runtime_policy_before_transport(name):
     case = load_regression_case(Path("tests/golden/cases") / name)
     assert isinstance(case, PostJsonRegressionCase)
     calls: list[str] = []
@@ -127,24 +129,22 @@ def test_identity_bound_post_cases_fail_closed_before_transport(name):
         return httpx.Response(200)
 
     policy = TrustedExecutionPolicy(scope=case.scope, max_requests=48)
-    with pytest.raises(
-        ValueError, match="authenticated_execution_unavailable"
-    ) as caught:
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required") as caught:
         run_regression_case(
             case,
             policy=policy,
             transport=httpx.MockTransport(handler),
         )
-    assert "Wait for the authenticated runner integration" in str(caught.value)
+    assert "Supply a trusted runtime policy" in str(caught.value)
     assert case.identity_id not in str(caught.value)
     assert calls == []
 
 
-def test_batch_fails_closed_before_first_transport():
+def test_batch_requires_runtime_policy_before_first_transport():
     case = load_regression_case(Path("tests/golden/cases/post-json-boolean-v2.toml"))
     assert isinstance(case, PostJsonRegressionCase)
     calls: list[str] = []
-    with pytest.raises(ValueError, match="authenticated_execution_unavailable"):
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
         run_regression_batch(
             [case],
             policy=TrustedExecutionPolicy(scope=case.scope, max_requests=48),
@@ -306,3 +306,156 @@ def test_pre_auth_outcome_still_serializes_as_report_v1_without_policy_data():
     assert case.identity_id not in report
     assert "VINTAR_TEST_TOKEN" not in report
     assert case.url not in report
+
+
+@pytest.mark.parametrize(
+    ("kind", "header_name", "raw", "expected"),
+    [
+        (
+            "bearer",
+            "Authorization",
+            "example-token-value",
+            "Bearer example-token-value",
+        ),
+        ("api_key_header", "X-Example-Key", "example-key-value", "example-key-value"),
+        (
+            "basic",
+            "Authorization",
+            "example-user:example-password",
+            "Basic "
+            + base64.b64encode(b"example-user:example-password").decode("ascii"),
+        ),
+    ],
+)
+def test_authenticated_post_executes_all_header_credential_kinds(
+    kind, header_name, raw, expected
+):
+    case = load_case()
+    source = {
+        "identity_id": case.identity_id,
+        "credential_kind": kind,
+        "env_var": "VINTAR_TEST_CREDENTIAL",
+        "header_name": header_name,
+    }
+    approval = {
+        "case_id": case.case_id,
+        "identity_id": case.identity_id,
+        "credential_kind": kind,
+        "credential_env_var": "VINTAR_TEST_CREDENTIAL",
+        "method": "POST",
+        "path": case.approval.path,
+        "origin": case.url.split(case.approval.path, 1)[0],
+        "operation_definition_sha256": case.approval.operation_definition_sha256,
+        "baseline_body_sha256": case.approval.baseline_body_sha256,
+        "allowed_environment_classes": [case.approval.environment_class],
+        "allowed_side_effect": "no_side_effect",
+    }
+    document = {
+        "schema_version": 1,
+        "policy_type": "post_json_execution",
+        "identities": [source],
+        "approvals": [approval],
+        "limits": {
+            "max_requests": 48,
+            "max_requests_per_second": 10.0,
+            "max_timeout_seconds": 10.0,
+            "max_response_size": 1_048_576,
+            "max_time_execution_seconds": 120.0,
+        },
+    }
+    post_policy = parse_post_json_runtime_policy(json.dumps(document).encode())
+    policy = TrustedExecutionPolicy(
+        scope=case.scope, max_requests=48, post_json_policy=post_policy
+    )
+    requests: list[httpx.Request] = []
+    outcome = run_regression_case(
+        case,
+        policy=policy,
+        environ={"VINTAR_TEST_CREDENTIAL": raw},
+        transport=httpx.MockTransport(
+            lambda request: (
+                requests.append(request) or httpx.Response(200, content=b"constant")
+            )
+        ),
+    )
+    assert outcome.status is RegressionStatus.PASS
+    assert len(requests) == 6
+    assert all(request.headers[header_name] == expected for request in requests)
+
+
+@pytest.mark.parametrize("status", [401, 403, 407])
+def test_authenticated_probe_rejection_is_inconclusive_and_stops(status):
+    case = load_case()
+    seen = 0
+
+    def handler(_request):
+        nonlocal seen
+        seen += 1
+        return httpx.Response(status if seen == 2 else 200, content=b"constant")
+
+    outcome = run_regression_case(
+        case,
+        policy=execution_policy(case),
+        environ={"VINTAR_TEST_TOKEN": "example-token-value"},
+        transport=httpx.MockTransport(handler),
+    )
+    assert outcome.status is RegressionStatus.INCONCLUSIVE
+    assert outcome.final_reason_code == "probe_failed"
+    assert outcome.request_count == 2
+    assert seen == 2
+
+
+@pytest.mark.parametrize("status", [401, 403, 407])
+def test_authenticated_baseline_rejection_is_error_without_outcome(status):
+    case = load_case()
+    with pytest.raises(ValueError, match="authentication_baseline_rejected"):
+        run_regression_case(
+            case,
+            policy=execution_policy(case),
+            environ={"VINTAR_TEST_TOKEN": "example-token-value"},
+            transport=httpx.MockTransport(lambda _request: httpx.Response(status)),
+        )
+
+
+def test_authenticated_batch_rejects_multiple_identities_before_resolution():
+    first = load_case()
+    second = replace(first, case_id="second-case", identity_id="second-user")
+    first_policy = runtime_policy(first)
+    second_policy = runtime_policy(second)
+    combined = replace(
+        first_policy,
+        identities=first_policy.identities + second_policy.identities,
+        approvals=first_policy.approvals + second_policy.approvals,
+    )
+    policy = TrustedExecutionPolicy(
+        scope=first.scope, max_requests=48, post_json_policy=combined
+    )
+    with pytest.raises(ValueError, match="multiple_identities_unsupported"):
+        run_regression_batch(
+            [first, second],
+            policy=policy,
+            environ={"VINTAR_TEST_TOKEN": "example-token-value"},
+        )
+
+
+def test_time_credential_resolution_is_outside_injected_measurement_clock(monkeypatch):
+    case = load_case("post-json-time-v2.toml")
+    clock_value = 0.0
+    original = runner_module.resolve_credentials
+
+    def resolve(plan, environ, *, now=None):
+        nonlocal clock_value
+        clock_value = 50.0
+        return original(plan, environ, now=now)
+
+    monkeypatch.setattr(runner_module, "resolve_credentials", resolve)
+    outcome = run_regression_case(
+        case,
+        policy=execution_policy(case),
+        environ={"VINTAR_TEST_TOKEN": "example-token-value"},
+        execution_clock=lambda: clock_value,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=b"constant")
+        ),
+    )
+    assert outcome.time_run.total_elapsed_seconds == 0.0

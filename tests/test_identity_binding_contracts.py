@@ -93,12 +93,12 @@ def parse_policy(value):
     return parse_post_json_runtime_policy(json.dumps(value).encode())
 
 
-def test_get_case_v2_requires_explicit_identity_and_fails_closed_before_transport():
+def test_get_case_v2_requires_explicit_identity_and_runtime_policy():
     case = parse_regression_case(GET_CASE)
     assert isinstance(case, QueryRegressionCaseV2)
     assert case.identity_id == "billing-reader"
     calls: list[str] = []
-    with pytest.raises(ValueError, match="authenticated_execution_unavailable"):
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
         run_regression_case(
             case,
             policy=TrustedExecutionPolicy(scope=case.scope),
@@ -337,10 +337,10 @@ def test_get_v2_semantic_mismatches_are_rejected(source):
         parse_regression_case(source)
 
 
-def test_internal_runner_also_rejects_get_v2_before_resources():
+def test_internal_runner_also_requires_get_v2_policy_before_resources():
     case = parse_regression_case(GET_CASE)
     assert isinstance(case, QueryRegressionCaseV2)
-    with pytest.raises(ValueError, match="authenticated_execution_unavailable"):
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
         _run_with_resources(
             case,
             policy=TrustedExecutionPolicy(scope=case.scope),

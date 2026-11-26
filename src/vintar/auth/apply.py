@@ -105,6 +105,54 @@ class AuthenticationRun:
     _credentials: tuple[_ResolvedCredential, ...]
 
 
+AUTH_FAILURE_STATUS_CODES = frozenset({401, 403, 407})
+
+
+class AuthenticatedTransport(httpx.BaseTransport):
+    """Apply one resolved identity immediately before bounded dispatch."""
+
+    def __init__(
+        self,
+        transport: httpx.BaseTransport,
+        run: AuthenticationRun,
+        *,
+        identity_id: str,
+        close_underlying: bool = False,
+    ) -> None:
+        if not isinstance(transport, httpx.BaseTransport):
+            raise TypeError("Invalid authentication transport.")
+        if type(run) is not AuthenticationRun or type(identity_id) is not str:
+            raise TypeError("Invalid authenticated dispatch input.")
+        self._transport = transport
+        self._run = run
+        self._identity_id = identity_id
+        self._close_underlying = close_underlying
+        self.auth_failure_status: int | None = None
+        self.auth_failure_attempt: int | None = None
+        self._attempts = 0
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        apply_authentication(request, self._run, identity_id=self._identity_id)
+        self._attempts += 1
+        response = self._transport.handle_request(request)
+        if response.status_code in AUTH_FAILURE_STATUS_CODES:
+            self.auth_failure_status = response.status_code
+            self.auth_failure_attempt = self._attempts
+            response.close()
+            raise httpx.RequestError(
+                "The authenticated request was rejected.", request=request
+            )
+        return response
+
+    def close(self) -> None:
+        if self._close_underlying:
+            self._transport.close()
+
+    @property
+    def attempts(self) -> int:
+        return self._attempts
+
+
 def _origin(url: httpx.URL) -> AllowedOrigin:
     if (
         url.scheme not in {"http", "https"}
@@ -382,3 +430,9 @@ def apply_authentication(
     )
     if after != before or request.stream is not before_stream:
         raise RuntimeError("Authentication application changed a non-header field.")
+    if _origin(request.url) not in credential.binding.allowed_origins:
+        raise _fail(
+            "auth_origin_mismatch",
+            "the authenticated request origin changed before dispatch.",
+            "dispatch only to the exact origin approved for this identity.",
+        )

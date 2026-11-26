@@ -103,12 +103,19 @@ source_modules = ["vintar.checks"]
 forbidden_modules = ["vintar.auth"]
 
 [[tool.importlinter.contracts]]
-name = "Authenticated application stays unreachable from regression and CLI until PR 5c."
+name = "Only the regression runner may compose authenticated application."
 type = "forbidden"
 source_modules = [
-    "vintar.regression", "vintar.cli", "vintar.sqli_cli", "vintar.regression_cli",
+    "vintar.regression.batch", "vintar.regression.report",
+    "vintar.regression.discovery", "vintar.regression.discovery_drafts",
+    "vintar.regression.discovery_review", "vintar.regression.case_materialization",
+    "vintar.regression.post_json_inventory", "vintar.regression.post_json_review",
+    "vintar.regression.post_json_case_materialization", "vintar.regression.cases",
+    "vintar.regression.cases_v2", "vintar.cli", "vintar.sqli_cli",
+    "vintar.regression_cli",
 ]
 forbidden_modules = ["vintar.auth.apply"]
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 name = "Direct core.http access bypasses scope, request budgets, and rate limits. Use vintar.core.executor.ExecutionContext."
