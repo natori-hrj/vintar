@@ -10,6 +10,7 @@ from rich.console import Console
 from vintar.core.http import send_request
 from vintar.discover_cli import discover_command
 from vintar.materialize_case_cli import materialize_case_command
+from vintar.materialize_post_json_case_cli import materialize_post_json_case_command
 from vintar.post_json_inventory_cli import inventory_post_json_command
 from vintar.post_json_review_cli import review_post_json_command
 from vintar.regression_cli import verify_command
@@ -28,6 +29,7 @@ app.command("verify")(verify_command)
 app.command("discover")(discover_command)
 app.command("review-draft")(review_draft_command)
 app.command("materialize-case")(materialize_case_command)
+app.command("materialize-post-json-case")(materialize_post_json_case_command)
 app.command("inventory-post-json")(inventory_post_json_command)
 app.command("review-post-json")(review_post_json_command)
 

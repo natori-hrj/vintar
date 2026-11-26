@@ -15,6 +15,7 @@ from vintar.checks.sqli.presets import (
     get_boolean_confirmation_preset,
     get_boolean_probe_preset,
 )
+from vintar.core.strict_json import canonical_strict_json_bytes
 from vintar.regression.cases import (
     ErrorCaseValidationError,
     ErrorRegressionCase,
@@ -568,7 +569,9 @@ def materialize_case(
         raise CaseMaterializationError(
             "Invalid review schema version. Supply the current version 1 JSON output from review-draft."
         )
-    if supplied_review != material.report:
+    if canonical_strict_json_bytes(supplied_review) != canonical_strict_json_bytes(
+        material.report
+    ):
         raise CaseMaterializationError(
             "The review report no longer matches the current spec, draft, or answers. Rerun review-draft and supply its current --review output."
         )

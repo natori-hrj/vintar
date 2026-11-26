@@ -24,6 +24,11 @@ from vintar.core.request import (
 )
 from vintar.core.scope import AllowedOrigin, ScopePolicy, validate_scope
 from vintar.core.template import validate_template
+from vintar.regression.cases_v2 import (
+    CaseV2ValidationError,
+    PostJsonRegressionCase,
+    parse_case_v2_mapping,
+)
 
 CASE_VERSION = 1
 MAX_CASE_BYTES = 65_536
@@ -301,7 +306,9 @@ class ErrorRegressionCase:
 
 
 BooleanRegressionCase = RegressionCase
-AnyRegressionCase = RegressionCase | TimeRegressionCase | ErrorRegressionCase
+AnyRegressionCase = (
+    RegressionCase | TimeRegressionCase | ErrorRegressionCase | PostJsonRegressionCase
+)
 
 
 def _table(value: object, keys: set[str]) -> dict[str, object]:
@@ -471,7 +478,7 @@ class ReviewDraftError(ValueError):
 
 
 def parse_regression_case(source: str) -> AnyRegressionCase:
-    """Validate a version-1 TOML case without executing HTTP requests."""
+    """Validate one versioned TOML case without executing HTTP requests."""
     try:
         if type(source) is not str:
             raise ValueError("Invalid regression case source.")
@@ -498,6 +505,9 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
                 "target and authorization, credential requirements, check configuration and probe inputs, "
                 "expected verdict, and trusted limits. Use a reviewed Schema v1 case."
             )
+
+        if isinstance(data, dict) and data.get("version") == 2:
+            return parse_case_v2_mapping(data)
 
         root = _table(
             data,
@@ -817,7 +827,12 @@ def parse_regression_case(source: str) -> AnyRegressionCase:
             timeout_seconds=timeout,
         )
 
-    except (ReviewDraftError, TimeCaseValidationError, ErrorCaseValidationError):
+    except (
+        ReviewDraftError,
+        TimeCaseValidationError,
+        ErrorCaseValidationError,
+        CaseV2ValidationError,
+    ):
         raise
     except (
         TypeError,

@@ -36,6 +36,7 @@ from vintar.regression.cases import (
     ErrorRegressionCase,
     TimeRegressionCase,
 )
+from vintar.regression.cases_v2 import PostJsonRegressionCase
 from vintar.regression.errors import BatchRequestBudgetError
 
 _CASE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
@@ -301,6 +302,10 @@ def _effective_scope(
     policy: TrustedExecutionPolicy,
 ) -> ScopePolicy:
     """Preflight the complete probe plan without sending HTTP."""
+    if isinstance(case, PostJsonRegressionCase):
+        raise TypeError(
+            "Schema v2 POST JSON cases are not executable yet. Re-materialize only after trusted POST execution and explicit identity binding are available."
+        )
     if not isinstance(case, AnyRegressionCase):
         raise TypeError("case must be a RegressionCase.")
     if not isinstance(policy, TrustedExecutionPolicy):
@@ -379,6 +384,10 @@ def _run_with_resources(
     observation_sink: SqliObservationSink | None = None,
 ) -> AnyRegressionOutcome:
     """Internal execution path for single-case and batch runners."""
+    if isinstance(case, PostJsonRegressionCase):
+        raise TypeError(
+            "Schema v2 POST JSON cases are not executable yet. Re-materialize only after trusted POST execution and explicit identity binding are available."
+        )
     effective_scope = scope if scope is not None else _effective_scope(case, policy)
 
     if isinstance(case, TimeRegressionCase) and budget.remaining < TIME_REQUESTS:
@@ -518,6 +527,10 @@ def run_regression_case(
     For aggregate limits across multiple cases, use
     run_regression_batch instead.
     """
+    if isinstance(case, PostJsonRegressionCase):
+        raise TypeError(
+            "Schema v2 POST JSON cases are not executable yet. Re-materialize only after trusted POST execution and explicit identity binding are available."
+        )
     if transport is not None and not isinstance(transport, httpx.BaseTransport):
         raise TypeError("Invalid test transport.")
 

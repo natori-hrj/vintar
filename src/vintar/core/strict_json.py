@@ -113,3 +113,19 @@ def parse_strict_json(data: bytes) -> object:
         ) from exc
     _check_nesting(value)
     return value
+
+
+def canonical_strict_json_bytes(value: object) -> bytes:
+    """Serialize a parsed JSON value with type-sensitive deterministic bytes."""
+    try:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    except (TypeError, ValueError, RecursionError, UnicodeError) as exc:
+        raise StrictJsonError(
+            "JSON value cannot be serialized canonically. Use one bounded strict JSON value."
+        ) from exc
