@@ -48,7 +48,7 @@ def test_materializer_rejects_missing_no_follow_before_open(monkeypatch):
         opened.append("opened")
         raise AssertionError("open must not be reached")
 
-    monkeypatch.delattr(file_io.os, "O_NOFOLLOW")
+    monkeypatch.delattr(file_io.os, "O_NOFOLLOW", raising=False)
     monkeypatch.setattr(file_io, "_open", forbidden_open)
     path = Path("/fixed/materializer-path-canary")
 

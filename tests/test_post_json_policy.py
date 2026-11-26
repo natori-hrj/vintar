@@ -245,7 +245,7 @@ def test_missing_no_follow_rejects_reader_and_policy_before_open(monkeypatch):
         opened.append("opened")
         raise AssertionError("open must not be reached")
 
-    monkeypatch.delattr(file_io.os, "O_NOFOLLOW")
+    monkeypatch.delattr(file_io.os, "O_NOFOLLOW", raising=False)
     monkeypatch.setattr(file_io, "_open", forbidden_open)
     path = "/fixed/policy-path-canary.json"
 
