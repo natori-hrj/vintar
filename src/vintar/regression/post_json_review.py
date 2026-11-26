@@ -18,7 +18,11 @@ from vintar.core.json_body import (
     json_object_at,
     replace_json_leaf,
 )
-from vintar.core.strict_json import DuplicateJsonKeyError, parse_strict_json
+from vintar.core.strict_json import (
+    DuplicateJsonKeyError,
+    canonical_strict_json_bytes,
+    parse_strict_json,
+)
 from vintar.regression.discovery import (
     JSON,
     DiscoveryError,
@@ -257,6 +261,7 @@ def resolve_post_json_review(
         ) from exc
     if (
         not isinstance(inventory_value, dict)
+        or type(inventory_value.get("schema_version")) is not int
         or inventory_value.get("schema_version") != 2
         or inventory_value.get("report_type") != "openapi_post_json_inventory"
         or not isinstance(answer, dict)
@@ -334,8 +339,8 @@ def resolve_post_json_review(
         for field in fields
         if isinstance(field, dict)
         and field.get("json_pointer") == candidate.json_pointer_pattern
-        and field.get("literal_star_positions", [])
-        == list(candidate.literal_star_positions)
+        and canonical_strict_json_bytes(field.get("literal_star_positions", []))
+        == canonical_strict_json_bytes(list(candidate.literal_star_positions))
         and field.get("schema_pointer") == candidate.schema_pointer
     ]
     supplied_field = matching_fields[0] if len(matching_fields) == 1 else None
@@ -351,14 +356,19 @@ def resolve_post_json_review(
         "side_effect",
         "environment",
     }
-    if answer.keys() != expected_keys or answer.get("version") != 1:
+    if (
+        answer.keys() != expected_keys
+        or type(answer.get("version")) is not int
+        or answer.get("version") != 1
+    ):
         raise PostJsonReviewError(
             "Review answers are invalid. Use version 1 and only the documented review decisions."
         )
     if answer["operation_definition_sha256"] != candidate.operation_definition_sha256:
         raise PostJsonReviewError(OPERATION_DEFINITION_CHANGED_MESSAGE)
     if (
-        supplied != _as_json(candidate)
+        canonical_strict_json_bytes(supplied)
+        != canonical_strict_json_bytes(_as_json(candidate))
         or supplied_field is None
         or supplied_field.get("schema_definition_pointer")
         != candidate.schema_definition_pointer

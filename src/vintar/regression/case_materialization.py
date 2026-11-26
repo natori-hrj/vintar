@@ -15,6 +15,7 @@ from vintar.checks.sqli.presets import (
     get_boolean_confirmation_preset,
     get_boolean_probe_preset,
 )
+from vintar.core.strict_json import canonical_strict_json_bytes
 from vintar.regression.cases import (
     ErrorCaseValidationError,
     ErrorRegressionCase,
@@ -563,14 +564,16 @@ def materialize_case(
     """Revalidate reviewed inputs and render deterministic Schema v1 TOML."""
     material = resolve_review(spec, draft, answers)
     supplied_review = _load_review(review)
+    if canonical_strict_json_bytes(supplied_review) != canonical_strict_json_bytes(
+        material.report
+    ):
+        raise CaseMaterializationError(
+            "The review report no longer matches the current spec, draft, or answers. Rerun review-draft and supply its current --review output."
+        )
     schema_version = supplied_review.get("schema_version")
     if type(schema_version) is not int or schema_version != 1:
         raise CaseMaterializationError(
             "Invalid review schema version. Supply the current version 1 JSON output from review-draft."
-        )
-    if supplied_review != material.report:
-        raise CaseMaterializationError(
-            "The review report no longer matches the current spec, draft, or answers. Rerun review-draft and supply its current --review output."
         )
     loaded_config = _load_config(config)
     check_type = _materialization_type(loaded_config)

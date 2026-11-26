@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import runpy
 import socket
 import subprocess
 import sys
@@ -18,7 +19,11 @@ from typer.testing import CliRunner
 
 from vintar.cli import app
 from vintar.regression import batch, runner
-from vintar.regression.cases import load_regression_case, parse_regression_case
+from vintar.regression.cases import (
+    MAX_CASE_BYTES,
+    load_regression_case,
+    parse_regression_case,
+)
 from vintar.regression.cases_v2 import PostJsonRegressionCase
 from vintar.regression.post_json_case_materialization import (
     MaterializedPostJsonCase,
@@ -27,6 +32,7 @@ from vintar.regression.post_json_case_materialization import (
     write_materialized_post_json_case,
 )
 from vintar.regression.post_json_review import (
+    PostJsonReviewMaterial,
     resolve_post_json_review,
     serialize_post_json_review,
 )
@@ -137,11 +143,42 @@ def test_approval_metadata_comes_from_re_resolved_review_not_config(tmp_path):
         materialize_post_json_case(spec, inventory, answers, review, config)
 
 
-def test_edited_review_is_rejected_without_disclosing_body(tmp_path):
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda report: report.update(schema_version=True),
+        lambda report: report.update(schema_version=1.0),
+        lambda report: report["operation"].update(approved=1),
+    ],
+)
+def test_equal_but_different_json_types_in_review_are_rejected_without_body(
+    tmp_path, mutation
+):
     spec, inventory, answers, review, config, _ = _materialization_inputs(tmp_path)
     value = json.loads(review.read_text(encoding="utf-8"))
-    value["operation"]["operation_definition_sha256"] = "0" * 64
+    mutation(value)
     review.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        PostJsonCaseMaterializationError, match="post_json_review_mismatch"
+    ) as caught:
+        materialize_post_json_case(spec, inventory, answers, review, config)
+
+    assert SENTINEL not in str(caught.value)
+
+
+def test_false_to_zero_nested_review_edit_is_type_sensitive(tmp_path, monkeypatch):
+    spec, inventory, answers, review, config, _ = _materialization_inputs(tmp_path)
+    material = resolve_post_json_review(spec, inventory, answers)
+    resolved_report = {**material.report, "type_probe": {"confirmed": False}}
+    supplied_report = {**material.report, "type_probe": {"confirmed": 0}}
+    review.write_text(json.dumps(supplied_report), encoding="utf-8")
+    monkeypatch.setattr(
+        "vintar.regression.post_json_case_materialization.resolve_post_json_review",
+        lambda *_args: PostJsonReviewMaterial(
+            resolved_report, material.body, material.pointer
+        ),
+    )
 
     with pytest.raises(
         PostJsonCaseMaterializationError, match="post_json_review_mismatch"
@@ -498,3 +535,35 @@ def test_cli_public_failures_are_bounded(
     assert result.exit_code == code
     assert diagnostic in result.stderr
     assert SENTINEL not in result.stderr
+
+
+def test_case_v2_validator_reads_at_most_limit_plus_one():
+    validator = runpy.run_path("scripts/validate_regression_case_v2.py")
+
+    class BoundedStream:
+        def read(self, size: int) -> bytes:
+            assert size == MAX_CASE_BYTES + 1
+            return b""
+
+    assert validator["_read_bounded"](BoundedStream()) == b""
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_case_v2_validator_exact_limit_and_one_byte_over(tmp_path, extra):
+    source = Path("tests/golden/cases/post-json-boolean-v2.toml").read_bytes()
+    path = tmp_path / "case.toml"
+    path.write_bytes(source + b" " * (MAX_CASE_BYTES + extra - len(source)))
+
+    completed = subprocess.run(
+        [sys.executable, "scripts/validate_regression_case_v2.py", str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == (0 if extra == 0 else 2)
+    assert completed.stdout == ""
+    if extra:
+        assert "Re-materialize the case" in completed.stderr
+    else:
+        assert completed.stderr == ""

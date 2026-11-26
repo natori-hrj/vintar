@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 
-from vintar.core.strict_json import DuplicateJsonKeyError, parse_strict_json
+from vintar.core.strict_json import (
+    DuplicateJsonKeyError,
+    canonical_strict_json_bytes,
+    parse_strict_json,
+)
 from vintar.regression.cases import MAX_CASE_BYTES, parse_regression_case
 from vintar.regression.cases_v2 import PostJsonRegressionCase
-from vintar.regression.discovery import JSON, DiscoveryError, _read
+from vintar.regression.discovery import JSON, DiscoveryError
 from vintar.regression.discovery_drafts import DraftExportError, write_drafts
 from vintar.regression.post_json_review import (
     MAX_REVIEW_BYTES,
@@ -45,11 +51,30 @@ def _mapping(value: object, code: str, action: str) -> dict[str, object]:
     return cast(dict[str, object], value)
 
 
+def _read_bounded(path: Path, limit: int) -> bytes:
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise OSError("Input is not a regular file.")
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("Input is not a regular file.")
+        chunks = bytearray()
+        while len(chunks) <= limit:
+            chunk = os.read(descriptor, min(65_536, limit + 1 - len(chunks)))
+            if not chunk:
+                break
+            chunks.extend(chunk)
+    finally:
+        os.close(descriptor)
+    if len(chunks) > limit:
+        raise ValueError("Input exceeds its size limit.")
+    return bytes(chunks)
+
+
 def _read_review(path: Path) -> dict[str, JSON]:
     try:
-        data = _read(path)
-        if len(data) > MAX_REVIEW_BYTES:
-            raise ValueError
+        data = _read_bounded(path, MAX_REVIEW_BYTES)
         value = parse_strict_json(data)
         result = _mapping(
             value,
@@ -69,7 +94,9 @@ def _read_review(path: Path) -> dict[str, JSON]:
 
 def _read_config(path: Path) -> dict[str, object]:
     try:
-        value: object = tomllib.loads(_read(path).decode("utf-8"))
+        value: object = tomllib.loads(
+            _read_bounded(path, MAX_CASE_BYTES).decode("utf-8")
+        )
     except (DiscoveryError, OSError, UnicodeError, ValueError, RecursionError):
         raise _error(
             "post_json_config_invalid",
@@ -255,7 +282,9 @@ def materialize_post_json_case(
             "The current spec, inventory, answers, and explicit review no longer agree.",
             "Regenerate the inventory and review the candidate again.",
         ) from exc
-    if supplied_review != material.report:
+    if canonical_strict_json_bytes(supplied_review) != canonical_strict_json_bytes(
+        material.report
+    ):
         raise _error(
             "post_json_review_mismatch",
             "The supplied review is stale or was edited.",

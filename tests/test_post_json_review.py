@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from vintar.regression import post_json_review as review_module
 from vintar.regression.post_json_inventory import (
+    ReviewCandidate,
     analyze_post_json,
     report_data,
     serialize_report,
@@ -179,6 +181,87 @@ def test_confirmations_require_json_true_exactly(tmp_path, key, value):
 
     assert "must be JSON true" in str(caught.value)
     assert SENTINEL not in str(caught.value)
+
+
+@pytest.mark.parametrize("version", [True, 2.0])
+def test_inventory_version_requires_exact_integer(tmp_path, version):
+    spec, inventory, answers, _ = inputs(tmp_path)
+    value = json.loads(inventory.read_text())
+    value["schema_version"] = version
+    inventory.write_text(json.dumps(value))
+
+    with pytest.raises(PostJsonReviewError, match=STALE_INVENTORY_MESSAGE):
+        resolve_post_json_review(spec, inventory, answers)
+
+
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_answers_version_requires_exact_integer(tmp_path, version):
+    spec, inventory, answers, answer = inputs(tmp_path)
+    answer["version"] = version
+    write_answer(answers, answer)
+
+    with pytest.raises(PostJsonReviewError, match="Review answers are invalid"):
+        resolve_post_json_review(spec, inventory, answers)
+
+
+def test_inventory_candidate_provenance_type_difference_is_rejected(
+    tmp_path, monkeypatch
+):
+    spec, inventory, answers, _ = inputs(tmp_path)
+    value = json.loads(inventory.read_text())
+    value["operations"][0]["review_candidates"][0]["index"] = False
+    inventory.write_text(json.dumps(value))
+    original = review_module._as_json
+
+    def with_index(item):
+        result = original(item)
+        if isinstance(item, ReviewCandidate):
+            assert isinstance(result, dict)
+            return {**result, "index": 0}
+        return result
+
+    monkeypatch.setattr(review_module, "_as_json", with_index)
+
+    with pytest.raises(PostJsonReviewError, match=INVENTORY_SPEC_MISMATCH_MESSAGE):
+        resolve_post_json_review(spec, inventory, answers)
+
+
+def test_literal_star_positions_type_difference_is_rejected(tmp_path):
+    spec, inventory, answers, answer = inputs(tmp_path)
+    document = json.loads(spec.read_text())
+    media = document["paths"]["/items"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]
+    media["schema"] = {"type": "object", "properties": {"*": {"type": "string"}}}
+    spec.write_text(json.dumps(document))
+    report = analyze_post_json(spec)
+    candidate = report.operations[0].review_candidates[0]
+    inventory_value = report_data(report)
+    operation = inventory_value["operations"][0]
+    matching = next(
+        field
+        for field in operation["fields"]
+        if field["schema_pointer"] == candidate.schema_pointer
+    )
+    assert matching["literal_star_positions"] == [0]
+    matching["literal_star_positions"] = [False]
+    inventory.write_text(json.dumps(inventory_value))
+    body = {"*": "a"}
+    answer.update(
+        candidate_id=candidate.candidate_id,
+        operation_definition_sha256=candidate.operation_definition_sha256,
+        schema_pointer=candidate.schema_pointer,
+        schema_definition_pointer=candidate.schema_definition_pointer,
+        concrete_pointer="/*",
+        baseline={
+            "value": body,
+            "body_sha256": hashlib.sha256(b'{"*":"a"}').hexdigest(),
+        },
+    )
+    write_answer(answers, answer)
+
+    with pytest.raises(PostJsonReviewError, match=INVENTORY_SPEC_MISMATCH_MESSAGE):
+        resolve_post_json_review(spec, inventory, answers)
 
 
 def test_body_digest_mismatch_uses_fixed_redacted_message(tmp_path):

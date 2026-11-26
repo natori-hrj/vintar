@@ -1168,8 +1168,27 @@ def test_review_schema_version_rejects_boolean(tmp_path, monkeypatch):
     result = invoke(inputs)
 
     assert result.exit_code == 2 and result.stdout == ""
-    assert "review schema version" in result.stderr
-    assert "version 1 JSON output" in result.stderr
+    assert "review report no longer matches" in result.stderr
+    assert "baseline-value-sentinel" not in result.stderr
+
+
+def test_review_nested_approval_type_edit_uses_mismatch_diagnostic(
+    tmp_path, monkeypatch
+):
+    inputs = make_inputs(tmp_path, monkeypatch)
+    material = resolve_review(inputs["spec"], inputs["draft"], inputs["answers"])
+    expected = {**material.report, "approval": {"confirmed": True}}
+    supplied = {**material.report, "approval": {"confirmed": 1}}
+    inputs["review"].write_text(json.dumps(supplied), encoding="utf-8")
+    monkeypatch.setattr(
+        "vintar.regression.case_materialization.resolve_review",
+        lambda *_args: replace(material, report=expected),
+    )
+
+    with pytest.raises(CaseMaterializationError, match="no longer matches") as caught:
+        build(inputs)
+
+    assert "baseline-value-sentinel" not in str(caught.value)
 
 
 @pytest.mark.parametrize(

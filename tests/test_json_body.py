@@ -18,7 +18,22 @@ from vintar.core.strict_json import (
     MAX_STRICT_JSON_BYTES,
     MAX_STRICT_JSON_NESTING,
     StrictJsonError,
+    canonical_strict_json_bytes,
 )
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [(True, 1), (True, 1.0), (1, 1.0), (False, 0)],
+)
+def test_canonical_strict_json_bytes_preserves_scalar_types(left, right):
+    assert canonical_strict_json_bytes(left) != canonical_strict_json_bytes(right)
+
+
+def test_canonical_strict_json_bytes_sorts_object_keys():
+    assert canonical_strict_json_bytes({"b": 2, "a": 1}) == (
+        canonical_strict_json_bytes({"a": 1, "b": 2})
+    )
 
 
 @pytest.mark.parametrize(

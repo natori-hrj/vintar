@@ -112,6 +112,7 @@ def discovery_diagnostics(path, tree):
             "errno",
             "tempfile",
             "vintar.checks.sqli.presets",
+            "vintar.core.strict_json",
             "vintar.regression.cases",
             "vintar.regression.discovery",
             "vintar.regression.discovery_review",
