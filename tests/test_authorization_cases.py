@@ -118,6 +118,98 @@ def test_case_preserves_percent_encoded_literal_path():
     )
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://placeholder.invalid/{id}",
+        "https://placeholder.invalid/items/{id}/x",
+        "https://placeholder.invalid/%7Bid%7D",
+        "https://placeholder.invalid/%7bid%7d",
+    ],
+)
+def test_case_rejects_plain_and_encoded_path_templates(url):
+    source = CASE.replace(
+        "https://placeholder.invalid/documents/own",
+        url,
+        1,
+    )
+    with pytest.raises(
+        AuthorizationCaseValidationError,
+        match="authorization_case_path_template_unsupported",
+    ) as caught:
+        parse_authorization_case(source)
+    assert url not in str(caught.value)
+
+
+def test_case_origin_defaults_only_when_port_is_absent():
+    implicit_https = parse_authorization_case(CASE).operations[0].request.origin
+    explicit_https = (
+        parse_authorization_case(
+            CASE.replace(
+                "https://placeholder.invalid", "https://placeholder.invalid:443"
+            )
+        )
+        .operations[0]
+        .request.origin
+    )
+    implicit_http = (
+        parse_authorization_case(
+            CASE.replace("https://placeholder.invalid", "http://placeholder.invalid")
+        )
+        .operations[0]
+        .request.origin
+    )
+    explicit_http = (
+        parse_authorization_case(
+            CASE.replace("https://placeholder.invalid", "http://placeholder.invalid:80")
+        )
+        .operations[0]
+        .request.origin
+    )
+
+    assert implicit_https == explicit_https
+    assert implicit_https.port == 443
+    assert implicit_http == explicit_http
+    assert implicit_http.port == 80
+
+
+@pytest.mark.parametrize("port", ["0", "65536"])
+def test_case_rejects_out_of_range_origin_port_with_fixed_diagnostic(port):
+    source = CASE.replace(
+        "https://placeholder.invalid",
+        f"https://placeholder.invalid:{port}",
+    )
+    with pytest.raises(
+        AuthorizationCaseValidationError,
+        match="authorization_case_origin_port_invalid",
+    ) as caught:
+        parse_authorization_case(source)
+    assert port not in str(caught.value)
+
+
+def test_case_invalid_url_is_redacted_without_exception_chaining():
+    offending = "not-a-port-canary"
+    source = CASE.replace(
+        "https://placeholder.invalid",
+        f"https://placeholder.invalid:{offending}",
+    )
+    expected = (
+        "authorization_case_schema_invalid: Why: the case does not match the closed "
+        "authorization Case v1 contract. Instead: supply only explicit reviewed "
+        "identities, GET operations, literal paths, controls, and bounded assertions."
+    )
+    with pytest.raises(AuthorizationCaseValidationError) as caught:
+        parse_authorization_case(source)
+    assert str(caught.value) == expected
+    assert offending not in str(caught.value)
+    assert offending not in repr(caught.value)
+    assert caught.value.__cause__ is None
+
+    with pytest.raises(AuthorizationExecutionUnavailableError) as cli_error:
+        parse_regression_case(source)
+    assert offending not in str(cli_error.value)
+
+
 @pytest.mark.parametrize("alias", ["Uppercase", "contains.dot", "contains space", ""])
 def test_aliases_are_closed_lowercase_non_identifying_tokens(alias):
     source = CASE.replace('id = "tenant-document-read"', f'id = "{alias}"', 1)

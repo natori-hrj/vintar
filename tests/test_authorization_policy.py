@@ -84,7 +84,6 @@ def test_policy_is_separate_closed_and_secret_free():
         lambda value: value.update(policy_type="post_json_execution"),
         lambda value: value.update(extra=True),
         lambda value: value["approvals"][0]["operations"][0].update(method="POST"),
-        lambda value: value["approvals"][0]["operations"][0].update(path="/items/{id}"),
         lambda value: value["identities"][0].update(identity_id="Reader.A"),
     ],
 )
@@ -130,3 +129,62 @@ def test_policy_rejects_duplicate_json_keys_without_echoing_values():
     with pytest.raises(AuthorizationPolicyError) as caught:
         parse_authorization_runtime_policy(source)
     assert canary not in str(caught.value)
+
+
+def test_policy_origin_defaults_only_when_port_is_absent():
+    implicit_https = parse_authorization_runtime_policy(policy_bytes())
+    value = policy_value()
+    value["approvals"][0]["origin"] = "https://api.example.test:443"
+    explicit_https = parse_authorization_runtime_policy(policy_bytes(value))
+    value = policy_value()
+    value["approvals"][0]["origin"] = "http://api.example.test"
+    implicit_http = parse_authorization_runtime_policy(policy_bytes(value))
+    value["approvals"][0]["origin"] = "http://api.example.test:80"
+    explicit_http = parse_authorization_runtime_policy(policy_bytes(value))
+
+    assert implicit_https.approvals[0].origin == explicit_https.approvals[0].origin
+    assert implicit_https.approvals[0].origin.port == 443
+    assert implicit_http.approvals[0].origin == explicit_http.approvals[0].origin
+    assert implicit_http.approvals[0].origin.port == 80
+
+
+@pytest.mark.parametrize("port", ["0", "65536"])
+def test_policy_rejects_out_of_range_origin_port_with_fixed_diagnostic(port):
+    value = policy_value()
+    value["approvals"][0]["origin"] = f"https://api.example.test:{port}"
+    with pytest.raises(
+        AuthorizationPolicyError,
+        match="authorization_policy_origin_invalid",
+    ) as caught:
+        parse_authorization_runtime_policy(policy_bytes(value))
+    assert port not in str(caught.value)
+
+
+@pytest.mark.parametrize("path", ["/{id}", "/items/{id}/x", "/%7Bid%7D"])
+def test_policy_rejects_plain_and_encoded_path_templates(path):
+    value = policy_value()
+    value["approvals"][0]["operations"][0]["path"] = path
+    with pytest.raises(
+        AuthorizationPolicyError,
+        match="authorization_policy_path_template_unsupported",
+    ) as caught:
+        parse_authorization_runtime_policy(policy_bytes(value))
+    assert path not in str(caught.value)
+
+
+def test_policy_invalid_origin_is_redacted_without_exception_chaining():
+    offending = "not-a-port-policy-canary"
+    value = policy_value()
+    value["approvals"][0]["origin"] = f"https://api.example.test:{offending}"
+    expected = (
+        "authorization_policy_origin_invalid: Why: an authorization policy origin "
+        "is not an exact HTTP origin with a valid port. Instead: use an exact HTTP "
+        "origin with a port from 1 through 65535, or omit the port to select the "
+        "scheme default."
+    )
+    with pytest.raises(AuthorizationPolicyError) as caught:
+        parse_authorization_runtime_policy(policy_bytes(value))
+    assert str(caught.value) == expected
+    assert offending not in str(caught.value)
+    assert offending not in repr(caught.value)
+    assert caught.value.__cause__ is None

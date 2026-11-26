@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -88,9 +89,58 @@ def _origin(url: httpx.URL) -> AllowedOrigin:
         or url.password
     ):
         raise ValueError
-    return AllowedOrigin(
-        url.scheme, url.host, url.port or (443 if url.scheme == "https" else 80)
-    )
+    port = url.port
+    if port is None:
+        port = 443 if url.scheme == "https" else 80
+    if not 1 <= port <= 65535:
+        raise _fail(
+            "authorization_case_origin_port_invalid",
+            "an authorization case origin has a port outside the allowed range.",
+            "use a port from 1 through 65535 or omit it to select the scheme default.",
+        )
+    return AllowedOrigin(url.scheme, url.host, port)
+
+
+def _url(value: str) -> httpx.URL:
+    split = urlsplit(value)
+    try:
+        port = split.port
+    except ValueError:
+        suffix = split.netloc.rpartition(":")[2]
+        if suffix.isdecimal():
+            raise _fail(
+                "authorization_case_origin_port_invalid",
+                "an authorization case origin has a port outside the allowed range.",
+                "use a port from 1 through 65535 or omit it to select the scheme default.",
+            ) from None
+        raise
+    if port is not None and not 1 <= port <= 65535:
+        raise _fail(
+            "authorization_case_origin_port_invalid",
+            "an authorization case origin has a port outside the allowed range.",
+            "use a port from 1 through 65535 or omit it to select the scheme default.",
+        )
+    return httpx.URL(value)
+
+
+def _literal_path(url: str, parsed: httpx.URL) -> str:
+    original_path = urlsplit(url).path
+    raw_path = parsed.raw_path.decode("ascii")
+    encoded = raw_path.casefold()
+    if (
+        "{" in original_path
+        or "}" in original_path
+        or "{" in raw_path
+        or "}" in raw_path
+        or "%7b" in encoded
+        or "%7d" in encoded
+    ):
+        raise _fail(
+            "authorization_case_path_template_unsupported",
+            "an authorization case request path contains a template marker.",
+            "supply one reviewed literal path without braces or encoded braces.",
+        )
+    return raw_path
 
 
 def _assertions(
@@ -158,8 +208,9 @@ def parse_authorization_case_mapping(value: object) -> AuthorizationCase:
             ):
                 raise ValueError
             request = cast(dict[str, object], item["request"])
-            parsed = httpx.URL(cast(str, request["url"]))
-            approved = httpx.URL(cast(str, request["allowed_origin"]))
+            request_url = cast(str, request["url"])
+            parsed = _url(request_url)
+            approved = _url(cast(str, request["allowed_origin"]))
             origin = _origin(approved)
             if (
                 approved.path not in {"", "/"}
@@ -168,8 +219,8 @@ def parse_authorization_case_mapping(value: object) -> AuthorizationCase:
                 or _origin(parsed) != origin
             ):
                 raise ValueError
-            raw_path = parsed.raw_path.decode("ascii")
-            if parsed.query or parsed.fragment or "{" in raw_path or "}" in raw_path:
+            raw_path = _literal_path(request_url, parsed)
+            if parsed.query or parsed.fragment:
                 raise ValueError
             operations.append(
                 AuthorizationOperation(
@@ -219,7 +270,15 @@ def parse_authorization_case_mapping(value: object) -> AuthorizationCase:
         )
     except AuthorizationCaseValidationError:
         raise
-    except (KeyError, TypeError, ValueError, OverflowError, UnicodeError, OSError):
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        UnicodeError,
+        OSError,
+        httpx.InvalidURL,
+    ):
         raise _fail(
             "authorization_case_schema_invalid",
             "the case does not match the closed authorization Case v1 contract.",

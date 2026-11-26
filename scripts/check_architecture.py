@@ -156,6 +156,7 @@ def discovery_diagnostics(path, tree):
         }
     if path == Path("regression/authorization_policy.py"):
         allowed = DISCOVERY_IMPORTS | {
+            "httpx",
             "vintar.auth.contracts",
             "vintar.checks.authorization.models",
             "vintar.core.scope",

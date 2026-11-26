@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+import httpx
+
 from vintar.auth.contracts import CredentialKind, IdentityCredentialSource
 from vintar.checks.authorization.models import (
     AuthenticationMode,
@@ -117,6 +119,35 @@ def _number(value: object, minimum: float, maximum: float) -> float:
     return result
 
 
+def _origin(value: object) -> AllowedOrigin:
+    try:
+        return parse_runtime_origin(_text(value, 2048))
+    except (TypeError, ValueError, httpx.InvalidURL):
+        raise _fail(
+            "authorization_policy_origin_invalid",
+            "an authorization policy origin is not an exact HTTP origin with a valid port.",
+            "use an exact HTTP origin with a port from 1 through 65535, or omit the port to select the scheme default.",
+        ) from None
+
+
+def _literal_path(value: object) -> str:
+    path = _text(value, 2048)
+    path.encode("ascii")
+    encoded = path.casefold()
+    if (
+        not path.startswith("/")
+        or any(char in path for char in "?#{}")
+        or "%7b" in encoded
+        or "%7d" in encoded
+    ):
+        raise _fail(
+            "authorization_policy_path_template_unsupported",
+            "an authorization policy operation path is not one literal path.",
+            "supply one ASCII path without query, fragment, braces, or encoded braces.",
+        )
+    return path
+
+
 def _identity(value: object) -> AuthorizationPolicyIdentity:
     if type(value) is not dict:
         raise ValueError
@@ -208,7 +239,7 @@ def parse_authorization_runtime_policy(data: bytes) -> AuthorizationRuntimePolic
                     }
                 ),
             )
-            origin = parse_runtime_origin(_text(approval["origin"], 2048))
+            origin = _origin(approval["origin"])
             key = (_alias(approval["case_id"]), origin)
             if key in approval_keys:
                 raise ValueError
@@ -227,14 +258,11 @@ def parse_authorization_runtime_policy(data: bytes) -> AuthorizationRuntimePolic
                 )
                 operation_id = _alias(operation["operation_id"])
                 identity_id = _alias(operation["identity_id"])
-                path = _text(operation["path"], 2048)
-                path.encode("ascii")
+                path = _literal_path(operation["path"])
                 if (
                     operation_id in operation_ids
                     or identity_id not in identity_ids
                     or operation["method"] != "GET"
-                    or not path.startswith("/")
-                    or any(char in path for char in "?#{}")
                 ):
                     raise ValueError
                 operation_ids.add(operation_id)
@@ -285,13 +313,22 @@ def parse_authorization_runtime_policy(data: bytes) -> AuthorizationRuntimePolic
         return AuthorizationRuntimePolicy(
             1, "authorization_execution", identities, tuple(approvals), parsed_limits
         )
+    except AuthorizationPolicyError:
+        raise
     except DuplicateJsonKeyError:
         raise _fail(
             "authorization_policy_schema_invalid",
             "the selected policy contains duplicate object names.",
             "supply a closed policy with each documented name exactly once.",
         ) from None
-    except (KeyError, TypeError, ValueError, OverflowError, UnicodeError):
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        UnicodeError,
+        httpx.InvalidURL,
+    ):
         raise _fail(
             "authorization_policy_schema_invalid",
             "the selected policy does not match authorization_execution v1.",
