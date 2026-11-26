@@ -223,11 +223,7 @@ def check_source(path: Path, source: str) -> list[str]:
         elif isinstance(node, ast.ImportFrom):
             direct_modules = (node.module or "",)
         for module in direct_modules:
-            if module == AUTH_APPLY and path in {
-                Path("cli.py"),
-                Path("regression/runner.py"),
-                Path("regression/batch.py"),
-            }:
+            if module == AUTH_APPLY and path != Path("regression/runner.py"):
                 violations.add((node.lineno, AUTH_APPLY))
             if in_checks and (
                 module == "vintar.auth" or module.startswith("vintar.auth.")
@@ -279,7 +275,7 @@ def check_source(path: Path, source: str) -> list[str]:
             f"{path}:{line}: JSON body injection may be constructed only by core primitives "
             "or the trusted POST execution adapter in regression/runner.py."
             if name == JSON_BODY_LOCATION
-            else f"{path}:{line}: Authentication application is unavailable from the public runner and CLI until PR 5c."
+            else f"{path}:{line}: Authentication application may be composed only by regression/runner.py."
             if name == AUTH_APPLY
             else f"{path}:{line}: Checks cannot import authentication or touch credential material."
             if name == "vintar.auth"

@@ -1,5 +1,6 @@
 """CLI tests for environment-based regression target binding."""
 
+import base64
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -189,7 +190,9 @@ def post_json_policy_json(
     )
 
 
-def get_v2_policy_json() -> str:
+def get_v2_policy_json(
+    *, kind: str = "bearer", header_name: str = "Authorization"
+) -> str:
     return json.dumps(
         {
             "schema_version": 1,
@@ -197,16 +200,16 @@ def get_v2_policy_json() -> str:
             "identities": [
                 {
                     "identity_id": "cli-reader",
-                    "credential_kind": "bearer",
+                    "credential_kind": kind,
                     "env_var": "VINTAR_CLI_TOKEN",
-                    "header_name": "Authorization",
+                    "header_name": header_name,
                 }
             ],
             "approvals": [
                 {
                     "case_id": "get-v2-case",
                     "identity_id": "cli-reader",
-                    "credential_kind": "bearer",
+                    "credential_kind": kind,
                     "credential_env_var": "VINTAR_CLI_TOKEN",
                     "method": "GET",
                     "path": "/products",
@@ -223,6 +226,47 @@ def get_v2_policy_json() -> str:
             },
         }
     )
+
+
+@pytest.mark.parametrize(
+    ("kind", "header_name", "raw", "expected"),
+    [
+        (
+            "bearer",
+            "Authorization",
+            "example-token-value",
+            "Bearer example-token-value",
+        ),
+        ("api_key_header", "X-Example-Key", "example-key-value", "example-key-value"),
+        (
+            "basic",
+            "Authorization",
+            "example-user:example-password",
+            "Basic "
+            + base64.b64encode(b"example-user:example-password").decode("ascii"),
+        ),
+    ],
+)
+def test_get_v2_cli_executes_all_header_credential_kinds(
+    tmp_path, mock_http, kind, header_name, raw, expected
+):
+    case = tmp_path / "get-v2.toml"
+    case.write_text(GET_V2_CASE_SOURCE, encoding="utf-8")
+    received, _ = mock_http
+    result = cli.invoke(
+        app,
+        args_for(case),
+        env={
+            "VINTAR_TARGET_ORIGIN": ENV["VINTAR_TARGET_ORIGIN"],
+            "VINTAR_RUNTIME_POLICY_JSON": get_v2_policy_json(
+                kind=kind, header_name=header_name
+            ),
+            "VINTAR_CLI_TOKEN": raw,
+        },
+    )
+    assert result.exit_code == 0
+    assert len(received) == 6
+    assert all(request.headers[header_name] == expected for request in received)
 
 
 def write_case(
@@ -378,18 +422,22 @@ def test_post_json_cli_requires_and_applies_independent_runtime_policy(
     env = {
         "VINTAR_TARGET_ORIGIN": ENV["VINTAR_TARGET_ORIGIN"],
         "VINTAR_RUNTIME_POLICY_JSON": post_json_policy_json(),
+        "VINTAR_TEST_TOKEN": "example-token-value",
     }
 
     result = cli.invoke(app, args_for(case), env=env)
 
-    assert result.exit_code == 2
-    assert "authenticated_execution_unavailable" in result.stderr
-    assert "Wait for the authenticated runner integration" in result.stderr
-    assert result.stdout == ""
-    assert received == []
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout)["status"] == "pass"
+    assert len(received) == 6
+    assert all(
+        request.headers["authorization"] == "Bearer example-token-value"
+        for request in received
+    )
 
 
-def test_get_v2_cli_loads_policy_without_v1_allow_origin_and_fails_closed(
+def test_get_v2_cli_loads_policy_without_v1_allow_origin_and_reaches_execution(
     tmp_path, monkeypatch
 ):
     case = tmp_path / "get-v2.toml"
@@ -407,14 +455,14 @@ def test_get_v2_cli_loads_policy_without_v1_allow_origin_and_fails_closed(
         env={
             "VINTAR_TARGET_ORIGIN": ENV["VINTAR_TARGET_ORIGIN"],
             "VINTAR_RUNTIME_POLICY_JSON": get_v2_policy_json(),
+            "VINTAR_CLI_TOKEN": "example-token-value",
         },
     )
 
     assert result.exit_code == 2
-    assert "authenticated_execution_unavailable" in result.stderr
-    assert "Wait for the authenticated runner integration" in result.stderr
+    assert "regression verification could not be completed" in result.stderr
     assert "allowed origin" not in result.stderr
-    assert constructed == []
+    assert constructed == ["constructed"]
 
 
 def test_cli_rejects_mixed_v1_v2_batches_with_separate_invocation_guidance(tmp_path):
@@ -477,7 +525,7 @@ def test_post_json_cli_cannot_widen_smaller_policy_budget(tmp_path, mock_http):
     )
 
     assert result.exit_code == 2
-    assert "authenticated_execution_unavailable" in result.stderr
+    assert "trusted batch request budget" in result.stderr
     assert received == []
 
 

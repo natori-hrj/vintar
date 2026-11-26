@@ -7,16 +7,17 @@ security verification workflow.
 ## Supported Scope
 
 Vintar supports Boolean-, time-, and error-based SQL injection regression checks for
-`GET` query parameters. OpenAPI 3.0 and 3.1 `discover`, `review-draft`, and
+Schema v1 and reviewed identity-bearing Schema v2 `GET` query parameters, plus
+reviewed `no_side_effect` Schema v2 POST JSON bodies. OpenAPI 3.0 and 3.1 `discover`, `review-draft`, and
 `materialize-case` support Boolean, Time, and Error cases and run offline.
 `verify` runs all three check types against an authorized, configured target.
 Reviewers explicitly select the `string-quoted` or `numeric` probe preset for
 Boolean cases that use presets. Time and Error cases require explicit reviewed
 payloads; no DBMS, SQL context, or payload is inferred from OpenAPI metadata.
 
-Deferred are confirmed Error `VULNERABLE` verdicts and UNION-based SQL
-injection checks, POST form and JSON body injection, cookie and header injection,
-and authenticated workflows.
+Deferred are confirmed Error `VULNERABLE` verdicts, UNION-based SQL injection,
+POST forms, Cookie authentication, query API keys, login/token acquisition or
+refresh, authorization checks, and path-template binding.
 
 ## Requirements
 
@@ -60,6 +61,17 @@ Both variables are required.
 
 These values must be controlled by trusted maintainers.
 Do not place API tokens, credentials, or secrets inside origins.
+
+For Schema v2, store `VINTAR_RUNTIME_POLICY_JSON` or
+`VINTAR_RUNTIME_POLICY_FILE` as protected operator configuration. Inline JSON
+takes precedence without fallback. The policy binds one identity to one exact
+origin and names a protected credential environment variable. Supply that
+variable as an Environment secret, for example `VINTAR_EXAMPLE_CREDENTIAL`;
+`example-token-value` is only a synthetic documentation value. Supported forms
+are Bearer, Basic, and a dedicated API-key header. Prefer short-lived,
+least-privilege credentials. Never provide policy or credentials to fork or
+untrusted PR jobs, and do not commit real values. Vintar does not retry, refresh
+credentials, replay POST, or follow redirects.
 
 ## Prepare reviewed cases
 

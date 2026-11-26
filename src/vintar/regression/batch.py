@@ -1,5 +1,8 @@
 """Sequential regression batches with aggregate safety limits."""
 
+import os
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import httpx
@@ -18,7 +21,9 @@ from vintar.regression.runner import (
     RegressionStatus,
     TrustedExecutionPolicy,
     _effective_scope,
+    _resolve_authentication,
     _run_with_resources,
+    batch_execution_schedule,
 )
 
 MAX_BATCH_CASES = 128
@@ -127,6 +132,8 @@ def run_regression_batch(
     policy: TrustedExecutionPolicy,
     transport: httpx.BaseTransport | None = None,
     observation_sink: SqliObservationSink | None = None,
+    environ: Mapping[str, str] | None = None,
+    execution_clock: Callable[[], float] = time.monotonic,
 ) -> RegressionBatchResult:
     """Run a bounded batch with one shared budget and rate limiter.
 
@@ -166,8 +173,22 @@ def run_regression_batch(
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("Duplicate regression case identifier")
 
+    schedule = batch_execution_schedule(selected, policy)
+
     # Validate every case before any network request.
-    scopes: list[ScopePolicy] = [_effective_scope(case, policy) for case in selected]
+    scopes: list[ScopePolicy] = [
+        _effective_scope(
+            case,
+            policy,
+            requests_per_second=schedule.requests_per_second,
+            initial_wait_seconds=initial_wait,
+        )
+        for case, initial_wait in zip(
+            selected,
+            schedule.initial_wait_seconds,
+            strict=True,
+        )
+    ]
 
     required_requests = sum(case.max_requests for case in selected)
 
@@ -177,29 +198,39 @@ def run_regression_batch(
         )
 
     budget = RequestBudget(required_requests)
-    rate_limiter = RateLimiter(
-        requests_per_second=min(
-            policy.max_requests_per_second,
-            *(case.requests_per_second for case in selected),
-        )
+    rate_limiter = RateLimiter(requests_per_second=schedule.requests_per_second)
+
+    authentication = _resolve_authentication(
+        selected,
+        policy,
+        transport=transport,
+        environ=os.environ if environ is None else environ,
+        schedule=schedule,
     )
 
     outcomes: list[AnyRegressionOutcome] = []
+    try:
+        for case, scope in zip(selected, scopes, strict=True):
+            outcome = _run_with_resources(
+                case,
+                policy=policy,
+                scope=scope,
+                budget=budget,
+                rate_limiter=rate_limiter,
+                transport=transport,
+                observation_sink=observation_sink,
+                authenticated_transport=(
+                    authentication.transport if authentication is not None else None
+                ),
+                execution_clock=execution_clock,
+            )
+            outcomes.append(outcome)
 
-    for case, scope in zip(selected, scopes, strict=True):
-        outcome = _run_with_resources(
-            case,
-            policy=policy,
-            scope=scope,
-            budget=budget,
-            rate_limiter=rate_limiter,
-            transport=transport,
-            observation_sink=observation_sink,
-        )
-        outcomes.append(outcome)
-
-        if _must_stop_batch(outcome):
-            break
+            if _must_stop_batch(outcome):
+                break
+    finally:
+        if authentication is not None:
+            authentication.close()
 
     completed = tuple(outcomes)
 

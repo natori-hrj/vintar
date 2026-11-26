@@ -1,6 +1,7 @@
 """Identity-bound Case Schema v2 and runtime policy contracts."""
 
 import json
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ from vintar.core.scope import ScopePolicy
 from vintar.regression import (
     TrustedExecutionPolicy,
     parse_regression_case,
+    run_regression_batch,
     run_regression_case,
 )
 from vintar.regression.binding import bind_runtime_target, parse_runtime_origin
@@ -93,12 +95,12 @@ def parse_policy(value):
     return parse_post_json_runtime_policy(json.dumps(value).encode())
 
 
-def test_get_case_v2_requires_explicit_identity_and_fails_closed_before_transport():
+def test_get_case_v2_requires_explicit_identity_and_runtime_policy():
     case = parse_regression_case(GET_CASE)
     assert isinstance(case, QueryRegressionCaseV2)
     assert case.identity_id == "billing-reader"
     calls: list[str] = []
-    with pytest.raises(ValueError, match="authenticated_execution_unavailable"):
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
         run_regression_case(
             case,
             policy=TrustedExecutionPolicy(scope=case.scope),
@@ -323,6 +325,122 @@ def test_get_v2_parses_each_check_specific_contract(check_type, probes, requests
     assert case.max_requests == requests
 
 
+def _get_time_case():
+    source = GET_CASE.replace('type = "sqli.boolean"', 'type = "sqli.time"')
+    source = source.replace(
+        'true_payload = "true-probe"\nfalse_payload = "false-probe"',
+        'delay_payload = "delay"\ncontrol_payload = "control"\nexpected_delay_seconds = 0.25',
+    ).replace("max_requests = 6", "max_requests = 9")
+    return parse_regression_case(source)
+
+
+def _get_execution_policy(cases, *, timeout, rate=2.0, time_deadline=45.0):
+    value = policy_value()
+    value["approvals"][0]["origin"] = "https://case.invalid"
+    value["limits"]["max_requests"] = sum(case.max_requests for case in cases)
+    value["limits"]["max_timeout_seconds"] = timeout
+    value["limits"]["max_requests_per_second"] = rate
+    value["limits"]["max_time_execution_seconds"] = time_deadline
+    approvals = []
+    for case in cases:
+        approval = dict(value["approvals"][0])
+        approval["case_id"] = case.case_id
+        approvals.append(approval)
+    value["approvals"] = approvals
+    runtime_policy = parse_policy(value)
+    return TrustedExecutionPolicy(
+        scope=cases[0].scope,
+        max_requests=sum(case.max_requests for case in cases),
+        max_requests_per_second=rate,
+        max_timeout_seconds=timeout,
+        max_time_execution_seconds=time_deadline,
+        post_json_policy=runtime_policy,
+    )
+
+
+def test_get_v2_time_rejects_trusted_timeout_shorter_than_expected_delay():
+    case = _get_time_case()
+    assert isinstance(case, QueryRegressionCaseV2)
+    requests = []
+    with pytest.raises(ValueError, match="Trusted timeout is too short"):
+        run_regression_batch(
+            [case],
+            policy=_get_execution_policy((case,), timeout=0.5),
+            environ={"VINTAR_BILLING_CREDENTIAL": "example-token-value"},
+            transport=httpx.MockTransport(
+                lambda request: requests.append(request) or httpx.Response(200)
+            ),
+        )
+    assert requests == []
+
+
+def test_later_get_v2_time_preflight_failure_dispatches_no_earlier_case():
+    first = parse_regression_case(GET_CASE)
+    second = replace(_get_time_case(), case_id="get-query-time")
+    assert isinstance(first, QueryRegressionCaseV2)
+    assert isinstance(second, QueryRegressionCaseV2)
+    requests = []
+    with pytest.raises(ValueError, match="Trusted timeout is too short"):
+        run_regression_batch(
+            [first, second],
+            policy=_get_execution_policy((first, second), timeout=0.5),
+            environ={"VINTAR_BILLING_CREDENTIAL": "example-token-value"},
+            transport=httpx.MockTransport(
+                lambda request: requests.append(request) or httpx.Response(200)
+            ),
+        )
+    assert requests == []
+
+
+def test_get_v2_time_preflight_uses_shared_batch_rate_before_dispatch():
+    first = replace(
+        parse_regression_case(GET_CASE),
+        requests_per_second=0.1,
+    )
+    second = replace(
+        _get_time_case(),
+        case_id="get-query-time",
+        requests_per_second=10.0,
+        timeout_seconds=1.0,
+    )
+    requests = []
+    with pytest.raises(ValueError, match="deadline cannot accommodate"):
+        run_regression_batch(
+            [first, second],
+            policy=_get_execution_policy(
+                (first, second), timeout=1.0, rate=10.0, time_deadline=20.0
+            ),
+            environ={"VINTAR_BILLING_CREDENTIAL": "example-token-value"},
+            transport=httpx.MockTransport(
+                lambda request: requests.append(request) or httpx.Response(200)
+            ),
+        )
+    assert requests == []
+
+
+def test_get_v2_time_preflight_shared_rate_passing_batch_runs():
+    first = replace(parse_regression_case(GET_CASE), requests_per_second=10.0)
+    second = replace(
+        _get_time_case(),
+        case_id="get-query-time",
+        requests_per_second=10.0,
+        timeout_seconds=1.0,
+    )
+    requests = []
+    result = run_regression_batch(
+        [first, second],
+        policy=_get_execution_policy(
+            (first, second), timeout=1.0, rate=10.0, time_deadline=20.0
+        ),
+        environ={"VINTAR_BILLING_CREDENTIAL": "example-token-value"},
+        transport=httpx.MockTransport(
+            lambda request: requests.append(request) or httpx.Response(200)
+        ),
+    )
+    assert len(result.outcomes) == 2
+    assert len(requests) == 15
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -337,10 +455,10 @@ def test_get_v2_semantic_mismatches_are_rejected(source):
         parse_regression_case(source)
 
 
-def test_internal_runner_also_rejects_get_v2_before_resources():
+def test_internal_runner_also_requires_get_v2_policy_before_resources():
     case = parse_regression_case(GET_CASE)
     assert isinstance(case, QueryRegressionCaseV2)
-    with pytest.raises(ValueError, match="authenticated_execution_unavailable"):
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
         _run_with_resources(
             case,
             policy=TrustedExecutionPolicy(scope=case.scope),

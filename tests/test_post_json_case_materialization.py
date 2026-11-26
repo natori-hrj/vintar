@@ -312,9 +312,9 @@ def test_runner_and_batch_require_policy_before_resource_or_transport_constructi
     monkeypatch.setattr(batch, "RateLimiter", forbidden)
 
     policy = runner.TrustedExecutionPolicy(scope=case.scope)
-    with pytest.raises(ValueError, match="authenticated_execution_unavailable"):
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
         runner.run_regression_case(case, policy=policy)
-    with pytest.raises(ValueError, match="authenticated_execution_unavailable"):
+    with pytest.raises(ValueError, match="post_json_runtime_policy_required"):
         batch.run_regression_batch([case], policy=policy)
     with pytest.raises(TypeError, match="TrustedExecutionPolicy"):
         runner.run_regression_case(case, policy=object())

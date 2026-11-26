@@ -2,28 +2,42 @@
 
 import hashlib
 import math
+import os
 import re
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import cast
 
 import httpx
 
+from vintar.auth.apply import (
+    AuthenticatedTransport,
+    AuthenticationError,
+    AuthenticationPlan,
+    CredentialBinding,
+    PlannedAuthenticatedRequest,
+    preflight_authentication,
+    resolve_credentials,
+)
 from vintar.checks.sqli.confirmation_runner import (
     ConfirmationOutcome,
     ConfirmationStatus,
     verify_boolean_sqli_with_confirmation,
 )
+from vintar.checks.sqli.error_analyzer import ERROR_PROBE_ORDER
 from vintar.checks.sqli.error_contract import error_product_result
 from vintar.checks.sqli.error_runner import (
     ERROR_REQUESTS,
     ErrorRunReport,
     verify_error_based_sqli,
 )
-from vintar.checks.sqli.models import Verdict, VerificationResult
+from vintar.checks.sqli.models import BOOLEAN_PROBE_ORDER, Verdict, VerificationResult
 from vintar.checks.sqli.observation_sink import SqliObservationSink
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
 from vintar.checks.sqli.time_contract import time_product_result
-from vintar.checks.sqli.time_plan import TIME_REQUESTS, TimePayloads
+from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER, TIME_REQUESTS, TimePayloads
 from vintar.checks.sqli.time_runner import TimeRunReport, verify_time_based_sqli
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
@@ -64,6 +78,15 @@ class TimeRequestBudgetError(ValueError):
 
 class PostJsonExecutionError(ValueError):
     """A stable, redacted trusted POST execution rejection."""
+
+
+@dataclass(frozen=True, slots=True)
+class BatchExecutionSchedule:
+    """Shared batch rate and conservative wall-clock execution bound."""
+
+    requests_per_second: float
+    planned_max_run_seconds: float
+    initial_wait_seconds: tuple[float, ...]
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -350,17 +373,15 @@ def _classify(
 def _effective_scope(
     case: AnyRegressionCase,
     policy: TrustedExecutionPolicy,
+    *,
+    requests_per_second: float,
+    initial_wait_seconds: float,
 ) -> ScopePolicy:
     """Preflight the complete probe plan without sending HTTP."""
     if not isinstance(case, AnyRegressionCase):
         raise TypeError("case must be a RegressionCase.")
     if not isinstance(policy, TrustedExecutionPolicy):
         raise TypeError("policy must be a TrustedExecutionPolicy.")
-
-    if isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2)):
-        raise PostJsonExecutionError(
-            "authenticated_execution_unavailable: This Schema v2 case names an identity, but authenticated execution is not available yet. Wait for the authenticated runner integration or use a separately reviewed Schema v1 unauthenticated case."
-        )
 
     allowed = case.scope.allowed_origins & policy.scope.allowed_origins
 
@@ -371,6 +392,12 @@ def _effective_scope(
 
     if isinstance(case, PostJsonRegressionCase):
         template, point, _ = _post_json_execution_inputs(case, policy)
+        templates = [
+            template,
+            *(inject(template, point, probe) for probe in case.probes),
+        ]
+    elif isinstance(case, QueryRegressionCaseV2):
+        template, point, _ = _query_v2_execution_inputs(case, policy)
         templates = [
             template,
             *(inject(template, point, probe) for probe in case.probes),
@@ -412,12 +439,13 @@ def _effective_scope(
         validate_template(template)
         validate_scope(template.url, scope)
 
-    if isinstance(case, (TimeRegressionCase, PostJsonRegressionCase)) and (
-        not isinstance(case, PostJsonRegressionCase) or case.check_type == "sqli.time"
-    ):
-        effective_rate = min(case.requests_per_second, policy.max_requests_per_second)
-        effective_timeout = min(case.timeout_seconds, policy.max_timeout_seconds)
-        expected_delay = case.expected_delay_seconds
+    if case.check_type == "sqli.time":
+        time_case = cast(
+            TimeRegressionCase | PostJsonRegressionCase | QueryRegressionCaseV2,
+            case,
+        )
+        effective_timeout = min(time_case.timeout_seconds, policy.max_timeout_seconds)
+        expected_delay = time_case.expected_delay_seconds
         if expected_delay is None:
             raise ValueError("Time case requires an expected delay.")
         if effective_timeout < expected_delay + 0.5:
@@ -425,7 +453,9 @@ def _effective_scope(
                 "Trusted timeout is too short for the time case. Increase max_timeout_seconds to at least expected_delay_seconds + 0.5, or use a smaller reviewed delay."
             )
         minimum_window = (
-            TIME_REQUESTS * effective_timeout + (TIME_REQUESTS - 1) / effective_rate
+            TIME_REQUESTS * effective_timeout
+            + initial_wait_seconds
+            + (TIME_REQUESTS - 1) / requests_per_second
         )
         if minimum_window > policy.max_time_execution_seconds:
             raise TimeExecutionPolicyError(
@@ -548,6 +578,217 @@ def _post_json_execution_inputs(
     return template, point, approval
 
 
+def _query_v2_execution_inputs(
+    case: QueryRegressionCaseV2, policy: TrustedExecutionPolicy
+) -> tuple[RequestTemplate, InjectionPoint, PostJsonPolicyApproval]:
+    """Re-check the exact approved GET operation before planning probes."""
+    runtime_policy = policy.post_json_policy
+    if runtime_policy is None:
+        raise _post_json_error(
+            "post_json_runtime_policy_required",
+            "Schema v2 GET execution has no trusted runtime policy.",
+            "Supply a trusted runtime policy independently of the case.",
+        )
+    origin = next(iter(case.scope.allowed_origins))
+    matches = tuple(
+        approval
+        for approval in runtime_policy.approvals
+        if approval.case_id == case.case_id
+        and approval.identity_id == case.identity_id
+        and approval.method == "GET"
+        and approval.path == httpx.URL(case.url).raw_path.decode("ascii")
+        and approval.origin == origin
+        and case.environment_class in approval.allowed_environment_classes
+    )
+    if len(matches) != 1:
+        raise _post_json_error(
+            "post_json_operation_not_approved",
+            "The trusted runtime policy does not approve the exact GET operation, identity, environment, and origin.",
+            "Approve the byte-preserved literal operation in trusted operator configuration.",
+        )
+    template = RequestTemplate(method="GET", url=case.url, params=case.params)
+    point = InjectionPoint(
+        location=InjectionLocation.QUERY,
+        name=case.injection_name,
+        occurrence=case.injection_occurrence,
+        mode=InjectionMode(case.injection_mode),
+    )
+    return template, point, matches[0]
+
+
+def _v2_inputs(
+    case: PostJsonRegressionCase | QueryRegressionCaseV2,
+    policy: TrustedExecutionPolicy,
+) -> tuple[RequestTemplate, InjectionPoint, PostJsonPolicyApproval]:
+    if isinstance(case, PostJsonRegressionCase):
+        return _post_json_execution_inputs(case, policy)
+    return _query_v2_execution_inputs(case, policy)
+
+
+def _v2_planned_templates(
+    case: PostJsonRegressionCase | QueryRegressionCaseV2,
+    template: RequestTemplate,
+    point: InjectionPoint,
+) -> tuple[RequestTemplate, ...]:
+    probes = tuple(inject(template, point, probe) for probe in case.probes)
+    if case.check_type == "sqli.boolean":
+        by_kind = {"baseline": template, "true": probes[0], "false": probes[1]}
+        return tuple(by_kind[kind.value] for kind in BOOLEAN_PROBE_ORDER)
+    if case.check_type == "sqli.time":
+        by_kind = {"baseline": template, "delay": probes[0], "control": probes[1]}
+        return tuple(by_kind[kind.value] for kind in TIME_PROBE_ORDER)
+    by_kind = {"baseline": template, "probe": probes[0]}
+    return tuple(by_kind[kind.value] for kind in ERROR_PROBE_ORDER)
+
+
+def _authentication_error(exc: AuthenticationError) -> PostJsonExecutionError:
+    code = str(exc).partition(":")[0]
+    return PostJsonExecutionError(
+        f"{code}: Why: authenticated execution preflight failed. Instead: verify the trusted identity binding, exact origin, credential expiry, and protected environment variable."
+    )
+
+
+def _authentication_plan(
+    cases: Sequence[AnyRegressionCase],
+    policy: TrustedExecutionPolicy,
+    *,
+    planned_max_run_seconds: float,
+) -> AuthenticationPlan | None:
+    v2_cases = tuple(
+        case
+        for case in cases
+        if isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2))
+    )
+    if not v2_cases:
+        return None
+    if len(v2_cases) != len(cases):
+        raise _post_json_error(
+            "mixed_schema_batch_unsupported",
+            "Authenticated Schema v2 and unauthenticated Schema v1 cases cannot share a batch.",
+            "Run Schema v1 and v2 in separate invocations.",
+        )
+    identities = {case.identity_id for case in v2_cases}
+    if len(identities) != 1:
+        raise _post_json_error(
+            "multiple_identities_unsupported",
+            "A regression batch may use only one approved identity.",
+            "Run each identity in a separate invocation and isolated execution context.",
+        )
+    runtime_policy = policy.post_json_policy
+    if runtime_policy is None:
+        raise _post_json_error(
+            "post_json_runtime_policy_required",
+            "Schema v2 execution has no trusted runtime policy.",
+            "Supply trusted operator policy independently of cases.",
+        )
+    identity_id = next(iter(identities))
+    sources = tuple(
+        source
+        for source in runtime_policy.identities
+        if source.identity_id == identity_id
+    )
+    if len(sources) != 1:
+        raise _post_json_error(
+            "auth_configuration_invalid",
+            "The approved identity has no unique credential source.",
+            "Configure exactly one credential source for the selected identity.",
+        )
+    requests: list[PlannedAuthenticatedRequest] = []
+    for case in v2_cases:
+        template, point, approval = _v2_inputs(case, policy)
+        for planned in _v2_planned_templates(case, template, point):
+            requests.append(PlannedAuthenticatedRequest(case.identity_id, planned))
+        if approval.origin not in policy.scope.allowed_origins:
+            raise _post_json_error(
+                "auth_origin_mismatch",
+                "The credential origin is outside the trusted execution scope.",
+                "Use the exact origin approved by both execution and credential policy.",
+            )
+    try:
+        return preflight_authentication(
+            (
+                CredentialBinding(
+                    sources[0],
+                    frozenset({next(iter(v2_cases[0].scope.allowed_origins))}),
+                ),
+            ),
+            requests,
+            planned_max_run_seconds=planned_max_run_seconds,
+        )
+    except AuthenticationError as exc:
+        raise _authentication_error(exc) from None
+
+
+def batch_execution_schedule(
+    cases: Sequence[AnyRegressionCase], policy: TrustedExecutionPolicy
+) -> BatchExecutionSchedule:
+    """Derive the one rate limiter and matching worst-case expiry duration."""
+    if not cases:
+        raise ValueError("Cannot schedule an empty regression batch.")
+    shared_rate = min(
+        policy.max_requests_per_second,
+        *(case.requests_per_second for case in cases),
+    )
+    duration = 0.0
+    requests_before = 0
+    initial_waits: list[float] = []
+    for case in cases:
+        initial_wait = int(requests_before > 0) / shared_rate
+        initial_waits.append(initial_wait)
+        if case.check_type == "sqli.time":
+            # The Time deadline starts before its first rate-limit wait, so the
+            # initial wait is already bounded by the full deadline here.
+            duration += policy.max_time_execution_seconds
+        else:
+            duration += case.max_requests * min(
+                case.timeout_seconds, policy.max_timeout_seconds
+            )
+            duration += (case.max_requests - 1) / shared_rate + initial_wait
+        requests_before += case.max_requests
+    return BatchExecutionSchedule(shared_rate, duration, tuple(initial_waits))
+
+
+@dataclass(slots=True)
+class _RunnerAuthentication:
+    transport: AuthenticatedTransport
+
+    def close(self) -> None:
+        self.transport.close()
+
+
+def _resolve_authentication(
+    cases: Sequence[AnyRegressionCase],
+    policy: TrustedExecutionPolicy,
+    *,
+    transport: httpx.BaseTransport | None,
+    environ: Mapping[str, str],
+    schedule: BatchExecutionSchedule,
+) -> _RunnerAuthentication | None:
+    plan = _authentication_plan(
+        cases,
+        policy,
+        planned_max_run_seconds=schedule.planned_max_run_seconds,
+    )
+    if plan is None:
+        return None
+    try:
+        run = resolve_credentials(plan, environ)
+    except AuthenticationError as exc:
+        raise _authentication_error(exc) from None
+    first = cases[0]
+    if not isinstance(first, (PostJsonRegressionCase, QueryRegressionCaseV2)):
+        raise TypeError("Invalid authenticated execution plan.")
+    underlying = transport or httpx.HTTPTransport(trust_env=False, proxy=None)
+    return _RunnerAuthentication(
+        AuthenticatedTransport(
+            underlying,
+            run,
+            identity_id=first.identity_id,
+            close_underlying=transport is None,
+        )
+    )
+
+
 def _run_with_resources(
     case: AnyRegressionCase,
     *,
@@ -557,19 +798,28 @@ def _run_with_resources(
     transport: httpx.BaseTransport | None = None,
     scope: ScopePolicy | None = None,
     observation_sink: SqliObservationSink | None = None,
+    authenticated_transport: AuthenticatedTransport | None = None,
+    execution_clock: Callable[[], float] = time.monotonic,
 ) -> AnyRegressionOutcome:
     """Internal execution path for single-case and batch runners."""
-    if isinstance(case, QueryRegressionCaseV2):
-        raise PostJsonExecutionError(
-            "authenticated_execution_unavailable: This Schema v2 case names an identity, but authenticated execution is not available yet. Wait for the authenticated runner integration or use a separately reviewed Schema v1 unauthenticated case."
+    effective_scope = (
+        scope
+        if scope is not None
+        else _effective_scope(
+            case,
+            policy,
+            requests_per_second=rate_limiter.requests_per_second,
+            initial_wait_seconds=0.0,
         )
-    effective_scope = scope if scope is not None else _effective_scope(case, policy)
+    )
 
     is_time = isinstance(case, TimeRegressionCase) or (
-        isinstance(case, PostJsonRegressionCase) and case.check_type == "sqli.time"
+        isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2))
+        and case.check_type == "sqli.time"
     )
     is_error = isinstance(case, ErrorRegressionCase) or (
-        isinstance(case, PostJsonRegressionCase) and case.check_type == "sqli.error"
+        isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2))
+        and case.check_type == "sqli.error"
     )
 
     if is_time and budget.remaining < TIME_REQUESTS:
@@ -599,13 +849,20 @@ def _run_with_resources(
         rate_limiter=rate_limiter,
     )
 
-    if isinstance(case, PostJsonRegressionCase):
-        template, point, _ = _post_json_execution_inputs(case, policy)
+    if isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2)):
+        template, point, _ = _v2_inputs(case, policy)
     else:
         template, point = case.template, case.point
 
+    active_transport: httpx.BaseTransport | None = (
+        authenticated_transport if authenticated_transport is not None else transport
+    )
+    auth_attempts_before = (
+        authenticated_transport.attempts if authenticated_transport is not None else 0
+    )
+
     if is_time:
-        if isinstance(case, PostJsonRegressionCase):
+        if isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2)):
             delay_payload, control_payload = case.probes
             expected_delay = case.expected_delay_seconds
             if expected_delay is None:
@@ -626,23 +883,26 @@ def _run_with_resources(
             expected_delay_seconds=expected_delay,
             context=context,
             max_total_seconds=policy.max_time_execution_seconds,
-            transport=transport,
+            transport=active_transport,
+            clock=execution_clock,
             observation_sink=observation_sink,
         )
         for _ in range(time_run.budget_used):
             budget.consume()
         product = time_product_result(time_run.analysis)
         expectation_match = product.verdict is case.expected_verdict
-        return TimeRegressionOutcome(
+        time_outcome = TimeRegressionOutcome(
             case_id=case.case_id,
             expected_verdict=case.expected_verdict,
             time_run=time_run,
             expectation_match=expectation_match,
             status=_classify(product.verdict, expectation_match),
         )
+        _raise_baseline_auth_failure(authenticated_transport, auth_attempts_before)
+        return time_outcome
 
     if is_error:
-        if isinstance(case, PostJsonRegressionCase):
+        if isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2)):
             error_payload = case.probes[0]
         elif isinstance(case, ErrorRegressionCase):
             error_payload = case.error_payload
@@ -653,26 +913,32 @@ def _run_with_resources(
             point=point,
             error_payload=error_payload,
             context=context,
-            transport=transport,
+            transport=active_transport,
             observation_sink=observation_sink,
         )
         error_product = error_product_result(error_run.analysis)
         expectation_match = error_product.verdict is case.expected_verdict
-        return ErrorRegressionOutcome(
+        error_outcome = ErrorRegressionOutcome(
             case_id=case.case_id,
             expected_verdict=case.expected_verdict,
             error_run=error_run,
             expectation_match=expectation_match,
             status=_classify(error_product.verdict, expectation_match),
         )
+        _raise_baseline_auth_failure(authenticated_transport, auth_attempts_before)
+        return error_outcome
 
     confirmation: ConfirmationOutcome | None = None
-    if not isinstance(case, (PostJsonRegressionCase, BooleanRegressionCase)):
+    if not isinstance(
+        case, (PostJsonRegressionCase, QueryRegressionCaseV2, BooleanRegressionCase)
+    ):
         raise TypeError("Invalid boolean regression case.")
     confirmation_config = (
-        None if isinstance(case, PostJsonRegressionCase) else case.confirmation
+        None
+        if isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2))
+        else case.confirmation
     )
-    if isinstance(case, PostJsonRegressionCase):
+    if isinstance(case, (PostJsonRegressionCase, QueryRegressionCaseV2)):
         true_payload, false_payload = case.probes
     else:
         true_payload, false_payload = case.true_payload, case.false_payload
@@ -684,7 +950,7 @@ def _run_with_resources(
             true_payload=true_payload,
             false_payload=false_payload,
             context=context,
-            transport=transport,
+            transport=active_transport,
             observation_sink=observation_sink,
         )
         final_verdict = verification.verdict
@@ -699,7 +965,7 @@ def _run_with_resources(
             false_2=confirmation_config.false_payload,
             baseline_preserving_control=confirmation_config.baseline_preserving_control,
             context=context,
-            transport=transport,
+            transport=active_transport,
             observation_sink=observation_sink,
         )
         verification = confirmation.initial
@@ -711,7 +977,7 @@ def _run_with_resources(
 
     expectation_match = final_verdict is case.expected_verdict
 
-    return RegressionOutcome(
+    boolean_outcome = RegressionOutcome(
         case_id=case.case_id,
         expected_verdict=case.expected_verdict,
         verification=verification,
@@ -722,6 +988,23 @@ def _run_with_resources(
         ),
         confirmation=confirmation,
     )
+    _raise_baseline_auth_failure(authenticated_transport, auth_attempts_before)
+    return boolean_outcome
+
+
+def _raise_baseline_auth_failure(
+    transport: AuthenticatedTransport | None, attempts_before: int
+) -> None:
+    if (
+        transport is not None
+        and transport.auth_failure_attempt == attempts_before + 1
+        and transport.auth_failure_status is not None
+    ):
+        raise _post_json_error(
+            "authentication_baseline_rejected",
+            "The baseline request was rejected before any SQLi comparison was measured.",
+            "Verify the selected test identity, exact origin, expiry, protected CI variable, and target-side access independently before rerunning.",
+        )
 
 
 def run_regression_case(
@@ -730,6 +1013,8 @@ def run_regression_case(
     policy: TrustedExecutionPolicy,
     transport: httpx.BaseTransport | None = None,
     observation_sink: SqliObservationSink | None = None,
+    environ: Mapping[str, str] | None = None,
+    execution_clock: Callable[[], float] = time.monotonic,
 ) -> AnyRegressionOutcome:
     """Execute one case within independent trusted limits.
 
@@ -742,23 +1027,43 @@ def run_regression_case(
     """
     if transport is not None and not isinstance(transport, httpx.BaseTransport):
         raise TypeError("Invalid test transport.")
+    if not isinstance(case, AnyRegressionCase):
+        raise TypeError("case must be a RegressionCase.")
+    if not isinstance(policy, TrustedExecutionPolicy):
+        raise TypeError("policy must be a TrustedExecutionPolicy.")
 
-    scope = _effective_scope(case, policy)
+    schedule = batch_execution_schedule((case,), policy)
+    scope = _effective_scope(
+        case,
+        policy,
+        requests_per_second=schedule.requests_per_second,
+        initial_wait_seconds=schedule.initial_wait_seconds[0],
+    )
 
     if policy.max_requests < case.max_requests:
         raise ValueError("Trusted request budget is insufficient.")
 
-    return _run_with_resources(
-        case,
-        policy=policy,
-        scope=scope,
-        budget=RequestBudget(case.max_requests),
-        rate_limiter=RateLimiter(
-            requests_per_second=min(
-                case.requests_per_second,
-                policy.max_requests_per_second,
-            )
-        ),
+    authentication = _resolve_authentication(
+        (case,),
+        policy,
         transport=transport,
-        observation_sink=observation_sink,
+        environ=os.environ if environ is None else environ,
+        schedule=schedule,
     )
+    try:
+        return _run_with_resources(
+            case,
+            policy=policy,
+            scope=scope,
+            budget=RequestBudget(case.max_requests),
+            rate_limiter=RateLimiter(requests_per_second=schedule.requests_per_second),
+            transport=transport,
+            observation_sink=observation_sink,
+            authenticated_transport=(
+                authentication.transport if authentication is not None else None
+            ),
+            execution_clock=execution_clock,
+        )
+    finally:
+        if authentication is not None:
+            authentication.close()
