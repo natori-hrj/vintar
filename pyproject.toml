@@ -109,7 +109,7 @@ source_modules = ["vintar.checks.authorization"]
 forbidden_modules = ["vintar.checks.sqli"]
 
 [[tool.importlinter.contracts]]
-name = "Only the regression runner may compose authenticated application."
+name = "Only approved internal composition modules may apply authentication."
 type = "forbidden"
 source_modules = [
     "vintar.regression.batch", "vintar.regression.report",
@@ -122,6 +122,16 @@ source_modules = [
     "vintar.regression_cli",
 ]
 forbidden_modules = ["vintar.auth.apply"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Authorization execution is unreachable from current batch and CLI entry points."
+type = "forbidden"
+source_modules = [
+    "vintar.regression.batch", "vintar.cli", "vintar.sqli_cli",
+    "vintar.regression_cli",
+]
+forbidden_modules = ["vintar.regression.authorization_execution"]
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]

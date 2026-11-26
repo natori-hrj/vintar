@@ -194,10 +194,28 @@ def test_runner_may_import_auth_application_for_authenticated_execution():
     assert check_source(Path("regression/runner.py"), "import vintar.auth.apply") == []
 
 
+def test_authorization_composition_may_import_auth_application():
+    assert (
+        check_source(
+            Path("regression/authorization_execution.py"),
+            "import vintar.auth.apply",
+        )
+        == []
+    )
+
+
 @pytest.mark.parametrize("path", ["regression/batch.py", "cli.py", "regression_cli.py"])
 def test_only_runner_may_import_auth_application(path):
     [diagnostic] = check_source(Path(path), "import vintar.auth.apply")
-    assert "only by regression/runner.py" in diagnostic
+    assert "regression/runner.py or regression/authorization_execution.py" in diagnostic
+
+
+@pytest.mark.parametrize("path", ["regression/batch.py", "cli.py", "regression_cli.py"])
+def test_current_entry_points_cannot_import_authorization_execution(path):
+    [diagnostic] = check_source(
+        Path(path), "import vintar.regression.authorization_execution"
+    )
+    assert "Authorization execution composition" in diagnostic
 
 
 def test_checks_cannot_import_authentication_material():
@@ -223,3 +241,6 @@ def test_repository_only_runner_imports_auth_apply():
     assert "vintar.auth.apply" in Path("src/vintar/regression/runner.py").read_text(
         encoding="utf-8"
     )
+    assert "vintar.auth.apply" in Path(
+        "src/vintar/regression/authorization_execution.py"
+    ).read_text(encoding="utf-8")
