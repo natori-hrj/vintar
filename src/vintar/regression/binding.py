@@ -109,11 +109,7 @@ def bind_runtime_target(
                 "post_json_case_not_approved: The trusted runtime policy does not approve this case identifier. Add an exact operator-controlled approval or bind a different reviewed case."
             )
         case_method = "POST" if isinstance(case, PostJsonRegressionCase) else "GET"
-        case_path = (
-            case.approval.path
-            if isinstance(case, PostJsonRegressionCase)
-            else original.path
-        )
+        case_path = original.raw_path.decode("ascii")
         matches = tuple(
             approval
             for approval in candidates
@@ -123,7 +119,7 @@ def bind_runtime_target(
         )
         if len(matches) != 1:
             raise ValueError(
-                "post_json_operation_not_approved: The trusted runtime policy does not approve the exact POST operation and origin. Approve the bound origin and reviewed literal path in trusted operator configuration."
+                "post_json_operation_not_approved: The trusted runtime policy does not approve the exact operation, byte-preserved literal path, and origin. Approve the exact request-target path in trusted operator configuration."
             )
         approval = matches[0]
         environment_class = (
@@ -132,7 +128,8 @@ def bind_runtime_target(
             else case.environment_class
         )
         post_mismatch = isinstance(case, PostJsonRegressionCase) and (
-            approval.operation_definition_sha256
+            case.approval.path != case_path
+            or approval.operation_definition_sha256
             != case.approval.operation_definition_sha256
             or approval.baseline_body_sha256 != case.approval.baseline_body_sha256
             or case.approval.side_effect != "no_side_effect"
@@ -152,6 +149,10 @@ def bind_runtime_target(
                 scope=ScopePolicy(allowed_origins=frozenset({target})),
             )
             validate_scope(post_rebound.url, trusted_scope)
+            if httpx.URL(post_rebound.url).raw_path.decode("ascii") != approval.path:
+                raise ValueError(
+                    "post_json_operation_not_approved: Runtime target binding did not preserve the approved request-target path. Use an exact byte-preserved literal path approval."
+                )
             return post_rebound
         query_rebound = replace(
             case,
@@ -159,6 +160,10 @@ def bind_runtime_target(
             scope=ScopePolicy(allowed_origins=frozenset({target})),
         )
         validate_scope(query_rebound.url, trusted_scope)
+        if httpx.URL(query_rebound.url).raw_path.decode("ascii") != approval.path:
+            raise ValueError(
+                "post_json_operation_not_approved: Runtime target binding did not preserve the approved request-target path. Use an exact byte-preserved literal path approval."
+            )
         return query_rebound
 
     rebound = replace(

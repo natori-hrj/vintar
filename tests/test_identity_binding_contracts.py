@@ -241,6 +241,53 @@ def test_get_binding_requires_exact_identity_approval():
 
 
 @pytest.mark.parametrize(
+    ("case_path", "approved_path"),
+    [
+        ("/a%2Fb", "/a/b"),
+        ("/a%2fb", "/a%2Fb"),
+        ("/a/%2e%2e/b", "/a/../b"),
+        ("/a/../b", "/a/%2e%2e/b"),
+    ],
+)
+def test_get_binding_compares_byte_preserved_paths(case_path, approved_path):
+    source = GET_CASE.replace("/items", case_path)
+    case = parse_regression_case(source)
+    assert isinstance(case, QueryRegressionCaseV2)
+    value = policy_value()
+    value["approvals"][0]["path"] = approved_path
+    target = parse_runtime_origin("https://runtime.invalid")
+
+    with pytest.raises(ValueError, match="post_json_operation_not_approved") as caught:
+        bind_runtime_target(
+            case,
+            target=target,
+            trusted_scope=ScopePolicy(frozenset({target})),
+            post_json_policy=parse_policy(value),
+        )
+
+    assert case_path not in str(caught.value)
+    assert approved_path not in str(caught.value)
+
+
+@pytest.mark.parametrize("path", ["/a%2Fb", "/a%2fb", "/a/%2e%2e/b", "/a//b"])
+def test_get_binding_dispatch_path_is_byte_identical_to_approval(path):
+    case = parse_regression_case(GET_CASE.replace("/items", path))
+    assert isinstance(case, QueryRegressionCaseV2)
+    value = policy_value()
+    value["approvals"][0]["path"] = path
+    target = parse_runtime_origin("https://runtime.invalid")
+
+    rebound = bind_runtime_target(
+        case,
+        target=target,
+        trusted_scope=ScopePolicy(frozenset({target})),
+        post_json_policy=parse_policy(value),
+    )
+
+    assert httpx.URL(rebound.url).raw_path == path.encode("ascii")
+
+
+@pytest.mark.parametrize(
     ("check_type", "probes", "requests"),
     [
         (

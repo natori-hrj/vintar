@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from vintar.core.scope import ScopePolicy
-from vintar.regression import load_regression_case
+from vintar.regression import load_regression_case, parse_regression_case
 from vintar.regression.binding import bind_runtime_target, parse_runtime_origin
 from vintar.regression.cases_v2 import PostJsonRegressionCase
 from vintar.regression.post_json_policy import parse_post_json_runtime_policy
@@ -24,6 +24,7 @@ def policy_for(
     *,
     case_id: str | None = None,
     operation_digest: str | None = None,
+    path: str | None = None,
 ):
     value = {
         "schema_version": 1,
@@ -43,7 +44,7 @@ def policy_for(
                 "credential_kind": "bearer",
                 "credential_env_var": "VINTAR_TEST_TOKEN",
                 "method": "POST",
-                "path": case.approval.path,
+                "path": path or case.approval.path,
                 "origin": "https://golden.invalid",
                 "operation_definition_sha256": operation_digest
                 or case.approval.operation_definition_sha256,
@@ -134,3 +135,30 @@ def test_v2_binding_succeeds_only_with_exact_independent_approval():
     )
     assert isinstance(rebound, PostJsonRegressionCase)
     assert rebound.url == case.url
+
+
+def test_post_binding_uses_byte_preserved_path_for_approval_and_dispatch():
+    source = Path("tests/golden/cases/post-json-boolean-v2.toml").read_text(
+        encoding="utf-8"
+    )
+    parsed = parse_regression_case(source.replace("/items", "/a%2Fb"))
+    assert isinstance(parsed, PostJsonRegressionCase)
+    target = parse_runtime_origin("https://golden.invalid")
+
+    with pytest.raises(ValueError, match="post_json_operation_not_approved") as caught:
+        bind_runtime_target(
+            parsed,
+            target=target,
+            trusted_scope=ScopePolicy(frozenset({target})),
+            post_json_policy=policy_for(parsed, path="/a/b"),
+        )
+    assert "/a%2Fb" not in str(caught.value)
+    assert "/a/b" not in str(caught.value)
+
+    rebound = bind_runtime_target(
+        parsed,
+        target=target,
+        trusted_scope=ScopePolicy(frozenset({target})),
+        post_json_policy=policy_for(parsed),
+    )
+    assert httpx.URL(rebound.url).raw_path == b"/a%2Fb"
