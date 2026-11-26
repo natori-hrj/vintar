@@ -58,6 +58,9 @@ class _ApprovedDispatch:
     raw_path: bytes
 
 
+_ALLOWED_REQUEST_EXTENSION_NAMES = frozenset({"timeout"})
+
+
 def _request_origin(url: httpx.URL) -> AllowedOrigin | None:
     if (
         url.scheme not in {"http", "https"}
@@ -73,6 +76,50 @@ def _request_origin(url: httpx.URL) -> AllowedOrigin | None:
         return None
 
 
+def _is_approved_dispatch(
+    request: httpx.Request, approved: frozenset[_ApprovedDispatch]
+) -> bool:
+    origin = _request_origin(request.url)
+    return (
+        origin is not None
+        and _ApprovedDispatch(request.method, origin, request.url.raw_path) in approved
+    )
+
+
+def _validate_request_extensions(request: httpx.Request) -> None:
+    if not frozenset(request.extensions) <= _ALLOWED_REQUEST_EXTENSION_NAMES:
+        raise _fail(
+            "authorization_request_extensions_unapproved",
+            "the final request contains transport metadata not created by this execution path.",
+            "remove custom request extensions and dispatch only through the isolated authorization client.",
+        )
+
+
+class _FinalAuthorizationDispatchGuard(httpx.BaseTransport):
+    """Recheck invariants immediately before the underlying pool sees a request."""
+
+    def __init__(
+        self,
+        transport: httpx.BaseTransport,
+        approved: frozenset[_ApprovedDispatch],
+    ) -> None:
+        self._transport = transport
+        self._approved = approved
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        _validate_request_extensions(request)
+        if not _is_approved_dispatch(request, self._approved):
+            raise _fail(
+                "authorization_operation_unapproved",
+                "the final request is not an exact operation approved for this identity.",
+                "dispatch only the approved method, origin, and byte-preserved request target through its bound identity.",
+            )
+        return self._transport.handle_request(request)
+
+    def close(self) -> None:
+        self._transport.close()
+
+
 class _AuthorizationDispatchGuard(httpx.BaseTransport):
     def __init__(
         self,
@@ -85,12 +132,8 @@ class _AuthorizationDispatchGuard(httpx.BaseTransport):
         self._approved = approved
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        origin = _request_origin(request.url)
-        if (
-            origin is None
-            or _ApprovedDispatch(request.method, origin, request.url.raw_path)
-            not in self._approved
-        ):
+        _validate_request_extensions(request)
+        if not _is_approved_dispatch(request, self._approved):
             raise _fail(
                 "authorization_operation_unapproved",
                 "the final request is not an exact operation approved for this identity.",
@@ -314,8 +357,11 @@ def _build_authorization_execution(
     try:
         for identity in case.identities:
             underlying = transport_factory(identity.identity_id)
+            final_guard = _FinalAuthorizationDispatchGuard(
+                underlying, dispatches[identity.identity_id]
+            )
             scoped = ScopedTransport(
-                underlying,
+                final_guard,
                 ScopePolicy(frozenset(origins[identity.identity_id])),
                 budget,
                 rate_limiter,

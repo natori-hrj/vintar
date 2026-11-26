@@ -255,6 +255,59 @@ def test_dispatch_rejects_every_unapproved_identity_method_or_raw_target(
     assert all(not transport.requests for transport in transports.values())
 
 
+@pytest.mark.parametrize("identity_id", ["reader-a", "public-user"])
+@pytest.mark.parametrize(
+    "extension_kind",
+    ["target_different", "target_equal", "unknown"],
+)
+def test_dispatch_rejects_unapproved_extensions_before_authentication(
+    identity_id, extension_kind
+):
+    composed, transports, _environment = execution()
+    approved_url = {
+        "reader-a": "https://api.example.test/a",
+        "public-user": "https://api.example.test/public",
+    }[identity_id]
+    approved_target = {"reader-a": b"/a", "public-user": b"/public"}[identity_id]
+    extensions = {
+        "target_different": {"target": b"/different"},
+        "target_equal": {"target": approved_target},
+        "unknown": {"unrecognized": "extension-value-canary"},
+    }[extension_kind]
+    observed: list[httpx.Request] = []
+    with composed as active:
+        client = active.client_for(identity_id)
+        client.event_hooks["request"].append(observed.append)
+        with pytest.raises(AuthorizationExecutionError) as caught:
+            client.get(approved_url, extensions=extensions)
+    assert str(caught.value) == (
+        "authorization_request_extensions_unapproved: Why: the final request "
+        "contains transport metadata not created by this execution path. Instead: "
+        "remove custom request extensions and dispatch only through the isolated "
+        "authorization client."
+    )
+    assert len(observed) == 1
+    assert "Authorization" not in observed[0].headers
+    assert "X-Reader-B-Key" not in observed[0].headers
+    assert "extension-value-canary" not in str(caught.value)
+    assert all(not transport.requests for transport in transports.values())
+
+
+@pytest.mark.parametrize(
+    ("identity_id", "url"),
+    [
+        ("reader-a", "https://api.example.test/a"),
+        ("public-user", "https://api.example.test/public"),
+    ],
+)
+def test_normal_approved_request_reaches_the_identity_transport(identity_id, url):
+    composed, transports, _environment = execution()
+    with composed as active:
+        response = active.client_for(identity_id).get(url)
+    assert response.status_code == 200
+    assert len(transports[identity_id].requests) == 1
+
+
 @pytest.mark.parametrize("identity_id", ["reader-a", "reader-b", "public-user"])
 def test_run_wide_reserved_union_rejects_client_default_collision(identity_id):
     composed, transports, _environment = execution()
