@@ -10,7 +10,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from vintar.auth.contracts import CredentialKind, IdentityCredentialSource
+from vintar.auth.contracts import (
+    CredentialKind,
+    IdentityCredentialSource,
+    validate_credential_header,
+)
 from vintar.core.scope import AllowedOrigin
 from vintar.core.strict_json import DuplicateJsonKeyError, parse_strict_json
 from vintar.regression.binding import parse_runtime_origin
@@ -137,13 +141,7 @@ def _credential_source(value: object) -> IdentityCredentialSource:
         raise ValueError
     kind = CredentialKind(_text(item["credential_kind"], 32))
     header_name = _text(item["header_name"], 128)
-    if re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", header_name) is None:
-        raise ValueError
-    if kind in {CredentialKind.BEARER, CredentialKind.BASIC}:
-        if header_name.casefold() != "authorization":
-            raise ValueError
-    elif header_name.casefold() == "authorization":
-        raise ValueError
+    validate_credential_header(kind, header_name)
     expires_at: datetime | None = None
     if "expires_at" in item:
         expiry = _text(item["expires_at"], 64)

@@ -364,3 +364,21 @@ def test_identity_source_rejects_invalid_names_headers_and_duplicates(mutation):
     mutation(value)
     with pytest.raises(ValueError, match="post_json_policy_schema_invalid"):
         parse_policy(value)
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "Host",
+        "Content-Length",
+        "Transfer-Encoding",
+        "Connection",
+        "Cookie",
+        "Proxy-Authorization",
+        "Content-Type",
+        "Bad Header",
+    ],
+)
+def test_api_key_header_rejects_reserved_hop_by_hop_and_unsafe_names(header):
+    with pytest.raises(ValueError, match="post_json_policy_schema_invalid"):
+        parse_policy(policy_value(kind="api_key_header", header=header))
