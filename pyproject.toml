@@ -97,6 +97,20 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
+name = "Checks cannot access authentication or credential material."
+type = "forbidden"
+source_modules = ["vintar.checks"]
+forbidden_modules = ["vintar.auth"]
+
+[[tool.importlinter.contracts]]
+name = "Authenticated application stays unreachable from regression and CLI until PR 5c."
+type = "forbidden"
+source_modules = [
+    "vintar.regression", "vintar.cli", "vintar.sqli_cli", "vintar.regression_cli",
+]
+forbidden_modules = ["vintar.auth.apply"]
+
+[[tool.importlinter.contracts]]
 name = "Direct core.http access bypasses scope, request budgets, and rate limits. Use vintar.core.executor.ExecutionContext."
 type = "forbidden"
 source_modules = ["vintar.checks"]

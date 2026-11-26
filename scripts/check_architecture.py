@@ -24,6 +24,7 @@ HTTPX_SEND_APIS = {
     )
 }
 SEND_TEMPLATE = "vintar.core.template.send_template"
+AUTH_APPLY = "vintar.auth.apply"
 JSON_BODY_LOCATION = "vintar.core.request.InjectionLocation.JSON_BODY"
 JSON_BODY_PRIMITIVE_FILES = {
     Path("core/request.py"),
@@ -211,13 +212,42 @@ def check_source(path: Path, source: str) -> list[str]:
         return sorted(discovery_diagnostics(path, tree))
     package = ".".join(("vintar", *path.parent.parts))
     in_checks = path.parts[0] == "checks"
+    in_auth = path.parts[0] == "auth"
     imports: dict[str, set[str]] = {}
     violations = set()
 
     for node in ast.walk(tree):
+        direct_modules: tuple[str, ...] = ()
+        if isinstance(node, ast.Import):
+            direct_modules = tuple(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            direct_modules = (node.module or "",)
+        for module in direct_modules:
+            if module == AUTH_APPLY and path in {
+                Path("cli.py"),
+                Path("regression/runner.py"),
+                Path("regression/batch.py"),
+            }:
+                violations.add((node.lineno, AUTH_APPLY))
+            if in_checks and (
+                module == "vintar.auth" or module.startswith("vintar.auth.")
+            ):
+                violations.add((node.lineno, "vintar.auth"))
         for local, qualified in import_names(node, package):
             imports.setdefault(local, set()).add(qualified)
             if in_checks and qualified == SEND_TEMPLATE:
+                violations.add((node.lineno, qualified))
+            if in_auth and (
+                qualified.startswith(("vintar.regression", "vintar.checks"))
+                or qualified
+                in {
+                    "vintar.cli",
+                    "vintar.sqli_cli",
+                    "vintar.regression_cli",
+                    "vintar.core.executor.ExecutionContext",
+                    SEND_TEMPLATE,
+                }
+            ):
                 violations.add((node.lineno, qualified))
 
     for node in ast.walk(tree):
@@ -231,6 +261,14 @@ def check_source(path: Path, source: str) -> list[str]:
             and SEND_TEMPLATE in qualified_names(node, imports)
         ):
             violations.add((node.lineno, SEND_TEMPLATE))
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.ctx, ast.Store)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "headers"
+            and path != Path("auth/apply.py")
+        ):
+            violations.add((node.lineno, "credential-header-application"))
         if path not in JSON_BODY_PRIMITIVE_FILES:
             for name in qualified_names(node, imports):
                 if name == JSON_BODY_LOCATION:
@@ -241,6 +279,12 @@ def check_source(path: Path, source: str) -> list[str]:
             f"{path}:{line}: JSON body injection may be constructed only by core primitives "
             "or the trusted POST execution adapter in regression/runner.py."
             if name == JSON_BODY_LOCATION
+            else f"{path}:{line}: Authentication application is unavailable from the public runner and CLI until PR 5c."
+            if name == AUTH_APPLY
+            else f"{path}:{line}: Checks cannot import authentication or touch credential material."
+            if name == "vintar.auth"
+            else f"{path}:{line}: Credential headers may be applied only by vintar.auth.apply."
+            if name == "credential-header-application"
             else f"{path}:{line}: {name} bypasses scope, request budgets, and rate limits. "
             "Use vintar.core.executor.ExecutionContext."
         )

@@ -166,3 +166,32 @@ def test_post_json_review_can_reuse_json_body_primitives():
         Path("regression/post_json_review.py"),
         "from vintar.core.json_body import JsonBody, JsonPointer",
     )
+
+
+@pytest.mark.parametrize(
+    "path", ["regression/runner.py", "regression/batch.py", "cli.py"]
+)
+def test_public_execution_cannot_import_auth_application_until_5c(path):
+    [diagnostic] = check_source(Path(path), "import vintar.auth.apply")
+    assert "unavailable from the public runner and CLI until PR 5c" in diagnostic
+
+
+def test_checks_cannot_import_authentication_material():
+    [diagnostic] = check_source(Path("checks/example.py"), "import vintar.auth")
+    assert "cannot import authentication" in diagnostic
+
+
+def test_only_auth_apply_can_mutate_request_headers():
+    source = 'request.headers["Authorization"] = value'
+    [diagnostic] = check_source(Path("core/example.py"), source)
+    assert "only by vintar.auth.apply" in diagnostic
+    assert not check_source(Path("auth/apply.py"), source)
+
+
+def test_repository_public_execution_modules_do_not_import_auth_apply():
+    for path in (
+        Path("src/vintar/regression/runner.py"),
+        Path("src/vintar/regression/batch.py"),
+        Path("src/vintar/cli.py"),
+    ):
+        assert "vintar.auth.apply" not in path.read_text(encoding="utf-8")
