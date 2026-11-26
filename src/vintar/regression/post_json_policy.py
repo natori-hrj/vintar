@@ -261,7 +261,7 @@ def parse_post_json_runtime_policy(data: bytes) -> PostJsonRuntimePolicy:
                     identity_id=identity_id,
                     credential_kind=credential_kind,
                     credential_env_var=credential_env_var,
-                    method=cast(str, method),
+                    method=method,
                     path=path,
                     origin=parse_runtime_origin(_text(approval["origin"], 2048)),
                     operation_definition_sha256=(

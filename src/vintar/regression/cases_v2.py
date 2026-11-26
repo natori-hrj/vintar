@@ -141,7 +141,7 @@ def _parse_get_case_v2(
         parsed_url = urlsplit(url)
         if parsed_url.path != approval["path"] or "{" in parsed_url.path:
             raise ValueError
-        _require_byte_preserved_request_path(url, cast(str, approval["path"]))
+        _require_byte_preserved_request_path(url, approval["path"])
         environment_class = _text(approval["environment_class"], 64)
         probes_value = _mapping(root["probes"])
         delay: float | None = None
