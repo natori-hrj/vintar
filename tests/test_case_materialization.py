@@ -1159,16 +1159,23 @@ def test_review_report_and_config_binding_are_strict(tmp_path, monkeypatch):
         build(inputs)
 
 
-def test_review_schema_version_rejects_boolean(tmp_path, monkeypatch):
+@pytest.mark.parametrize("version", [None, 2, True, 1.0])
+def test_review_schema_version_uses_dedicated_typed_diagnostic(
+    tmp_path, monkeypatch, version
+):
     inputs = make_inputs(tmp_path, monkeypatch)
     review = json.loads(inputs["review"].read_text(encoding="utf-8"))
-    review["schema_version"] = True
+    if version is None:
+        review.pop("schema_version")
+    else:
+        review["schema_version"] = version
     inputs["review"].write_text(json.dumps(review), encoding="utf-8")
 
     result = invoke(inputs)
 
     assert result.exit_code == 2 and result.stdout == ""
-    assert "review report no longer matches" in result.stderr
+    assert "Invalid review schema version" in result.stderr
+    assert "current version 1 JSON output" in result.stderr
     assert "baseline-value-sentinel" not in result.stderr
 
 

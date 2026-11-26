@@ -143,20 +143,30 @@ def test_approval_metadata_comes_from_re_resolved_review_not_config(tmp_path):
         materialize_post_json_case(spec, inventory, answers, review, config)
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda report: report.update(schema_version=True),
-        lambda report: report.update(schema_version=1.0),
-        lambda report: report["operation"].update(approved=1),
-    ],
-)
-def test_equal_but_different_json_types_in_review_are_rejected_without_body(
-    tmp_path, mutation
+@pytest.mark.parametrize("version", [None, 2, True, 1.0])
+def test_post_review_schema_version_is_checked_before_integrity_comparison(
+    tmp_path, version
 ):
     spec, inventory, answers, review, config, _ = _materialization_inputs(tmp_path)
     value = json.loads(review.read_text(encoding="utf-8"))
-    mutation(value)
+    if version is None:
+        value.pop("schema_version")
+    else:
+        value["schema_version"] = version
+    review.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        PostJsonCaseMaterializationError, match="post_json_review_schema_invalid"
+    ) as caught:
+        materialize_post_json_case(spec, inventory, answers, review, config)
+
+    assert SENTINEL not in str(caught.value)
+
+
+def test_nested_equal_but_different_json_type_uses_review_mismatch(tmp_path):
+    spec, inventory, answers, review, config, _ = _materialization_inputs(tmp_path)
+    value = json.loads(review.read_text(encoding="utf-8"))
+    value["operation"]["approved"] = 1
     review.write_text(json.dumps(value), encoding="utf-8")
 
     with pytest.raises(

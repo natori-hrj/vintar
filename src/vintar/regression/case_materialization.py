@@ -564,16 +564,16 @@ def materialize_case(
     """Revalidate reviewed inputs and render deterministic Schema v1 TOML."""
     material = resolve_review(spec, draft, answers)
     supplied_review = _load_review(review)
+    schema_version = supplied_review.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
+        raise CaseMaterializationError(
+            "Invalid review schema version. Supply the current version 1 JSON output from review-draft."
+        )
     if canonical_strict_json_bytes(supplied_review) != canonical_strict_json_bytes(
         material.report
     ):
         raise CaseMaterializationError(
             "The review report no longer matches the current spec, draft, or answers. Rerun review-draft and supply its current --review output."
-        )
-    schema_version = supplied_review.get("schema_version")
-    if type(schema_version) is not int or schema_version != 1:
-        raise CaseMaterializationError(
-            "Invalid review schema version. Supply the current version 1 JSON output from review-draft."
         )
     loaded_config = _load_config(config)
     check_type = _materialization_type(loaded_config)

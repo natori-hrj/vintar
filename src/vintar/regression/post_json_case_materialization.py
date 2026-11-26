@@ -274,6 +274,13 @@ def materialize_post_json_case(
 ) -> MaterializedPostJsonCase:
     """Re-resolve approval and produce one validated Schema v2 case."""
     supplied_review = _read_review(review)
+    schema_version = supplied_review.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
+        raise _error(
+            "post_json_review_schema_invalid",
+            "The review artifact requires schema_version as the integer 1.",
+            "Regenerate it with vintar review-post-json.",
+        )
     try:
         material = resolve_post_json_review(spec, inventory, answers)
     except PostJsonReviewError as exc:
