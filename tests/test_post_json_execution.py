@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -28,6 +29,7 @@ from vintar.regression.runner import (
     _post_json_approval,
     _post_json_execution_inputs,
     _run_with_resources,
+    batch_execution_schedule,
 )
 
 CASES = Path("tests/golden/cases")
@@ -459,3 +461,101 @@ def test_time_credential_resolution_is_outside_injected_measurement_clock(monkey
         ),
     )
     assert outcome.time_run.total_elapsed_seconds == 0.0
+
+
+def _fixed_auth_clock(monkeypatch, now):
+    preflight = runner_module.preflight_authentication
+    resolve = runner_module.resolve_credentials
+    monkeypatch.setattr(
+        runner_module,
+        "preflight_authentication",
+        lambda bindings, requests, *, planned_max_run_seconds: preflight(
+            bindings,
+            requests,
+            planned_max_run_seconds=planned_max_run_seconds,
+            now=now,
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "resolve_credentials",
+        lambda plan, environ: resolve(plan, environ, now=now),
+    )
+
+
+def _two_case_policy(first, second, *, expires_at):
+    first_policy = runtime_policy(first)
+    second_policy = runtime_policy(second)
+    source = replace(first_policy.identities[0], expires_at=expires_at)
+    combined = replace(
+        first_policy,
+        identities=(source,),
+        approvals=first_policy.approvals + second_policy.approvals,
+    )
+    return TrustedExecutionPolicy(
+        scope=first.scope,
+        max_requests=48,
+        max_requests_per_second=10.0,
+        max_timeout_seconds=10.0,
+        max_time_execution_seconds=120.0,
+        post_json_policy=combined,
+    )
+
+
+def test_batch_expiry_uses_shared_slowest_rate_before_any_dispatch(monkeypatch):
+    now = datetime(2030, 1, 1, tzinfo=UTC)
+    first = replace(load_case(), requests_per_second=10.0)
+    second = replace(first, case_id="second-case", requests_per_second=0.1)
+    provisional = _two_case_policy(first, second, expires_at=now + timedelta(days=1))
+    old_per_case_duration = sum(
+        case.max_requests * min(case.timeout_seconds, provisional.max_timeout_seconds)
+        + (case.max_requests - 1)
+        / min(case.requests_per_second, provisional.max_requests_per_second)
+        for case in (first, second)
+    )
+    schedule = batch_execution_schedule((first, second), provisional)
+    assert schedule.planned_max_run_seconds > old_per_case_duration
+    policy = _two_case_policy(
+        first,
+        second,
+        expires_at=now + timedelta(seconds=old_per_case_duration + 61),
+    )
+    _fixed_auth_clock(monkeypatch, now)
+    requests = []
+    with pytest.raises(ValueError, match="auth_material_expired"):
+        run_regression_batch(
+            [first, second],
+            policy=policy,
+            environ={"VINTAR_TEST_TOKEN": "example-token-value"},
+            transport=httpx.MockTransport(
+                lambda request: requests.append(request) or httpx.Response(200)
+            ),
+        )
+    assert requests == []
+
+
+def test_batch_expiry_rejects_exact_duration_plus_margin_boundary(monkeypatch):
+    now = datetime(2030, 1, 1, tzinfo=UTC)
+    first = replace(load_case(), requests_per_second=10.0)
+    second = replace(first, case_id="second-case", requests_per_second=0.1)
+    provisional = _two_case_policy(first, second, expires_at=now + timedelta(days=1))
+    duration = batch_execution_schedule(
+        (first, second), provisional
+    ).planned_max_run_seconds
+    policy = _two_case_policy(
+        first,
+        second,
+        expires_at=now + timedelta(seconds=duration + 60),
+    )
+    _fixed_auth_clock(monkeypatch, now)
+    requests = []
+    with pytest.raises(ValueError, match="auth_material_expired"):
+        run_regression_batch(
+            [first, second],
+            policy=policy,
+            environ={"VINTAR_TEST_TOKEN": "example-token-value"},
+            transport=httpx.MockTransport(
+                lambda request: requests.append(request) or httpx.Response(200)
+            ),
+        )
+    assert requests == []

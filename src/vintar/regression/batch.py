@@ -23,6 +23,7 @@ from vintar.regression.runner import (
     _effective_scope,
     _resolve_authentication,
     _run_with_resources,
+    batch_execution_schedule,
 )
 
 MAX_BATCH_CASES = 128
@@ -172,6 +173,8 @@ def run_regression_batch(
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("Duplicate regression case identifier")
 
+    schedule = batch_execution_schedule(selected, policy)
+
     # Validate every case before any network request.
     scopes: list[ScopePolicy] = [_effective_scope(case, policy) for case in selected]
 
@@ -183,18 +186,14 @@ def run_regression_batch(
         )
 
     budget = RequestBudget(required_requests)
-    rate_limiter = RateLimiter(
-        requests_per_second=min(
-            policy.max_requests_per_second,
-            *(case.requests_per_second for case in selected),
-        )
-    )
+    rate_limiter = RateLimiter(requests_per_second=schedule.requests_per_second)
 
     authentication = _resolve_authentication(
         selected,
         policy,
         transport=transport,
         environ=os.environ if environ is None else environ,
+        schedule=schedule,
     )
 
     outcomes: list[AnyRegressionOutcome] = []

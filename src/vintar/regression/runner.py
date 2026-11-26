@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import cast
 
 import httpx
 
@@ -77,6 +78,14 @@ class TimeRequestBudgetError(ValueError):
 
 class PostJsonExecutionError(ValueError):
     """A stable, redacted trusted POST execution rejection."""
+
+
+@dataclass(frozen=True, slots=True)
+class BatchExecutionSchedule:
+    """Shared batch rate and conservative wall-clock execution bound."""
+
+    requests_per_second: float
+    planned_max_run_seconds: float
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -426,12 +435,16 @@ def _effective_scope(
         validate_template(template)
         validate_scope(template.url, scope)
 
-    if isinstance(case, (TimeRegressionCase, PostJsonRegressionCase)) and (
-        not isinstance(case, PostJsonRegressionCase) or case.check_type == "sqli.time"
-    ):
-        effective_rate = min(case.requests_per_second, policy.max_requests_per_second)
-        effective_timeout = min(case.timeout_seconds, policy.max_timeout_seconds)
-        expected_delay = case.expected_delay_seconds
+    if case.check_type == "sqli.time":
+        time_case = cast(
+            TimeRegressionCase | PostJsonRegressionCase | QueryRegressionCaseV2,
+            case,
+        )
+        effective_rate = min(
+            time_case.requests_per_second, policy.max_requests_per_second
+        )
+        effective_timeout = min(time_case.timeout_seconds, policy.max_timeout_seconds)
+        expected_delay = time_case.expected_delay_seconds
         if expected_delay is None:
             raise ValueError("Time case requires an expected delay.")
         if effective_timeout < expected_delay + 0.5:
@@ -703,6 +716,31 @@ def _authentication_plan(
         raise _authentication_error(exc) from None
 
 
+def batch_execution_schedule(
+    cases: Sequence[AnyRegressionCase], policy: TrustedExecutionPolicy
+) -> BatchExecutionSchedule:
+    """Derive the one rate limiter and matching worst-case expiry duration."""
+    if not cases:
+        raise ValueError("Cannot schedule an empty regression batch.")
+    shared_rate = min(
+        policy.max_requests_per_second,
+        *(case.requests_per_second for case in cases),
+    )
+    duration = 0.0
+    requests_before = 0
+    for case in cases:
+        if case.check_type == "sqli.time":
+            duration += policy.max_time_execution_seconds
+        else:
+            duration += case.max_requests * min(
+                case.timeout_seconds, policy.max_timeout_seconds
+            )
+            waits = case.max_requests - 1 + int(requests_before > 0)
+            duration += waits / shared_rate
+        requests_before += case.max_requests
+    return BatchExecutionSchedule(shared_rate, duration)
+
+
 @dataclass(slots=True)
 class _RunnerAuthentication:
     transport: AuthenticatedTransport
@@ -717,17 +755,12 @@ def _resolve_authentication(
     *,
     transport: httpx.BaseTransport | None,
     environ: Mapping[str, str],
+    schedule: BatchExecutionSchedule,
 ) -> _RunnerAuthentication | None:
-    planned_max_run_seconds = sum(
-        policy.max_time_execution_seconds
-        if case.check_type == "sqli.time"
-        else case.max_requests * min(case.timeout_seconds, policy.max_timeout_seconds)
-        + (case.max_requests - 1)
-        / min(case.requests_per_second, policy.max_requests_per_second)
-        for case in cases
-    )
     plan = _authentication_plan(
-        cases, policy, planned_max_run_seconds=planned_max_run_seconds
+        cases,
+        policy,
+        planned_max_run_seconds=schedule.planned_max_run_seconds,
     )
     if plan is None:
         return None
@@ -978,7 +1011,12 @@ def run_regression_case(
     """
     if transport is not None and not isinstance(transport, httpx.BaseTransport):
         raise TypeError("Invalid test transport.")
+    if not isinstance(case, AnyRegressionCase):
+        raise TypeError("case must be a RegressionCase.")
+    if not isinstance(policy, TrustedExecutionPolicy):
+        raise TypeError("policy must be a TrustedExecutionPolicy.")
 
+    schedule = batch_execution_schedule((case,), policy)
     scope = _effective_scope(case, policy)
 
     if policy.max_requests < case.max_requests:
@@ -989,6 +1027,7 @@ def run_regression_case(
         policy,
         transport=transport,
         environ=os.environ if environ is None else environ,
+        schedule=schedule,
     )
     try:
         return _run_with_resources(
@@ -996,12 +1035,7 @@ def run_regression_case(
             policy=policy,
             scope=scope,
             budget=RequestBudget(case.max_requests),
-            rate_limiter=RateLimiter(
-                requests_per_second=min(
-                    case.requests_per_second,
-                    policy.max_requests_per_second,
-                )
-            ),
+            rate_limiter=RateLimiter(requests_per_second=schedule.requests_per_second),
             transport=transport,
             observation_sink=observation_sink,
             authenticated_transport=(
