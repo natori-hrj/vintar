@@ -9,12 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from vintar.checks.sqli.presets import (
-    BOOLEAN_PROBE_PRESET_NAMES,
-    BooleanConfirmationPreset,
-    get_boolean_confirmation_preset,
-    get_boolean_probe_preset,
+from vintar.checks.sqli.catalog import (
+    CatalogResolutionError,
+    _materialize_legacy_boolean_family,
 )
+from vintar.checks.sqli.probe_families import BooleanConfirmationPreset
 from vintar.core.strict_json import canonical_strict_json_bytes
 from vintar.regression.cases import (
     ErrorCaseValidationError,
@@ -276,14 +275,15 @@ def _probe_payloads(
             'Invalid preset probes config. Use only selection = "preset" and preset.'
         )
     try:
-        preset = get_boolean_probe_preset(probes["preset"])
-    except ValueError as exc:
-        valid = ", ".join(BOOLEAN_PROBE_PRESET_NAMES)
+        true_payload, false_payload, true_2, false_2, control = (
+            _materialize_legacy_boolean_family(probes["preset"])
+        )
+    except CatalogResolutionError as exc:
         raise CaseMaterializationError(
-            f"Invalid probe preset. Use one of: {valid}."
+            "Invalid probe preset. Use one of: numeric, string-quoted."
         ) from exc
-    confirmation = get_boolean_confirmation_preset(probes["preset"])
-    return preset.true_payload, preset.false_payload, confirmation
+    confirmation = BooleanConfirmationPreset(true_2, false_2, control)
+    return true_payload, false_payload, confirmation
 
 
 def _time_probe_payloads(value: object) -> tuple[str, str, float]:

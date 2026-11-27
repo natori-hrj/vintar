@@ -502,6 +502,19 @@ def test_sensitive_diagnostics_are_not_exported():
     assert '"cookies":' not in serialized
 
 
+def test_builtin_catalog_content_is_not_exported():
+    catalog_content = "' AND 1=1-- "
+    result = make_batch(
+        make_outcome(
+            "case-one",
+            actual=Verdict.INCONCLUSIVE,
+            reason=f"Internal probe diagnostic: {catalog_content}",
+        ),
+    )
+
+    assert catalog_content not in regression_batch_report_json(result)
+
+
 def test_report_uses_explicit_allowlist():
     result = make_batch(make_outcome("case-one"))
     report = regression_batch_report_dict(result)

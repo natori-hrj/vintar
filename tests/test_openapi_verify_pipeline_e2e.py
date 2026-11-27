@@ -7,6 +7,10 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 import pytest
+from probe_examples import (
+    get_boolean_confirmation_preset,
+    get_boolean_probe_preset,
+)
 from test_sqli_http_e2e import (
     LoopbackShutdownError,
     LoopbackStartupError,
@@ -15,10 +19,6 @@ from test_sqli_http_e2e import (
 )
 from typer.testing import CliRunner
 
-from vintar.checks.sqli.presets import (
-    get_boolean_confirmation_preset,
-    get_boolean_probe_preset,
-)
 from vintar.cli import app
 from vintar.regression.cases import load_regression_case
 
