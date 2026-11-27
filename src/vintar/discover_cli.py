@@ -10,7 +10,9 @@ from typing import Annotated
 import typer
 
 from vintar.regression.discovery import (
+    LOCATIONS,
     DiscoveryError,
+    Input,
     Inventory,
     SelectionError,
     input_id,
@@ -39,12 +41,13 @@ def _report(inventory: Inventory, selected: frozenset[str]) -> str:
     for operation, record in zip(
         inventory.operations, report["operations"], strict=True
     ):
+        del record["declared_id"]
         if operation.compatibility_blocker is None:
             del record["compatibility_blocker"]
         else:
             record["compatibility_status"] = "unverified"
         for item, entry in zip(operation.inputs, record["inputs"], strict=True):
-            del entry["body_path"]
+            del entry["body_path"], entry["schema_types"], entry["skeleton_reason"]
             identifier = input_id(operation, item)
             entry["id"] = identifier
             entry["selected"] = identifier in selected
@@ -52,6 +55,61 @@ def _report(inventory: Inventory, selected: frozenset[str]) -> str:
     return (
         json.dumps(
             report, default=_encode_path, sort_keys=True, indent=2, ensure_ascii=True
+        )
+        + "\n"
+    )
+
+
+def _parameter(item: Input) -> dict[str, object]:
+    reason = item.skeleton_reason
+    status = "supported" if reason == "declared_schema" else "held"
+    location = item.location
+    name = item.name
+    if item.ignored_reason is not None:
+        status, reason = "ignored", "reserved_header"
+    if location == "body":
+        location = "json_body"
+        kind, token = item.body_path[-1]
+        name = "*" if kind == "items" else token
+    return {
+        "location": location,
+        "name": name,
+        "required": item.required,
+        "schema_types": item.schema_types,
+        "pointer": item.source.pointer,
+        "baseline_presence": "unverified",
+        "status": status,
+        "reason": reason,
+    }
+
+
+def _serialize_skeleton(inventory: Inventory) -> str:
+    operations = [
+        {
+            "operation_id": operation.declared_id,
+            "method": operation.method,
+            "path": operation.path,
+            "identity": "unassigned",
+            "approval": "unassigned",
+            "probe_family": "unselected",
+            "side_effect_review": "pending_review",
+            "executable": False,
+            "parameters": [
+                _parameter(item)
+                for item in operation.inputs
+                if item.location in LOCATIONS
+                or (
+                    item.location == "body"
+                    and item.body_path[0] == ("media", "application/json")
+                    and len(item.body_path) > 1
+                )
+            ],
+        }
+        for operation in inventory.operations
+    ]
+    return (
+        json.dumps(
+            {"schema_version": 1, "operations": operations}, indent=2, sort_keys=True
         )
         + "\n"
     )
@@ -95,9 +153,24 @@ def discover_command(
         Path | None,
         typer.Option("--drafts-dir", help="Directory for offline review drafts."),
     ] = None,
+    skeleton_output: Annotated[
+        Path | None,
+        typer.Option(
+            "--skeleton-output", help="Destination for metadata-only skeletons."
+        ),
+    ] = None,
 ) -> None:
     """Inventory a local OpenAPI spec for review."""
     try:
+        if skeleton_output is not None:
+            if output is not None or drafts_dir is not None or selection is not None:
+                raise DraftExportError(
+                    "--skeleton-output cannot be combined with other discovery options."
+                )
+            _write_report(
+                skeleton_output, (spec,), _serialize_skeleton(load_inventory(spec))
+            )
+            return
         if (output is None) == (drafts_dir is None):
             raise DraftExportError("Choose exactly one of --output or --drafts-dir.")
         source_file = None

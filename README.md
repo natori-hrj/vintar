@@ -217,6 +217,18 @@ Apply network egress controls in sensitive environments. Origin validation leave
 
 Use `vintar discover` to inventory a single local OpenAPI 3.0 or 3.1 spec in JSON or YAML. The report lists operations, declared inputs, held and ignored items, and source pointers. Discovery performs no HTTP requests. It produces review data that is separate from regression case files.
 
+### OpenAPI discovery skeletons
+
+```bash
+uv run --locked vintar discover --spec ./openapi.yaml --skeleton-output ./skeleton.json
+```
+
+The skeleton lists operations under `paths` and declared query, path, header,
+cookie, and `application/json` body fields. It preserves path templates and
+includes JSON Pointers into the spec. The operation ID is `null` when the spec
+omits it. Every operation requires side-effect review and is non-executable.
+Baseline presence is unverified because discovery reads only the spec.
+
 ### Inventory POST JSON Bodies
 
 Use `vintar inventory-post-json` for an offline, versioned inventory of every

@@ -112,6 +112,8 @@ class Input:
     definition: Source
     ignored_reason: str | None = None
     body_path: tuple[tuple[str, str], ...] = ()
+    schema_types: tuple[str, ...] = ()
+    skeleton_reason: str = "declared_schema"
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ class Operation:
     inputs: tuple[Input, ...]
     compatible: bool
     compatibility_blocker: HeldItem | None = None
+    declared_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -396,6 +399,15 @@ def _required(value: JSONMap, source: Source) -> bool:
             source.child("required"), "Invalid required flag. Use true or false."
         )
     return required
+
+
+def _declared_types(schema: JSONMap | bool) -> tuple[str, ...]:
+    value = schema.get("type") if isinstance(schema, dict) else None
+    types = value if isinstance(value, list) else [value]
+    valid = {"array", "boolean", "integer", "null", "number", "object", "string"}
+    return tuple(
+        sorted({item for item in types if isinstance(item, str) and item in valid})
+    )
 
 
 def _local_pointer_fragment(reference: str, source: Source) -> str:
@@ -721,6 +733,12 @@ class _Discovery:
                 schema, _, _ = self.resolve_schema(
                     parameter["schema"], definition.child("schema"), trail
                 )
+            schema_types = _declared_types(schema)
+            skeleton_reason = "declared_schema"
+            if len(self.held) != previous_holds:
+                skeleton_reason = "unsupported_reference_or_schema"
+            elif not schema_types or "content" in parameter:
+                skeleton_reason = "unsupported_schema"
             compatible = (
                 location == "query"
                 and len(self.held) == previous_holds
@@ -745,7 +763,14 @@ class _Discovery:
                     )
                 )
             result[key] = Input(
-                location, name, required, compatible, declared, definition
+                location,
+                name,
+                required,
+                compatible,
+                declared,
+                definition,
+                schema_types=schema_types,
+                skeleton_reason=skeleton_reason,
             )
             if blockers is not None:
                 for held in self.held[previous_holds:]:
@@ -770,7 +795,16 @@ class _Discovery:
                 source,
                 "Expanded body nesting exceeds the limit. Flatten the body schema.",
             )
+        previous_holds = len(self.held)
         node, definition, trail = self.resolve_schema(value, source, trail)
+        keys = {"allOf", "anyOf", "oneOf", "additionalProperties", "$dynamicRef", "$id"}
+        schema_types = _declared_types(node)
+        supported = (
+            isinstance(node, dict)
+            and not keys.intersection(node)
+            and len(self.held) == previous_holds
+            and bool(schema_types)
+        )
         found = (
             [
                 Input(
@@ -781,6 +815,10 @@ class _Discovery:
                     source,
                     definition,
                     body_path=body_path,
+                    schema_types=schema_types,
+                    skeleton_reason="declared_schema"
+                    if supported
+                    else "unsupported_schema",
                 )
             ]
             if name
@@ -788,7 +826,6 @@ class _Discovery:
         )
         if isinstance(node, bool):
             return found
-        keys = {"allOf", "anyOf", "oneOf", "additionalProperties", "$dynamicRef", "$id"}
         for key in sorted(keys & node.keys()):
             self.held.append(
                 HeldItem(
@@ -919,6 +956,7 @@ class _Discovery:
                 )
             )
         digest = hashlib.sha256(f"{method.upper()} {path}".encode()).hexdigest()[:32]
+        declared_id = node.get("operationId")
         return Operation(
             f"op-{digest}",
             method.upper(),
@@ -932,6 +970,7 @@ class _Discovery:
                 for item in inputs
             ),
             compatibility_blocker,
+            declared_id if isinstance(declared_id, str) else None,
         )
 
     def inventory(self) -> Inventory:
