@@ -14,7 +14,7 @@ import httpx
 
 from vintar.checks.sqli.error_analyzer import validate_error_probe_payload
 from vintar.checks.sqli.models import Verdict
-from vintar.checks.sqli.presets import BooleanConfirmationPreset
+from vintar.checks.sqli.probe_families import BooleanConfirmationPreset
 from vintar.core.injector import inject
 from vintar.core.request import (
     InjectionLocation,

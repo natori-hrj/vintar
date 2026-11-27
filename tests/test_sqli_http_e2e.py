@@ -22,6 +22,10 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+from probe_examples import (
+    get_boolean_confirmation_preset,
+    get_boolean_probe_preset,
+)
 
 from vintar.checks.sqli.confirmation_runner import (
     ConfirmationOutcome,
@@ -30,10 +34,6 @@ from vintar.checks.sqli.confirmation_runner import (
 )
 from vintar.checks.sqli.models import Verdict, VerificationResult
 from vintar.checks.sqli.orchestrator import verify_boolean_sqli
-from vintar.checks.sqli.presets import (
-    get_boolean_confirmation_preset,
-    get_boolean_probe_preset,
-)
 from vintar.core.budget import RequestBudget
 from vintar.core.executor import ExecutionContext
 from vintar.core.rate_limit import RateLimiter

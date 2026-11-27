@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 import yaml
+from probe_examples import get_boolean_confirmation_preset
 from test_sqli_candidate_reliability import classify as reliability_classify
 from typer.testing import CliRunner
 
@@ -33,7 +34,6 @@ from vintar.checks.sqli.error_analyzer import ERROR_PROBE_ORDER
 from vintar.checks.sqli.models import Verdict
 from vintar.checks.sqli.observation_sink import RecordedSqliObservation
 from vintar.checks.sqli.orchestrator import BOOLEAN_PROBE_ORDER, verify_boolean_sqli
-from vintar.checks.sqli.presets import get_boolean_confirmation_preset
 from vintar.checks.sqli.time_plan import TIME_PROBE_ORDER
 from vintar.cli import app
 from vintar.core.budget import RequestBudget

@@ -32,6 +32,10 @@ SEND_TEMPLATE = "vintar.core.template.send_template"
 AUTH_APPLY = "vintar.auth.apply"
 AUTHORIZATION_EXECUTION = "vintar.regression.authorization_execution"
 AUTHORIZATION_RUNNER = "vintar.regression.authorization_runner"
+SQLI_CATALOG = "vintar.checks.sqli.catalog"
+LEGACY_CATALOG_EXPANSION = (
+    "vintar.checks.sqli.catalog._materialize_legacy_boolean_family"
+)
 JSON_BODY_LOCATION = "vintar.core.request.InjectionLocation.JSON_BODY"
 JSON_BODY_PRIMITIVE_FILES = {
     Path("core/request.py"),
@@ -124,7 +128,8 @@ def discovery_diagnostics(path, tree):
         allowed = DISCOVERY_IMPORTS | {
             "errno",
             "tempfile",
-            "vintar.checks.sqli.presets",
+            SQLI_CATALOG,
+            "vintar.checks.sqli.probe_families",
             "vintar.core.strict_json",
             "vintar.regression.cases",
             "vintar.regression.discovery",
@@ -172,8 +177,6 @@ def discovery_diagnostics(path, tree):
             "vintar.regression.binding",
             "vintar.regression.file_io",
         }
-    if path == Path("checks/sqli/presets.py"):
-        allowed = {"collections.abc", "dataclasses", "types"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules = [alias.name for alias in node.names]
@@ -223,7 +226,6 @@ def check_source(path: Path, source: str) -> list[str]:
         Path("materialize_post_json_case_cli.py"),
         Path("post_json_inventory_cli.py"),
         Path("post_json_review_cli.py"),
-        Path("checks/sqli/presets.py"),
         Path("regression/case_materialization.py"),
         Path("regression/cases_v2.py"),
         Path("regression/authorization_cases.py"),
@@ -274,6 +276,10 @@ def check_source(path: Path, source: str) -> list[str]:
                 violations.add((node.lineno, "vintar.auth"))
         for local, qualified in import_names(node, package):
             imports.setdefault(local, set()).add(qualified)
+            if qualified == LEGACY_CATALOG_EXPANSION and path != Path(
+                "regression/case_materialization.py"
+            ):
+                violations.add((node.lineno, LEGACY_CATALOG_EXPANSION))
             if in_checks and qualified == SEND_TEMPLATE:
                 violations.add((node.lineno, qualified))
             if in_auth and (
@@ -290,6 +296,10 @@ def check_source(path: Path, source: str) -> list[str]:
                 violations.add((node.lineno, qualified))
 
     for node in ast.walk(tree):
+        if path != Path("regression/case_materialization.py"):
+            for name in qualified_names(node, imports):
+                if name == LEGACY_CATALOG_EXPANSION:
+                    violations.add((node.lineno, LEGACY_CATALOG_EXPANSION))
         if isinstance(node, ast.Call) and path not in HTTP_FILES:
             for name in qualified_names(node.func, imports):
                 if name in HTTPX_SEND_APIS:
@@ -328,6 +338,8 @@ def check_source(path: Path, source: str) -> list[str]:
             if name == "vintar.auth"
             else f"{path}:{line}: Credential headers may be applied only by vintar.auth.apply."
             if name == "credential-header-application"
+            else f"{path}:{line}: Legacy SQLi catalog expansion may be imported only by the case materialization boundary."
+            if name == LEGACY_CATALOG_EXPANSION
             else f"{path}:{line}: {name} bypasses scope, request budgets, and rate limits. "
             "Use vintar.core.executor.ExecutionContext."
         )

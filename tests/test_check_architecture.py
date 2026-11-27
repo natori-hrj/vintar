@@ -169,6 +169,21 @@ def test_post_json_review_can_reuse_json_body_primitives():
     )
 
 
+def test_only_legacy_case_materialization_may_import_sqli_catalog():
+    source = "from vintar.checks.sqli.catalog import _materialize_legacy_boolean_family"
+
+    assert not check_source(Path("regression/case_materialization.py"), source)
+    [diagnostic] = check_source(Path("regression/runner.py"), source)
+    assert "catalog expansion may be imported only" in diagnostic
+
+    module_source = (
+        "from vintar.checks.sqli import catalog\n"
+        "catalog._materialize_legacy_boolean_family(name)"
+    )
+    [diagnostic] = check_source(Path("regression/runner.py"), module_source)
+    assert "catalog expansion may be imported only" in diagnostic
+
+
 @pytest.mark.parametrize(
     "path",
     ["regression/authorization_cases.py", "regression/authorization_policy.py"],
