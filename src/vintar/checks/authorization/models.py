@@ -26,6 +26,8 @@ class AuthorizationVerdict(StrEnum):
 
 
 class AuthorizationReason(StrEnum):
+    DECLARED_ALLOW_OBSERVED_SUCCESS = "declared_allow_observed_success"
+    DECLARED_DENY_OBSERVED_DENIAL = "declared_deny_observed_denial"
     DECLARED_DENY_OBSERVED_SUCCESS = "declared_deny_observed_success"
     PROTECTED_MARKER_PRESENT = "protected_marker_present"
     DECLARED_ALLOW_OBSERVED_DENY = "declared_allow_observed_deny"
@@ -43,6 +45,55 @@ class AuthorizationReason(StrEnum):
     RESPONSE_PARSE_FAILED = "response_parse_failed"
     ASSERTION_NOT_EVALUABLE = "assertion_not_evaluable"
     UNEXPECTED_STATUS = "unexpected_status"
+    REQUEST_BUDGET_EXHAUSTED = "request_budget_exhausted"
+    EXECUTION_DEADLINE_EXCEEDED = "execution_deadline_exceeded"
+
+
+AUTHORIZATION_REASON_VERDICTS: dict[AuthorizationReason, AuthorizationVerdict] = {
+    AuthorizationReason.DECLARED_ALLOW_OBSERVED_SUCCESS: AuthorizationVerdict.CONFORMS,
+    AuthorizationReason.DECLARED_DENY_OBSERVED_DENIAL: AuthorizationVerdict.CONFORMS,
+    AuthorizationReason.DECLARED_DENY_OBSERVED_SUCCESS: AuthorizationVerdict.VIOLATION,
+    AuthorizationReason.PROTECTED_MARKER_PRESENT: AuthorizationVerdict.VIOLATION,
+    AuthorizationReason.DECLARED_ALLOW_OBSERVED_DENY: AuthorizationVerdict.VIOLATION,
+    AuthorizationReason.ALLOW_ASSERTION_MISMATCH: AuthorizationVerdict.VIOLATION,
+    AuthorizationReason.POSITIVE_CONTROL_FAILED: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.AUTHENTICATION_REJECTED: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.REDIRECT_OBSERVED: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.SERVER_ERROR: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.RATE_LIMITED: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.TRANSPORT_TIMEOUT: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.TRANSPORT_FAILED: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.RESPONSE_TRUNCATED: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.RESPONSE_TOO_LARGE: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.MEDIA_TYPE_MISMATCH: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.RESPONSE_PARSE_FAILED: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.ASSERTION_NOT_EVALUABLE: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.UNEXPECTED_STATUS: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.REQUEST_BUDGET_EXHAUSTED: AuthorizationVerdict.INCONCLUSIVE,
+    AuthorizationReason.EXECUTION_DEADLINE_EXCEEDED: AuthorizationVerdict.INCONCLUSIVE,
+}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class AuthorizationOperationResult:
+    operation_id: str
+    identity_id: str
+    resource_id: str
+    control: ControlKind
+    expected: AuthorizationExpectation
+    verdict: AuthorizationVerdict
+    reason: AuthorizationReason
+
+    def __post_init__(self) -> None:
+        if AUTHORIZATION_REASON_VERDICTS.get(self.reason) is not self.verdict:
+            raise ValueError("Authorization reason has an invalid verdict.")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class AuthorizationRunResult:
+    case_id: str
+    operations: tuple[AuthorizationOperationResult, ...]
+    requests_used: int
 
 
 @dataclass(frozen=True, slots=True, repr=False)

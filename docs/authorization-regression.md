@@ -36,7 +36,24 @@ and are checked against both client defaults and the final request for every
 identity. Credential environment values are resolved only after complete
 secret-free preflight and are never included in diagnostics or representations.
 This composition is intentionally unreachable from the CLI and regression
-batch in this release; it performs no authorization run by itself.
+batch in this release. The internal authorization runner is its sole consumer:
+it executes approved GET operations sequentially, runs every identity's
+positive controls before its other cells, and retains only aliases, verdicts,
+and closed reason codes. A failed positive control prevents that identity's
+deny cells from being sent. Its allow cells still run, but only a response that
+satisfies every assertion can conform; rejection or assertion mismatch remains
+inconclusive because the credential state was not established. The existing
+CLI continues to reject authorization cases with
+`authorization_execution_unavailable` until the dedicated command and report
+are introduced.
+
+Response bodies are read only up to the trusted policy limit and discarded
+after assertion evaluation. Headers and URLs are not copied into results.
+Empty denial bodies conform only when explicitly allowed, and HTML, malformed,
+truncated, or oversized bodies cannot prove that a protected JSON pointer is
+absent. An explicitly allowed empty body may omit Content-Type because there is
+no representation to label; when Content-Type is present, it must match the
+declared media type.
 
 Future credential-bearing authorization jobs must run only in a protected
 environment. They must not run for forks or other untrusted pull requests. No

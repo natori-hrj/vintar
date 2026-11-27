@@ -10,6 +10,7 @@ HTTP_FILES = {
     Path("core/http.py"),
     Path("core/executor.py"),
     Path("regression/authorization_execution.py"),
+    Path("regression/authorization_runner.py"),
 }
 HTTPX_SEND_APIS = {
     f"httpx.{name}"
@@ -30,6 +31,7 @@ HTTPX_SEND_APIS = {
 SEND_TEMPLATE = "vintar.core.template.send_template"
 AUTH_APPLY = "vintar.auth.apply"
 AUTHORIZATION_EXECUTION = "vintar.regression.authorization_execution"
+AUTHORIZATION_RUNNER = "vintar.regression.authorization_runner"
 JSON_BODY_LOCATION = "vintar.core.request.InjectionLocation.JSON_BODY"
 JSON_BODY_PRIMITIVE_FILES = {
     Path("core/request.py"),
@@ -259,6 +261,13 @@ def check_source(path: Path, source: str) -> list[str]:
                 "regression/authorization_runner.py"
             ):
                 violations.add((node.lineno, AUTHORIZATION_EXECUTION))
+            if module == AUTHORIZATION_RUNNER and path in {
+                Path("cli.py"),
+                Path("sqli_cli.py"),
+                Path("regression_cli.py"),
+                Path("regression/batch.py"),
+            }:
+                violations.add((node.lineno, AUTHORIZATION_RUNNER))
             if in_checks and (
                 module == "vintar.auth" or module.startswith("vintar.auth.")
             ):
@@ -313,6 +322,8 @@ def check_source(path: Path, source: str) -> list[str]:
             if name == AUTH_APPLY
             else f"{path}:{line}: Authorization execution composition may be imported only by the dedicated future authorization runner."
             if name == AUTHORIZATION_EXECUTION
+            else f"{path}:{line}: Authorization runner is internal and unavailable to current CLI and batch entry points."
+            if name == AUTHORIZATION_RUNNER
             else f"{path}:{line}: Checks cannot import authentication or touch credential material."
             if name == "vintar.auth"
             else f"{path}:{line}: Credential headers may be applied only by vintar.auth.apply."

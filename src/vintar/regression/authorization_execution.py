@@ -403,7 +403,11 @@ def _build_authorization_execution(
                 if run is None:
                     raise RuntimeError("Missing resolved authorization credentials.")
                 active = AuthenticatedTransport(
-                    scoped, run, identity_id=identity.identity_id, close_underlying=True
+                    scoped,
+                    run,
+                    identity_id=identity.identity_id,
+                    close_underlying=True,
+                    reject_auth_failure_statuses=False,
                 )
             guarded = _AuthorizationDispatchGuard(
                 active, reserved, dispatches[identity.identity_id]

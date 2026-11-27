@@ -12,6 +12,7 @@ import pytest
 
 from vintar.auth.apply import (
     EXPIRY_SAFETY_MARGIN_SECONDS,
+    AuthenticatedTransport,
     AuthenticationError,
     CredentialBinding,
     PlannedAuthenticatedRequest,
@@ -358,3 +359,24 @@ def test_redirect_response_is_not_followed_or_reapplied():
     assert response.status_code == 302
     assert len(requests) == 1
     assert requests[0].url.host == "api.example"
+
+
+def test_caller_may_inspect_an_auth_failure_response_without_weakening_dispatch():
+    run = resolve_credentials(plan(), {"VINTAR_READER_TOKEN": CANARY}, now=NOW)
+    underlying = httpx.MockTransport(
+        lambda request: httpx.Response(403, request=request)
+    )
+    transport = AuthenticatedTransport(
+        underlying,
+        run,
+        identity_id="reader",
+        reject_auth_failure_statuses=False,
+    )
+    request = httpx.Request("GET", "https://api.example/items")
+
+    response = transport.handle_request(request)
+
+    assert response.status_code == 403
+    assert transport.auth_failure_status == 403
+    assert transport.auth_failure_attempt == 1
+    assert request.headers["Authorization"] == f"Bearer {CANARY}"

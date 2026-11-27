@@ -1,5 +1,6 @@
 """Tests for the source-level HTTP architecture checks."""
 
+import ast
 import runpy
 from pathlib import Path
 
@@ -244,3 +245,21 @@ def test_repository_only_runner_imports_auth_apply():
     assert "vintar.auth.apply" in Path(
         "src/vintar/regression/authorization_execution.py"
     ).read_text(encoding="utf-8")
+
+
+def test_only_authorization_execution_disables_auth_failure_rejection():
+    expected = Path("src/vintar/regression/authorization_execution.py")
+    observed = []
+    for path in Path("src/vintar").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "reject_auth_failure_statuses"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is False
+                ):
+                    observed.append(path)
+    assert observed == [expected]

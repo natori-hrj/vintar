@@ -118,6 +118,7 @@ class AuthenticatedTransport(httpx.BaseTransport):
         *,
         identity_id: str,
         close_underlying: bool = False,
+        reject_auth_failure_statuses: bool = True,
     ) -> None:
         if not isinstance(transport, httpx.BaseTransport):
             raise TypeError("Invalid authentication transport.")
@@ -127,6 +128,9 @@ class AuthenticatedTransport(httpx.BaseTransport):
         self._run = run
         self._identity_id = identity_id
         self._close_underlying = close_underlying
+        if type(reject_auth_failure_statuses) is not bool:
+            raise TypeError("Invalid authentication rejection policy.")
+        self._reject_auth_failure_statuses = reject_auth_failure_statuses
         self.auth_failure_status: int | None = None
         self.auth_failure_attempt: int | None = None
         self._attempts = 0
@@ -138,10 +142,11 @@ class AuthenticatedTransport(httpx.BaseTransport):
         if response.status_code in AUTH_FAILURE_STATUS_CODES:
             self.auth_failure_status = response.status_code
             self.auth_failure_attempt = self._attempts
-            response.close()
-            raise httpx.RequestError(
-                "The authenticated request was rejected.", request=request
-            )
+            if self._reject_auth_failure_statuses:
+                response.close()
+                raise httpx.RequestError(
+                    "The authenticated request was rejected.", request=request
+                )
         return response
 
     def close(self) -> None:
