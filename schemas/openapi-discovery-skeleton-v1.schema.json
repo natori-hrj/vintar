@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vintar OpenAPI Discovery Skeleton v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "operations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/operation"
+      }
+    }
+  },
+  "$defs": {
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "method",
+        "path",
+        "identity",
+        "approval",
+        "probe_family",
+        "side_effect_review",
+        "executable",
+        "parameters"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "method": {
+          "enum": [
+            "DELETE",
+            "GET",
+            "HEAD",
+            "OPTIONS",
+            "PATCH",
+            "POST",
+            "PUT",
+            "TRACE"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "identity": {
+          "const": "unassigned"
+        },
+        "approval": {
+          "const": "unassigned"
+        },
+        "probe_family": {
+          "const": "unselected"
+        },
+        "side_effect_review": {
+          "const": "pending_review"
+        },
+        "executable": {
+          "const": false
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/parameter"
+          }
+        }
+      }
+    },
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "location",
+        "name",
+        "required",
+        "schema_types",
+        "pointer",
+        "baseline_presence",
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "location": {
+          "enum": [
+            "query",
+            "path",
+            "header",
+            "cookie",
+            "json_body"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "schema_types": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "array",
+              "boolean",
+              "integer",
+              "null",
+              "number",
+              "object",
+              "string"
+            ]
+          }
+        },
+        "pointer": {
+          "type": "string",
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$"
+        },
+        "baseline_presence": {
+          "const": "unverified"
+        },
+        "status": {
+          "enum": [
+            "supported",
+            "held",
+            "ignored"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "declared_schema",
+            "unsupported_reference_or_schema",
+            "unsupported_schema",
+            "reserved_header"
+          ]
+        }
+      }
+    }
+  }
+}
