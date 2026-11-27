@@ -17,7 +17,20 @@ from vintar.regression.authorization_policy import parse_authorization_runtime_p
 from vintar.regression.authorization_runner import _run_authorization_case
 
 
-def inputs(responses: dict[str, tuple[int, bytes, str | None]]):
+class FailingStream(httpx.SyncByteStream):
+    def __init__(self, failure: httpx.HTTPError) -> None:
+        self.failure = failure
+
+    def __iter__(self):
+        yield b"{"
+        raise self.failure
+
+
+def inputs(
+    responses: dict[str, tuple[int, bytes | httpx.SyncByteStream, str | None]],
+    *,
+    allow_empty: frozenset[str] = frozenset(),
+):
     operations = ""
     for operation_id, expected, control in (
         ("control", "allow", "positive"),
@@ -25,8 +38,13 @@ def inputs(responses: dict[str, tuple[int, bytes, str | None]]):
         ("deny-cell", "deny", "negative"),
     ):
         statuses = "[200]" if expected == "allow" else "[403, 404]"
-        required = '["/ok"]' if expected == "allow" else "[]"
+        required = (
+            '["/ok"]'
+            if expected == "allow" and operation_id not in allow_empty
+            else "[]"
+        )
         forbidden = "[]" if expected == "allow" else '["/secret"]'
+        empty_allowed = str(operation_id in allow_empty).lower()
         operations += f'''\n[[operations]]
 id = "{operation_id}"
 identity_id = "reader"
@@ -42,7 +60,7 @@ status_codes = {statuses}
 media_type = "application/json"
 required_json_pointers = {required}
 forbidden_json_pointers = {forbidden}
-allow_empty_body = false
+allow_empty_body = {empty_allowed}
 '''
     case = parse_authorization_case(
         """version = 1
@@ -95,7 +113,9 @@ authentication = "none"
         def respond(request: httpx.Request) -> httpx.Response:
             status, body, media_type = responses[request.url.path]
             headers = {"Content-Type": media_type} if media_type else {}
-            return httpx.Response(status, headers=headers, content=body)
+            if isinstance(body, bytes):
+                return httpx.Response(status, headers=headers, content=body)
+            return httpx.Response(status, headers=headers, stream=body)
 
         return httpx.MockTransport(respond)
 
@@ -162,6 +182,101 @@ def test_violation_does_not_stop_later_cells():
     assert result.operations[-1].reason is (
         AuthorizationReason.DECLARED_DENY_OBSERVED_SUCCESS
     )
+
+
+def test_empty_denial_with_wrong_media_type_is_inconclusive():
+    case, policy, factory = inputs(
+        {
+            "/control": (200, b'{"ok":true}', "application/json"),
+            "/allow-cell": (200, b'{"ok":true}', "application/json"),
+            "/deny-cell": (403, b"", "text/html"),
+        },
+        allow_empty=frozenset({"deny-cell"}),
+    )
+    result = _run_authorization_case(case, policy, {}, _execution_factory=factory)
+    assert result.operations[-1].verdict is AuthorizationVerdict.INCONCLUSIVE
+    assert result.operations[-1].reason is AuthorizationReason.MEDIA_TYPE_MISMATCH
+
+
+def test_empty_denial_with_matching_or_missing_media_type_conforms():
+    for media_type in ("application/json", None):
+        case, policy, factory = inputs(
+            {
+                "/control": (200, b'{"ok":true}', "application/json"),
+                "/allow-cell": (200, b'{"ok":true}', "application/json"),
+                "/deny-cell": (403, b"", media_type),
+            },
+            allow_empty=frozenset({"deny-cell"}),
+        )
+        result = _run_authorization_case(case, policy, {}, _execution_factory=factory)
+        assert result.operations[-1].verdict is AuthorizationVerdict.CONFORMS
+        assert result.operations[-1].reason is (
+            AuthorizationReason.DECLARED_DENY_OBSERVED_DENIAL
+        )
+
+
+def test_empty_allow_validates_media_type_before_body_assertions():
+    case, policy, factory = inputs(
+        {
+            "/control": (200, b'{"ok":true}', "application/json"),
+            "/allow-cell": (200, b"", "text/html"),
+            "/deny-cell": (403, b'{"error":true}', "application/json"),
+        },
+        allow_empty=frozenset({"allow-cell"}),
+    )
+    result = _run_authorization_case(case, policy, {}, _execution_factory=factory)
+    assert result.operations[1].verdict is AuthorizationVerdict.INCONCLUSIVE
+    assert result.operations[1].reason is AuthorizationReason.MEDIA_TYPE_MISMATCH
+
+
+def test_empty_allow_with_matching_media_type_conforms():
+    case, policy, factory = inputs(
+        {
+            "/control": (200, b'{"ok":true}', "application/json"),
+            "/allow-cell": (200, b"", "application/json"),
+            "/deny-cell": (403, b'{"error":true}', "application/json"),
+        },
+        allow_empty=frozenset({"allow-cell"}),
+    )
+    result = _run_authorization_case(case, policy, {}, _execution_factory=factory)
+    assert result.operations[1].verdict is AuthorizationVerdict.CONFORMS
+    assert result.operations[1].reason is (
+        AuthorizationReason.DECLARED_ALLOW_OBSERVED_SUCCESS
+    )
+
+
+def test_timeout_while_reading_body_is_transport_timeout():
+    request = httpx.Request("GET", "https://runner.invalid/deny-cell")
+    case, policy, factory = inputs(
+        {
+            "/control": (200, b'{"ok":true}', "application/json"),
+            "/allow-cell": (200, b'{"ok":true}', "application/json"),
+            "/deny-cell": (
+                403,
+                FailingStream(httpx.ReadTimeout("timed out", request=request)),
+                "application/json",
+            ),
+        }
+    )
+    result = _run_authorization_case(case, policy, {}, _execution_factory=factory)
+    assert result.operations[-1].reason is AuthorizationReason.TRANSPORT_TIMEOUT
+
+
+def test_early_eof_while_reading_body_is_response_truncated():
+    request = httpx.Request("GET", "https://runner.invalid/deny-cell")
+    case, policy, factory = inputs(
+        {
+            "/control": (200, b'{"ok":true}', "application/json"),
+            "/allow-cell": (200, b'{"ok":true}', "application/json"),
+            "/deny-cell": (
+                403,
+                FailingStream(httpx.ReadError("early EOF", request=request)),
+                "application/json",
+            ),
+        }
+    )
+    result = _run_authorization_case(case, policy, {}, _execution_factory=factory)
+    assert result.operations[-1].reason is AuthorizationReason.RESPONSE_TRUNCATED
 
 
 def test_reason_codes_are_closed_and_have_one_fixed_verdict():

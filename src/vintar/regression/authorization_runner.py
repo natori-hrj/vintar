@@ -103,6 +103,8 @@ def _read_body(response: httpx.Response, maximum: int) -> bytes:
                 raise OverflowError
     except OverflowError:
         raise
+    except httpx.TimeoutException:
+        raise
     except httpx.HTTPError as exc:
         raise EOFError from exc
     return bytes(body)
@@ -124,18 +126,18 @@ def _assert_body(
     body: bytes, content_type: str | None, assertions: ResponseAssertions
 ) -> tuple[bool, AuthorizationReason | None]:
     pointers = assertions.required_json_pointers + assertions.forbidden_json_pointers
+    if assertions.media_type is not None and content_type is not None:
+        actual = content_type.partition(";")[0].strip().casefold()
+        if actual != assertions.media_type:
+            return False, AuthorizationReason.MEDIA_TYPE_MISMATCH
     if not body:
         if not assertions.allow_empty_body:
             return False, AuthorizationReason.ASSERTION_NOT_EVALUABLE
         if assertions.required_json_pointers:
             return False, AuthorizationReason.ASSERTION_NOT_EVALUABLE
         return True, None
-    if assertions.media_type is not None:
-        actual = (
-            content_type.partition(";")[0].strip().casefold() if content_type else ""
-        )
-        if actual != assertions.media_type:
-            return False, AuthorizationReason.MEDIA_TYPE_MISMATCH
+    if assertions.media_type is not None and content_type is None:
+        return False, AuthorizationReason.MEDIA_TYPE_MISMATCH
     if not pointers:
         return True, None
     try:

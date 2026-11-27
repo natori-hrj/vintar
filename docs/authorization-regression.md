@@ -51,7 +51,9 @@ Response bodies are read only up to the trusted policy limit and discarded
 after assertion evaluation. Headers and URLs are not copied into results.
 Empty denial bodies conform only when explicitly allowed, and HTML, malformed,
 truncated, or oversized bodies cannot prove that a protected JSON pointer is
-absent.
+absent. An explicitly allowed empty body may omit Content-Type because there is
+no representation to label; when Content-Type is present, it must match the
+declared media type.
 
 Future credential-bearing authorization jobs must run only in a protected
 environment. They must not run for forks or other untrusted pull requests. No
