@@ -135,6 +135,16 @@ forbidden_modules = ["vintar.regression.authorization_execution"]
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
+name = "Authorization runner is unreachable from current batch and CLI entry points."
+type = "forbidden"
+source_modules = [
+    "vintar.regression.batch", "vintar.cli", "vintar.sqli_cli",
+    "vintar.regression_cli",
+]
+forbidden_modules = ["vintar.regression.authorization_runner"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
 name = "Direct core.http access bypasses scope, request budgets, and rate limits. Use vintar.core.executor.ExecutionContext."
 type = "forbidden"
 source_modules = ["vintar.checks"]
