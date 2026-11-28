@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+**Go distribution preparation**
+
+- Prepare reproducible CGO-free Go archives for Linux amd64/arm64, macOS
+  amd64/arm64, and Windows amd64, with SHA-256 manifests, linked Go dependency
+  SBOMs, and unsigned provenance. Rehearse the candidate and version-qualified
+  `go install` offline. No release, Go module tag, or artifact has been
+  published; the Python v0.6.0 PyPI release is unchanged.
+- Document the Pure Go migration and narrower candidate scope. Public
+  `verify`, `sqli verify`, and both case-materialization commands remain
+  unavailable in the Go candidate. C5/C7 compatibility work is suspended;
+  cross-builds are not native platform acceptance.
+- Record the approved compatibility exceptions: refuse concealed symlink
+  traversal in draft destinations and bound POST operation-definition digest
+  work across each command. The separate review baseline body limit remains
+  unchanged. See the [Go distribution guide](docs/migration/v0.7.0-go-distribution.md).
+
 ## [0.6.0] - 2026-11-26
 
 **Added**

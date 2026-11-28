@@ -1,5 +1,11 @@
 # Vintar
 
+> **v0.7.0 Go migration — rehearsal only.** See the
+> [Go distribution guide](docs/migration/v0.7.0-go-distribution.md) for
+> candidate installation, checksum verification, target status and migration
+> limits. No Go release has been published. The Python instructions below
+> describe the published v0.6.0 line; they do not describe the Go candidate.
+
 Vintar is a Python tool for running authorized web security regression checks in CI. It runs reviewed cases against a configured target and reports the batch result as JSON and a process exit code.
 
 ## Supported Scope
@@ -54,13 +60,13 @@ timeout_seconds = 5.0
 Use Python 3.13 or later. With uv, install Vintar as a CLI tool.
 
 ```bash
-uv tool install vintar
+uv tool install vintar==0.6.0
 ```
 
 Alternatively, install it in an active virtual environment with pip.
 
 ```bash
-pip install vintar
+pip install vintar==0.6.0
 ```
 
 ### Install from Source

@@ -1,0 +1,74 @@
+name: Vintar Go release rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full SHA of the selected branch head to rehearse
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rehearse:
+    name: Prepare and verify Go packages (no publication)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Require the exact branch head (not a release tag)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = branch
+          [[ $CANDIDATE_SHA =~ ^[0-9a-f]{40}$ && $CANDIDATE_SHA == "$GITHUB_SHA" ]]
+
+      - name: Check out the candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Seed the pinned toolchain archive and locked module cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --disable --fail --silent --show-error --location --retry 3 --max-time 300 \
+            --proto '=https' --proto-redir '=https' \
+            --output go1.27.4.linux-amd64.tar.gz https://go.dev/dl/go1.27.4.linux-amd64.tar.gz
+          echo '7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840  go1.27.4.linux-amd64.tar.gz' |
+            sha256sum --check --strict -
+          mkdir release-bootstrap-go release-modules
+          tar --extract --gzip --file=go1.27.4.linux-amd64.tar.gz --directory=release-bootstrap-go --strip-components=1
+          cd "$GITHUB_WORKSPACE"
+          export GOROOT="$RUNNER_TEMP/release-bootstrap-go" GOMODCACHE="$RUNNER_TEMP/release-modules"
+          export GOENV=off GOTOOLCHAIN=local GOWORK=off CGO_ENABLED=0 GOFLAGS=-mod=readonly
+          export GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOVCS='*:off' GOAUTH=off
+          export GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE=
+          "$GOROOT/bin/go" telemetry off
+          "$GOROOT/bin/go" mod download
+          "$GOROOT/bin/go" mod verify
+
+      - name: Rehearse without external network access
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The namespace only has loopback for the existing local test fixtures.
+          # All candidate code runs as the original runner user.
+          sudo unshare --net -- bash -euc '
+            ip link set lo up
+            exec setpriv --reuid "$1" --regid "$2" --init-groups \
+              env HOME="$3" GOMODCACHE="$4" GITHUB_ACTIONS=true GITHUB_SHA="$5" \
+              bash scripts/rehearse_go_release.sh "$5" "$6" "$7"
+          ' -- "$(id -u)" "$(id -g)" "$HOME" "$RUNNER_TEMP/release-modules" \
+            "$GITHUB_SHA" "$RUNNER_TEMP/go1.27.4.linux-amd64.tar.gz" "$RUNNER_TEMP/go-release-rehearsal"
+          {
+            printf '## Go release rehearsal (no publication)\n\nCommit: `%s`\n\n```text\n' "$GITHUB_SHA"
+            cat "$RUNNER_TEMP/go-release-rehearsal/dist/SHA256SUMS"
+            printf '```\n'
+          } >>"$GITHUB_STEP_SUMMARY"
