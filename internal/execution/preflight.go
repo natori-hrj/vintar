@@ -3,6 +3,8 @@ package execution
 import (
 	"context"
 	"errors"
+	"runtime"
+	"strings"
 	"time"
 )
 
@@ -25,6 +27,7 @@ func (p *RuntimePolicy) PrepareAll(ctx context.Context, requests []ApprovalReque
 	}
 	result := make([]PreparedOperation, len(requests))
 	sources := make([]policyIdentity, len(requests))
+	ownerByEnv := make(map[string]string)
 	for i, request := range requests {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -37,16 +40,31 @@ func (p *RuntimePolicy) PrepareAll(ctx context.Context, requests []ApprovalReque
 		if err != nil {
 			return nil, err
 		}
+		envKey := source.envVar
+		if runtime.GOOS == "windows" {
+			envKey = strings.ToUpper(envKey)
+		}
+		if owner, found := ownerByEnv[envKey]; found && owner != request.IdentityID {
+			return nil, errors.New("a credential source cannot be shared across identities")
+		}
+		ownerByEnv[envKey] = request.IdentityID
 		sources[i] = source
 		result[i] = PreparedOperation{URL: url, Method: request.Method}
 	}
+	byIdentity := make(map[string]Credential)
 	for i, source := range sources {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		credential, err := source.credential(lookup)
-		if err != nil {
-			return nil, err
+		identity := requests[i].IdentityID
+		credential, found := byIdentity[identity]
+		if !found {
+			var err error
+			credential, err = source.credential(lookup)
+			if err != nil {
+				return nil, err
+			}
+			byIdentity[identity] = credential
 		}
 		result[i].credential = credential
 	}

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/natori-hrj/vintar/internal/strictjson"
 )
@@ -57,6 +58,7 @@ type Inventory struct {
 }
 
 const scalarQueryHold = "Parameter is outside the v1 scalar query model. Review it separately."
+const booleanSchemaHold = "Boolean schema is unsupported for compatibility. Review this input separately or use a schema object."
 
 var errInventoryInput = errors.New("unsupported or invalid OpenAPI inventory input")
 
@@ -72,8 +74,16 @@ func BuildInventory(data []byte, source string) (Inventory, error) {
 		return Inventory{}, errInventoryInput
 	}
 	root, ok := value.(map[string]any)
-	if !ok {
+	if !ok || !validDiscoveryDocument(root) {
 		return Inventory{}, errInventoryInput
+	}
+	if paths, ok := root["paths"].(map[string]any); ok {
+		for name := range paths {
+			if !strings.HasPrefix(name, "x-") && (!strings.HasPrefix(name, "/") ||
+				strings.HasPrefix(name, "//") || strings.ContainsAny(name, "?#\\")) {
+				return Inventory{}, errInventoryInput
+			}
+		}
 	}
 	out := Inventory{
 		Version: root["openapi"].(string), Source: Source{File: source},
@@ -85,9 +95,6 @@ func BuildInventory(data []byte, source string) (Inventory, error) {
 	}
 	work := 0
 	for _, row := range list {
-		if strings.HasPrefix(row.Path, "//") || strings.ContainsAny(row.Path, "?#\\") {
-			return Inventory{}, errInventoryInput
-		}
 		definition := Source{source, row.Pointer}
 		declaration := Source{source, "/paths/" + escapeToken.Replace(row.Path)}
 		if declaration.Pointer+"/"+row.Method == row.Pointer {
@@ -294,9 +301,23 @@ func shortID(prefix, input string) string {
 }
 
 func identityString(s string) string {
-	raw, _ := json.Marshal(s)
-	encoded, _ := strictjson.Canonicalize(raw)
-	return string(encoded)
+	var quoted strings.Builder
+	encoder := json.NewEncoder(&quoted)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(s)
+	var ascii strings.Builder
+	for _, r := range strings.TrimSuffix(quoted.String(), "\n") {
+		switch {
+		case r < 0x7f:
+			ascii.WriteRune(r)
+		case r <= 0xffff:
+			fmt.Fprintf(&ascii, `\u%04x`, r)
+		default:
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&ascii, `\u%04x\u%04x`, hi, lo)
+		}
+	}
+	return ascii.String()
 }
 
 func (r *Inventory) Select(ids []string) error {

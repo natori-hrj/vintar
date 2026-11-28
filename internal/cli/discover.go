@@ -79,7 +79,7 @@ func runDiscover(ctx context.Context, args arguments, stdout, stderr io.Writer) 
 }
 
 func readDiscoveryFile(path string) ([]byte, os.FileInfo, error) {
-	before, err := os.Stat(path)
+	before, err := os.Lstat(path)
 	if err != nil || !before.Mode().IsRegular() || before.Size() > 1<<20 {
 		return nil, nil, errors.New("input must be a bounded local file")
 	}

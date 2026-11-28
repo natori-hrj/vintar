@@ -2,7 +2,9 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +12,38 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPrepareAllIdentitySourceIsolation(t *testing.T) {
+	get := fixturePolicyRequest(t, "GET")
+	post := fixturePolicyRequest(t, "POST")
+	trusted := []Origin{get.Origin}
+	calls := 0
+	lookup := func(string) (string, bool) { calls++; return "synthetic-token", true }
+	p := parsePolicyFixture(t, policyFixture)
+	if result, err := p.PrepareAll(t.Context(), []ApprovalRequest{get, post}, trusted, time.Now(), lookup); err != nil || len(result) != 2 || calls != 1 {
+		t.Errorf("same identity needs one credential lookup: %v, calls %d", err, calls)
+	}
+
+	var object map[string]any
+	if err := json.Unmarshal([]byte(policyFixture), &object); err != nil {
+		t.Fatal(err)
+	}
+	identities := object["identities"].([]any)
+	other := maps.Clone(identities[0].(map[string]any))
+	other["identity_id"] = "other-user"
+	object["identities"] = append(identities, other)
+	object["approvals"].([]any)[1].(map[string]any)["identity_id"] = "other-user"
+	wire, err := json.Marshal(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p = parsePolicyFixture(t, string(wire))
+	post.IdentityID = "other-user"
+	calls = 0
+	if result, err := p.PrepareAll(t.Context(), []ApprovalRequest{get, post}, trusted, time.Now(), lookup); err == nil || result != nil || calls != 0 {
+		t.Fatalf("shared credential source must fail preflight: %v, calls %d", err, calls)
+	}
+}
 
 func TestPrepareAllRejectsBeforeLookup(t *testing.T) {
 	p := parsePolicyFixture(t, policyFixture)

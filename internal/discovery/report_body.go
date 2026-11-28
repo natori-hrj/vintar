@@ -61,6 +61,7 @@ func (b bodyInventory) schema(raw any, declared Source, media, name string, requ
 			return err
 		}
 		definition = declared
+		*b.held = append(*b.held, Held{Source: declared, Definition: &definition, Reason: booleanSchemaHold})
 	}
 	if active[definition] {
 		return errInventoryInput

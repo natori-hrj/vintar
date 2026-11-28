@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -72,6 +73,20 @@ func checkProductDiscovery(t *testing.T, root, binary string) {
 	alias := runProduct(t, binary, cwd, "discover", "--spec", "openapi.json", "--output", "alias.json")
 	if alias.code != 2 || alias.stdout != "" {
 		t.Fatalf("input alias was not refused: %+v", alias)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink("openapi.json", filepath.Join(cwd, "linked.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("review.toml", filepath.Join(cwd, "linked.toml")); err != nil {
+			t.Fatal(err)
+		}
+		for _, extra := range [][]string{{"--spec", "linked.json"}, {"--spec", "openapi.json", "--selection", "linked.toml"}} {
+			got := runProduct(t, binary, cwd, append([]string{"discover", "--output", "linked-output.json"}, extra...)...)
+			if _, err := os.Lstat(filepath.Join(cwd, "linked-output.json")); !os.IsNotExist(err) || got.code != 2 || got.stdout != "" {
+				t.Fatalf("linked input published output or did not fail: %+v", got)
+			}
+		}
 	}
 }
 
