@@ -120,6 +120,8 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 			// Local file readers use platform open flags and handle metadata.
 		case dep == "os/exec" && path == completionHostPackage:
 			// Fixed, bounded shell-completion probes, unavailable to other product layers.
+		case dep == "syscall" && path == completionHostPackage:
+			// Read-only snapshot of the running process ancestry on Windows.
 		case dep == "C", dep == "unsafe", dep == "syscall", dep == "os/exec", dep == "plugin":
 			t.Errorf("unsafe direct import: %s imports %s", path, dep)
 		case dep == "net" || dep == "net/http" || dep == "crypto/tls":

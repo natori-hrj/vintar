@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -96,7 +95,10 @@ func shellScript(shell string) (string, bool) {
 func runCompletion(ctx context.Context, action, shell string, stdout, stderr io.Writer) int {
 	explicit := os.Getenv(explicitCompletionShell) != ""
 	if !explicit {
-		shell = detectedCompletionShell()
+		shell = completionhost.DetectShell(ctx)
+		if ctx.Err() != nil {
+			return diagnostic(stderr, 130, "interrupted")
+		}
 	}
 	script, supported := shellScript(shell)
 	if !supported {
@@ -123,61 +125,6 @@ func runCompletion(ctx context.Context, action, shell string, stdout, stderr io.
 		return diagnostic(stderr, 1, "could not install shell completion; check the completion directory and shell configuration")
 	}
 	return writeText(stdout, stderr, fmt.Sprintf("%s completion installed in %s\nCompletion will take effect once you restart the terminal\n", shell, path), 0)
-}
-
-func shellName(name string) string {
-	name = strings.TrimPrefix(name, "-")
-	name = strings.ToLower(filepath.Base(name))
-	name = strings.TrimSuffix(name, ".exe")
-	switch name {
-	case "bash", "zsh", "fish", "powershell", "pwsh",
-		"sh", "ash", "dash", "ksh", "mksh", "csh", "tcsh", "nu", "xonsh", "cmd":
-		return name
-	default:
-		return ""
-	}
-}
-
-// Inspect the running shell, not just the user's configured login shell.
-func detectedCompletionShell() string {
-	if runtime.GOOS == "linux" {
-		for pid, depth := os.Getppid(), 0; pid > 1 && depth < 10; depth++ {
-			dir := "/proc/" + strconv.Itoa(pid)
-			if raw, err := os.ReadFile(dir + "/cmdline"); err == nil {
-				name, _, _ := strings.Cut(string(raw), "\x00")
-				if name := shellName(name); name != "" {
-					return name
-				}
-			}
-			raw, err := os.ReadFile(dir + "/stat")
-			if err != nil {
-				break
-			}
-			end := strings.LastIndexByte(string(raw), ')')
-			if end < 0 {
-				break
-			}
-			fields := strings.Fields(string(raw[end+1:]))
-			if len(fields) < 2 {
-				break
-			}
-			pid, _ = strconv.Atoi(fields[1])
-		}
-	}
-	if shell := shellName(os.Getenv("SHELL")); shell != "" {
-		return shell
-	}
-	if runtime.GOOS == "windows" {
-		modulePath := strings.ToLower(os.Getenv("PSModulePath"))
-		if strings.Contains(modulePath, `\powershell\modules`) ||
-			strings.Contains(modulePath, `\powershell\7\`) {
-			return "pwsh"
-		}
-		if modulePath != "" {
-			return "powershell"
-		}
-	}
-	return ""
 }
 
 func installCompletion(ctx context.Context, shell, script string) (string, error) {
