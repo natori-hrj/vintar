@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 )
 
@@ -17,7 +18,13 @@ var httpSendMethod = regexp.MustCompile(`\A(?:[Gg][Ee][Tt]|[Pp][Oo](?:[Ss\x{017F
 // Run invokes the CLI. Diagnostics never include raw arguments or lower-level
 // errors, since both may contain sensitive values.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	cmd, path := &rootCommand, rootCommand.name
+	if ctx.Err() != nil {
+		return diagnostic(stderr, 130, "interrupted")
+	}
+	if mode := os.Getenv("_VINTAR_COMPLETE"); mode != "" {
+		return runCompletionProtocol(mode, args, stdout, stderr)
+	}
+	cmd, path := completionRoot(), rootCommand.name
 	for {
 		if ctx.Err() != nil {
 			return diagnostic(stderr, 130, "interrupted")
@@ -34,7 +41,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		case "help":
 			return writeText(stdout, stderr, cmd.help(path), 0)
 		case "show-completion", "install-completion":
-			return diagnostic(stderr, 2, "shell completion is not available")
+			return runCompletion(ctx, parsed.eager, parsed.value(parsed.eager), stdout, stderr)
 		}
 
 		if len(cmd.children) == 0 {

@@ -63,15 +63,15 @@ func (c *command) parse(args []string) (arguments, error) {
 				if attached {
 					return arguments{}, fmt.Errorf("--%s does not take a value", opt.name)
 				}
-				if opt.eager && parsed.eager == "" {
-					parsed.eager = opt.name
-				}
 			} else if !attached {
 				i++
 				if i == len(args) {
 					return arguments{}, fmt.Errorf("--%s requires a value", opt.name)
 				}
 				value = args[i]
+			}
+			if opt.eager && parsed.eager == "" {
+				parsed.eager = opt.name
 			}
 			if !parsed.has(opt.name) {
 				explicit = append(explicit, *opt)

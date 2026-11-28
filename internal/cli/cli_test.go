@@ -51,8 +51,6 @@ func TestRun(t *testing.T) {
 		{"discover draft flags", []string{"discover", "--spec", secret, "--drafts-dir=drafts", "--selection=selected.toml"}, 2, "", "invalid OpenAPI spec"},
 		{"discover inventory flags", []string{"discover", "--spec", secret, "--output=inventory.json"}, 2, "", "invalid OpenAPI spec"},
 		{"discover optional inventory selection", []string{"discover", "--spec", secret, "--selection=selected.toml", "--output=inventory.json"}, 2, "", "invalid OpenAPI spec"},
-		{"completion show", []string{"--show-completion"}, 2, "", "not available"},
-		{"completion install", []string{"--install-completion"}, 2, "", "not available"},
 		{"HTTP unsupported method", []string{"http", "send", secret, url}, 1, "Only GET and POST", ""},
 		{"HTTP malformed header", []string{"http", "send", "GET", url, "-H" + secret}, 1, "Invalid header", ""},
 		{"HTTP empty header name", []string{"http", "send", "GET", url, "--header= : " + secret}, 1, "Header name cannot be empty", ""},
