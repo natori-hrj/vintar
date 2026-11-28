@@ -1,18 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 )
 
 const explicitCompletionShell = "_TYPER_COMPLETE_TEST_DISABLE_SHELL_DETECTION"
@@ -24,14 +26,14 @@ var completionScripts = map[string]string{
     local IFS=$'\n'
     local count=$((COMP_CWORD > 0 ? COMP_CWORD - 1 : 0))
     local -a prior=("${COMP_WORDS[@]:1:count}")
-    COMPREPLY=($(_VINTAR_COMPLETE=complete_words "${COMP_WORDS[0]}" "${prior[@]}" "${COMP_WORDS[COMP_CWORD]}"))
+    COMPREPLY=($(_VINTAR_COMPLETE=complete_words "${COMP_WORDS[0]}" "${prior[@]}" "word:${COMP_WORDS[COMP_CWORD]}"))
 }
 complete -o default -F _vintar_complete vintar
 `,
 	"zsh": `#compdef vintar
 _vintar_complete() {
     local -a choices
-    choices=("${(@f)$( _VINTAR_COMPLETE=complete_words "$words[1]" "${(@)words[2,CURRENT-1]}" "$PREFIX" )}")
+    choices=("${(@f)$( _VINTAR_COMPLETE=complete_words "$words[1]" "${(@)words[2,CURRENT-1]}" "word:$PREFIX" )}")
     if (( $#choices )); then
         compadd -a choices
     else
@@ -47,7 +49,7 @@ fi
 	"fish": `function __vintar_complete
     set -l words (commandline -opc)
     set -l current (commandline -ct | string collect --allow-empty)
-    env _VINTAR_COMPLETE=complete_words $words[1] $words[2..-1] "$current"
+    env _VINTAR_COMPLETE=complete_words $words[1] $words[2..-1] "word:$current"
 end
 complete --command vintar --arguments '(__vintar_complete)'
 `,
@@ -59,7 +61,7 @@ complete --command vintar --arguments '(__vintar_complete)'
     $previous = $env:_VINTAR_COMPLETE
     try {
         $env:_VINTAR_COMPLETE = 'complete_words'
-        & vintar @prior $wordToComplete | Where-Object { $_ } | ForEach-Object {
+        & vintar @prior ("word:" + $wordToComplete) | Where-Object { $_ } | ForEach-Object {
             [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
         }
     } finally {
@@ -160,45 +162,25 @@ func detectedCompletionShell() string {
 			pid, _ = strconv.Atoi(fields[1])
 		}
 	}
-	if runtime.GOOS == "darwin" {
-		for pid, depth := os.Getppid(), 0; pid > 1 && depth < 10; depth++ {
-			raw, err := exec.Command("/bin/ps", "-p", strconv.Itoa(pid), "-o", "ppid=", "-o", "comm=").Output()
-			if err != nil {
-				break
-			}
-			parent, name, ok := strings.Cut(strings.TrimSpace(string(raw)), " ")
-			if !ok {
-				break
-			}
-			if shell := shellName(strings.TrimSpace(name)); shell != "" {
-				return shell
-			}
-			pid, _ = strconv.Atoi(parent)
-		}
-	}
-	if shell := windowsCompletionShell(); shell != "" {
-		return shell
-	}
 	if shell := shellName(os.Getenv("SHELL")); shell != "" {
 		return shell
+	}
+	if runtime.GOOS == "windows" {
+		modulePath := strings.ToLower(os.Getenv("PSModulePath"))
+		if strings.Contains(modulePath, `\powershell\modules`) ||
+			strings.Contains(modulePath, `\powershell\7\`) {
+			return "pwsh"
+		}
+		if modulePath != "" {
+			return "powershell"
+		}
 	}
 	return ""
 }
 
 func installCompletion(ctx context.Context, shell, script string) (string, error) {
-	if shell == "powershell" || shell == "pwsh" {
-		// Query only the profile location; never change execution policy or
-		// load the existing profile in the subprocess.
-		command := exec.CommandContext(ctx, shell, "-NoProfile", "-NonInteractive", "-Command", "$PROFILE")
-		result, err := command.Output()
-		if err != nil {
-			return "", err
-		}
-		path := strings.TrimSpace(string(result))
-		if !filepath.IsAbs(path) || strings.ContainsAny(path, "\r\n\x00") {
-			return "", errors.New("invalid PowerShell profile path")
-		}
-		return path, appendCompletion(path, strings.TrimSpace(script))
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || !filepath.IsAbs(home) {
@@ -212,10 +194,32 @@ func installCompletion(ctx context.Context, shell, script string) (string, error
 		init = "source '" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 	case "zsh":
 		path = filepath.Join(home, ".zfunc", "_vintar")
-		rc = filepath.Join(home, ".zshrc")
+		dir := os.Getenv("ZDOTDIR")
+		if dir == "" {
+			dir = home
+		}
+		if !filepath.IsAbs(dir) {
+			return "", errors.New("invalid ZDOTDIR")
+		}
+		rc = filepath.Join(dir, ".zshrc")
 		init = "fpath+=~/.zfunc; autoload -Uz compinit; compinit"
 	case "fish":
-		path = filepath.Join(home, ".config", "fish", "completions", "vintar.fish")
+		dir := os.Getenv("XDG_CONFIG_HOME")
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(home, ".config")
+		}
+		path = filepath.Join(dir, "fish", "completions", "vintar.fish")
+	case "powershell", "pwsh":
+		dir := filepath.Join(home, ".config", "powershell")
+		if runtime.GOOS == "windows" {
+			folder := "PowerShell"
+			if shell == "powershell" {
+				folder = "WindowsPowerShell"
+			}
+			dir = filepath.Join(home, "Documents", folder)
+		}
+		path = filepath.Join(dir, "Microsoft.PowerShell_profile.ps1")
+		return path, appendCompletion(path, strings.TrimSpace(script))
 	}
 	if err := installCompletionScript(path, script); err != nil {
 		return "", err
@@ -262,14 +266,40 @@ func appendCompletion(path, text string) error {
 		return err
 	}
 	old, err := io.ReadAll(f)
-	if err == nil && !strings.Contains("\n"+string(old)+"\n", "\n"+text+"\n") {
-		prefix := ""
-		if len(old) > 0 && old[len(old)-1] != '\n' {
-			prefix = "\n"
+	if err == nil {
+		if plus := completionAppendBytes(old, text); len(plus) != 0 {
+			_, err = f.Write(plus)
 		}
-		_, err = io.WriteString(f, prefix+text+"\n")
 	}
 	return errors.Join(err, f.Close())
+}
+
+func completionAppendBytes(old []byte, text string) []byte {
+	entry, newline := []byte(text), []byte{'\n'}
+	var order binary.AppendByteOrder
+	switch {
+	case bytes.HasPrefix(old, []byte{0xff, 0xfe}):
+		order = binary.LittleEndian
+	case bytes.HasPrefix(old, []byte{0xfe, 0xff}):
+		order = binary.BigEndian
+	case bytes.HasPrefix(old, []byte{0xef, 0xbb, 0xbf}):
+		old = old[3:]
+	}
+	if order != nil {
+		old = old[2:]
+		entry, newline = nil, order.AppendUint16(nil, '\n')
+		for _, unit := range utf16.Encode([]rune(text)) {
+			entry = order.AppendUint16(entry, unit)
+		}
+	}
+	delimited := bytes.Join([][]byte{newline, old, newline}, nil)
+	if bytes.Contains(delimited, bytes.Join([][]byte{newline, entry, newline}, nil)) {
+		return nil
+	}
+	if len(old) > 0 && !bytes.HasSuffix(old, newline) {
+		return bytes.Join([][]byte{newline, entry, newline}, nil)
+	}
+	return append(entry, newline...)
 }
 
 func runCompletionProtocol(mode string, args []string, stdout, stderr io.Writer) int {
@@ -277,7 +307,8 @@ func runCompletionProtocol(mode string, args []string, stdout, stderr io.Writer)
 		if len(args) == 0 {
 			return 0
 		}
-		return writeCandidates(stdout, stderr, completionCandidates(args[:len(args)-1], args[len(args)-1]), "")
+		prefix := strings.TrimPrefix(args[len(args)-1], "word:")
+		return writeCandidates(stdout, stderr, completionCandidates(args[:len(args)-1], prefix), "")
 	}
 	action, shell, ok := strings.Cut(mode, "_")
 	if !ok {

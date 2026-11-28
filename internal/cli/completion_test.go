@@ -2,10 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func TestCompletionShowAndInstallIsolated(t *testing.T) {
@@ -66,6 +68,27 @@ func TestCompletionShowAndInstallIsolated(t *testing.T) {
 				t.Fatalf("existing completion was modified: %q, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestCompletionPreservesProfileEncodingAndEmptyPrefix(t *testing.T) {
+	old := []byte{0xff, 0xfe}
+	for _, u := range utf16.Encode([]rune("# user 設定\r\n")) {
+		old = binary.LittleEndian.AppendUint16(old, u)
+	}
+	const text = "Register-ArgumentCompleter vintar"
+	appended := completionAppendBytes(old, text)
+	var want []byte
+	for _, u := range utf16.Encode([]rune(text + "\n")) {
+		want = binary.LittleEndian.AppendUint16(want, u)
+	}
+	if !bytes.Equal(appended, want) || completionAppendBytes(append(old, appended...), text) != nil {
+		t.Fatal("UTF-16 profile append changed the encoding or was not idempotent")
+	}
+	t.Setenv("_VINTAR_COMPLETE", "complete_words")
+	var out, errOut bytes.Buffer
+	if n := Run(t.Context(), []string{"http", "word:"}, &out, &errOut); n != 0 || out.String() != "send\n" || errOut.Len() != 0 {
+		t.Fatalf("empty completion word: %d %q %q", n, &out, &errOut)
 	}
 }
 
