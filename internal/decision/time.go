@@ -1,11 +1,15 @@
 package decision
 
-import "errors"
+import (
+	"errors"
+	"slices"
+)
 
 var errInvalidEvidence = errors.New("invalid saved decision evidence")
 
 // This order only identifies positions in saved timing evidence.
 var timeKinds = [...]string{"baseline", "control", "delay", "control", "delay", "baseline", "delay", "baseline", "control"}
+var timingCauseOrder = [...]string{"baseline_span", "control_span", "baseline_control_difference", "drift", "delay_span"}
 
 // EvaluateTime classifies recorded timing predicates or a recorded stop.
 func EvaluateTime(in TimeInput) (Result, error) {
@@ -36,21 +40,19 @@ func EvaluateTime(in TimeInput) (Result, error) {
 		return Result{}, errInvalidEvidence
 	default:
 		p := *in.Predicates
-		causes := make([]string, 0, 5)
-		for _, cause := range []struct {
-			name string
-			met  bool
-		}{
-			{"baseline_span", p.BaselineSpanExceeded && !p.DriftExceeded},
-			{"control_span", p.ControlSpanExceeded && !p.DriftExceeded},
-			{"baseline_control_difference", p.BaselineControlDifferenceExceeded},
-			{"drift", p.DriftExceeded},
-			{"delay_span", p.DelaySpanExceeded},
+		var recordedCauses []string
+		for i, met := range [...]bool{
+			p.BaselineSpanExceeded,
+			p.ControlSpanExceeded,
+			p.BaselineControlDifferenceExceeded,
+			p.DriftExceeded,
+			p.DelaySpanExceeded,
 		} {
-			if cause.met {
-				causes = append(causes, cause.name)
+			if met {
+				recordedCauses = append(recordedCauses, timingCauseOrder[i])
 			}
 		}
+		causes := canonicalTimingCauses(recordedCauses)
 		candidate := p.CandidateMedianMet && p.CandidateMarginMet
 		baselineControlUnstable := len(causes) != 0 && causes[0] != "delay_span"
 		switch {
@@ -134,8 +136,8 @@ func timeResult(n int64, reason string, facts Facts) (Result, error) {
 func validTimingFacts(reason string, f *TimingFacts) bool {
 	switch reason {
 	case "unstable_timing":
-		return f != nil && len(f.InstabilityCauses) != 0 &&
-			orderedSubset(f.InstabilityCauses, []string{"baseline_span", "control_span", "baseline_control_difference", "drift", "delay_span"}) &&
+		return f != nil && len(f.InstabilityCauses) != 0 && len(f.InstabilityCauses) <= len(timingCauseOrder) &&
+			slices.Equal(f.InstabilityCauses, canonicalTimingCauses(f.InstabilityCauses)) &&
 			f.CandidateMedianMet == nil && f.CandidateMarginMet == nil && f.NoDelayConditionMet == nil
 	case "ambiguous_timing":
 		return f != nil && len(f.InstabilityCauses) == 0 && f.CandidateMedianMet != nil &&
@@ -144,6 +146,22 @@ func validTimingFacts(reason string, f *TimingFacts) bool {
 	default:
 		return f == nil
 	}
+}
+
+// canonicalTimingCauses gives both new decisions and stored facts the same
+// ordering, allowed vocabulary, and drift-versus-span precedence.
+func canonicalTimingCauses(recorded []string) []string {
+	drift := slices.Contains(recorded, "drift")
+	causes := make([]string, 0, len(timingCauseOrder))
+	for _, cause := range timingCauseOrder {
+		if drift && (cause == "baseline_span" || cause == "control_span") {
+			continue
+		}
+		if slices.Contains(recorded, cause) {
+			causes = append(causes, cause)
+		}
+	}
+	return causes
 }
 
 func validStatus(status int) bool   { return status >= 100 && status <= 599 }

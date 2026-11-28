@@ -154,3 +154,36 @@ func TestIncompleteObservationShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestTimingCauseInvariantMatrix(t *testing.T) {
+	result, err := decision.EvaluateTime(decision.TimeInput{
+		RequestCount: 9, Predicates: &decision.TimingPredicates{DriftExceeded: true},
+	})
+	if err != nil || result.Reason != "unstable_timing" {
+		t.Fatalf("invalid timing fixture: %v", err)
+	}
+	plan := []string{"case"}
+	order := [...]string{"baseline_span", "control_span", "baseline_control_difference", "drift", "delay_span"}
+	for mask := range 1 << len(order) {
+		t.Run(fmt.Sprintf("causes-%05b", mask), func(t *testing.T) {
+			var causes []string
+			for i, cause := range order {
+				if mask&(1<<i) != 0 {
+					causes = append(causes, cause)
+				}
+			}
+			record := result
+			record.Facts.Timing = &decision.TimingFacts{InstabilityCauses: causes}
+			batch := []Record{{"case", decision.Inconclusive, record}}
+			// Drift replaces the two span causes; it does not replace the
+			// baseline/control difference or delay span causes.
+			if mask == 0 || (mask&0b01000 != 0 && mask&0b00011 != 0) {
+				assertNoWriterOutput(t, plan, batch)
+				return
+			}
+			if data, exit, err := MarshalBatch(plan, batch, false); err != nil || exit != 3 || len(data) == 0 {
+				t.Fatalf("valid cause combination: exit=%d, err=%v", exit, err)
+			}
+		})
+	}
+}
