@@ -85,33 +85,35 @@ func draftString(value string) string {
 }
 
 func publishDiscoveryDrafts(ctx context.Context, directory string, names []string, drafts map[string][]byte, inputs []os.FileInfo) error {
-	badDirectory := errors.New("Draft directory traverses a symlink or non-directory. Choose a real directory.")
-	failed := errors.New("cannot write review drafts. Choose a writable output path.")
+	if len(names) == 0 {
+		return checkEmptyDraftDirectory(directory)
+	}
+	root, err := openOfflineOutputDirectory(ctx, directory)
+	if err != nil {
+		if errors.Is(err, errOfflineOutputDirectory) {
+			return err
+		}
+		return errors.New("cannot write review drafts. Choose a writable output path.")
+	}
+	defer root.Close()
+	return publishDraftsAtRoot(ctx, root, names, drafts, inputs)
+}
+
+func checkEmptyDraftDirectory(directory string) error {
 	absolute, err := filepath.Abs(directory)
 	if err != nil {
-		return failed
+		return errOfflineOutputDirectory
 	}
 	for dir := absolute; ; dir = filepath.Dir(dir) {
 		info, err := os.Lstat(dir)
 		if err == nil && !info.IsDir() || err != nil && !errors.Is(err, os.ErrNotExist) {
-			return badDirectory
+			return errOfflineOutputDirectory
 		}
 		if dir == filepath.Dir(dir) {
 			break
 		}
 	}
-	if len(names) == 0 {
-		return nil
-	}
-	if err := os.MkdirAll(absolute, 0755); err != nil {
-		return failed
-	}
-	root, err := os.OpenRoot(absolute)
-	if err != nil {
-		return failed
-	}
-	defer root.Close()
-	return publishDraftsAtRoot(ctx, root, names, drafts, inputs)
+	return nil
 }
 
 func publishDraftsAtRoot(ctx context.Context, root *os.Root, names []string, drafts map[string][]byte, inputs []os.FileInfo) error {

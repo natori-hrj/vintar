@@ -76,7 +76,7 @@ func BuildDraftReview(specJSON []byte, source string, draftTOML, answersJSON []b
 	}
 
 	parsed, err := strictjson.Parse(answersJSON)
-	if err != nil {
+	if err != nil || !validJSONScalars(parsed, len(answersJSON)) {
 		return nil, "", errors.New("Cannot read review answers. Supply a bounded UTF-8 JSON file with unique keys.")
 	}
 	config, ok := parsed.(map[string]any)
@@ -242,8 +242,6 @@ func reviewScalarDigest(value any) (string, error) {
 		return "", errors.New("Baseline query inputs require concrete non-null values. Supply a concrete value or omit the parameter if optional.")
 	case string:
 		literal = identityString(value)
-	case strictjson.SurrogateString:
-		literal = value.JSON()
 	case bool:
 		literal = strconv.FormatBool(value)
 	case json.Number:

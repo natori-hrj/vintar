@@ -88,6 +88,24 @@ func TestDiscoverSelectionParseDiagnostic(t *testing.T) {
 	}
 }
 
+func TestDiscoverRepeatedSeparatorsStayInsideCWD(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Mkdir("sub", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("sub/openapi.json", []byte(`{"openapi":"3.1.0","paths":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("selection.toml", []byte("version = 1\napproved = []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := Run(t.Context(), []string{"discover", "--spec", "sub//openapi.json", "--selection", "selection.toml", "--drafts-dir", "drafts"}, &out, &errOut)
+	if code != 0 || out.Len() == 0 || errOut.Len() != 0 {
+		t.Fatalf("cwd-relative discovery failed: exit=%d, stdout=%s, stderr=%s", code, &out, &errOut)
+	}
+}
 func TestDiscoverDraftCanBeReviewedOffline(t *testing.T) {
 	const inputID = "input-24a9c3cf0c3d01709121ac0d09079903"
 	const name = "one\u2028two.json"

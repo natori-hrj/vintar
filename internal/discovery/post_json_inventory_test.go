@@ -25,6 +25,25 @@ func TestPostJSONArtifactWriterHasIndependentSizeLimit(t *testing.T) {
 	}
 }
 
+func TestPostJSONDefinitionDigestDoesNotExpandHTML(t *testing.T) {
+	const prefix = `{"openapi":"3.1.2","paths":{"/items":{"post":{"description":"`
+	const suffix = `","requestBody":{"content":{"application/json":{"schema":{"type":"string"}}}}}}}}`
+	spec := prefix + strings.Repeat("<", 180000) + suffix
+	data, _, err := BuildPostJSONInventory([]byte(spec), "openapi.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const released = "6c38fd16d96adf7790b31073126921509eb1a682a3dfde47957e1c9718689724"
+	var report postInventory
+	if err := json.Unmarshal(data, &report); err != nil || len(report.Operations) != 1 ||
+		len(report.Operations[0].Candidates) != 1 || report.Operations[0].Candidates[0].Digest != released {
+		t.Fatal("test description changed the released operation identity")
+	}
+	if bytes.Contains(data, []byte("<<<<")) {
+		t.Fatal("inventory leaked definition description")
+	}
+}
+
 const postInventoryGoldenSpec = `{
   "openapi":"3.1.2","paths":{"/items":{"post":{
     "operationId":"createItem",

@@ -848,11 +848,13 @@ func postDigest(value any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	raw, err := json.Marshal(normalized)
-	if err != nil {
+	var raw bytes.Buffer
+	writer := json.NewEncoder(&raw)
+	writer.SetEscapeHTML(false)
+	if err := writer.Encode(normalized); err != nil {
 		return "", errPostInput
 	}
-	canonical, err := strictjson.Canonicalize(raw)
+	canonical, err := strictjson.Canonicalize(bytes.TrimSuffix(raw.Bytes(), []byte("\n")))
 	if err != nil {
 		return "", errPostWork
 	}

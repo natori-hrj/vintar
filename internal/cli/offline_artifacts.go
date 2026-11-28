@@ -21,6 +21,7 @@ const (
 
 var (
 	errOfflineInput            = errors.New("cannot read a bounded regular input file")
+	errOfflineOutputDirectory  = errors.New("Draft directory traverses a symlink or non-directory. Choose a real directory.")
 	errDiscoveryOutputConflict = errors.New("Output conflicts with the spec or selection. Choose a separate report path.")
 )
 
@@ -168,6 +169,9 @@ func runOfflineReview(ctx context.Context, args arguments, stdout, stderr io.Wri
 	}
 	err = publishOfflineReview(ctx, output, report, []os.FileInfo{spec.info, artifact.info, answers.info})
 	if err != nil {
+		if errors.Is(err, errOfflineOutputDirectory) {
+			return offlineReviewFailure(ctx, stderr, interrupted, errOfflineOutputDirectory.Error())
+		}
 		// A conflicting output name is supplied by the caller and need not
 		// be included in the diagnostic.
 		return offlineReviewFailure(ctx, stderr, interrupted, "Cannot publish review. Use a separate writable JSON file.")
@@ -189,41 +193,59 @@ func offlineReviewFailure(ctx context.Context, stderr io.Writer, interrupted, me
 }
 
 func publishOfflineReview(ctx context.Context, output string, report []byte, inputs []os.FileInfo) error {
-	root, err := openOfflineReviewDirectory(ctx, filepath.Dir(output))
+	output = strings.TrimRightFunc(output, func(r rune) bool { return r <= 127 && os.IsPathSeparator(byte(r)) })
+	parent, name := filepath.Split(output)
+	root, err := openOfflineOutputDirectory(ctx, parent)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
-	name := filepath.Base(output)
 	return publishDraftsAtRoot(ctx, root, []string{name}, map[string][]byte{name: report}, inputs)
 }
 
 // Anchor each opened parent before walking the next component. Comparing the
 // handle and the non-followed entry prevents a replacement from redirecting
 // publication into a different directory.
-func openOfflineReviewDirectory(ctx context.Context, path string) (*os.Root, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
+func openOfflineOutputDirectory(ctx context.Context, path string) (*os.Root, error) {
+	// Do not use filepath.Abs, Join or Clean on the original path before
+	// examining its components: each directory before ".." must be checked.
+	if !filepath.IsAbs(path) {
+		if filepath.VolumeName(path) != "" {
+			return nil, errOfflineOutputDirectory
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		path = cwd + string(filepath.Separator) + path
 	}
-	volume := filepath.VolumeName(absolute)
+	volume := filepath.VolumeName(path)
 	anchor := volume + string(filepath.Separator)
 	root, err := os.OpenRoot(anchor)
 	if err != nil {
 		return nil, err
 	}
+	roots := []*os.Root{root}
 	defer func() {
-		if root != nil {
-			root.Close()
+		for _, opened := range roots {
+			opened.Close()
 		}
 	}()
-	for name := range strings.SplitSeq(filepath.ToSlash(strings.TrimPrefix(absolute, anchor)), "/") {
-		if name == "" {
-			continue
-		}
+	for name := range strings.SplitSeq(filepath.ToSlash(path[len(volume):]), "/") {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			if len(roots) > 1 {
+				roots[len(roots)-1].Close()
+				roots = roots[:len(roots)-1]
+			}
+			continue
+		}
+		root := roots[len(roots)-1]
 		before, err := root.Lstat(name)
 		if errors.Is(err, os.ErrNotExist) {
 			if err := root.Mkdir(name, 0755); err != nil && !errors.Is(err, os.ErrExist) {
@@ -232,7 +254,7 @@ func openOfflineReviewDirectory(ctx context.Context, path string) (*os.Root, err
 			before, err = root.Lstat(name)
 		}
 		if err != nil || !ordinaryOfflineDirectory(before) {
-			return nil, errOfflineInput
+			return nil, errOfflineOutputDirectory
 		}
 		next, err := root.OpenRoot(name)
 		if err != nil {
@@ -243,12 +265,11 @@ func openOfflineReviewDirectory(ctx context.Context, path string) (*os.Root, err
 		if openErr != nil || linkErr != nil || !ordinaryOfflineDirectory(opened) ||
 			!ordinaryOfflineDirectory(linked) || !os.SameFile(before, opened) || !os.SameFile(before, linked) {
 			next.Close()
-			return nil, errOfflineInput
+			return nil, errOfflineOutputDirectory
 		}
-		root.Close()
-		root = next
+		roots = append(roots, next)
 	}
-	result := root
-	root = nil
+	result := roots[len(roots)-1]
+	roots = roots[:len(roots)-1]
 	return result, nil
 }

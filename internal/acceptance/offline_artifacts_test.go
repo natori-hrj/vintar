@@ -61,6 +61,13 @@ func checkReviewDraftCLI(t *testing.T, root, binary string) {
 		t.Fatalf("non-current draft did not fail without changing the artifact: %+v", stale)
 	}
 	writeOfflineFixture(t, cwd, draft, originalDraft)
+	writeOfflineFixture(t, cwd, "answers.json", []byte(strings.Replace(answer, "%s", `"\ud800"`, 1)))
+	surrogate := runProduct(t, binary, cwd, args...)
+	if surrogate.code != 2 || surrogate.stdout != "" ||
+		surrogate.stderr != "Error: Cannot read review answers. Supply a bounded UTF-8 JSON file with unique keys.\n" ||
+		!bytes.Equal(readFixture(t, cwd, "review.json"), report) {
+		t.Fatalf("invalid Unicode was accepted or changed the artifact: %+v", surrogate)
+	}
 	writeOfflineFixture(t, cwd, "answers.json", []byte(strings.Replace(answer, "%s", "null", 1)))
 	got := runProduct(t, binary, cwd, args...)
 	rejected := offlineGolden(t, root, "review-draft/null-baseline")
@@ -111,11 +118,21 @@ func requireOfflineReview(t *testing.T, binary, cwd string, args []string, golde
 		if err := os.Symlink("real", filepath.Join(cwd, "linked")); err != nil {
 			t.Fatal(err)
 		}
-		other[len(other)-1] = "linked/review.json"
-		rejected := runProduct(t, binary, cwd, other...)
-		if _, err := os.Lstat(filepath.Join(cwd, "real", "review.json")); !os.IsNotExist(err) ||
-			rejected.code != 2 || rejected.stdout != "" {
-			t.Fatalf("review followed a linked output directory: %+v", rejected)
+		for _, tc := range []struct{ output, forbidden string }{
+			{"linked/escaped.json", "real/escaped.json"},
+			{"linked/../escaped.json", "escaped.json"},
+		} {
+			other[len(other)-1] = tc.output
+			rejected := runProduct(t, binary, cwd, other...)
+			if _, err := os.Lstat(filepath.Join(cwd, tc.forbidden)); !os.IsNotExist(err) ||
+				rejected.code != 2 || rejected.stdout != "" {
+				t.Fatalf("review followed a linked output directory: %+v", rejected)
+			}
+		}
+		other[len(other)-1] = "real/../parent-review.json"
+		if allowed := runProduct(t, binary, cwd, other...); allowed != got ||
+			!bytes.Equal(readFixture(t, cwd, "parent-review.json"), data) {
+			t.Fatalf("review of a real parent traversal failed: %+v", allowed)
 		}
 	}
 	return data

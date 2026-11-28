@@ -94,13 +94,17 @@ func discoveryDraftSpecOutsideCWD(spec string) bool {
 	if err != nil {
 		return false
 	}
-	pending, resolved := filepath.FromSlash(spec), cwd
+	pending, resolved := "", cwd
 	const sep = string(filepath.Separator)
-	for links := 0; pending != ""; {
+	start := func(path string) {
+		pending = filepath.FromSlash(path)
 		if filepath.IsAbs(pending) {
 			volume := filepath.VolumeName(pending)
 			resolved, pending = volume+sep, pending[len(volume):]
 		}
+	}
+	start(spec)
+	for links := 0; pending != ""; {
 		component, rest, _ := strings.Cut(pending, sep)
 		pending = rest
 		switch component {
@@ -124,7 +128,7 @@ func discoveryDraftSpecOutsideCWD(spec string) bool {
 			return false
 		}
 		links++
-		pending = filepath.FromSlash(target)
+		start(target)
 		if rest != "" {
 			pending += sep + rest
 		}

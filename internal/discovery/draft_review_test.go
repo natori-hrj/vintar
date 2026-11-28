@@ -216,7 +216,7 @@ func TestBuildDraftReviewCanonicalScalarDigests(t *testing.T) {
 		{`1e0`, `1.0`},
 		{`1e-5`, `1e-05`},
 		{`100000000000000000000000000000000001`, `100000000000000000000000000000000001`},
-		{`"\ud800"`, `"\ud800"`},
+		{`"\ud83d\ude00"`, `"\ud83d\ude00"`},
 		{`true`, `true`},
 	} {
 		t.Run(tc.input, func(t *testing.T) {
@@ -227,6 +227,15 @@ func TestBuildDraftReviewCanonicalScalarDigests(t *testing.T) {
 				t.Fatalf("report = %q, want digest %s, err = %v", report, digest, err)
 			}
 		})
+	}
+}
+
+func TestBuildDraftReviewRejectsLoneSurrogateAnswer(t *testing.T) {
+	const answers = `{"version":1,"expected_verdict":"not_detected","parameters":{"q":{"value":"\ud800"}}}`
+	spec := reviewFixture(t, "fixtures/discovery/openapi30.json")
+	report, id, err := BuildDraftReview(spec, "openapi.json", goldenDraft(t), []byte(answers))
+	if report != nil || id != "" || err == nil || !strings.Contains(err.Error(), "Cannot read review answers") {
+		t.Fatalf("non-scalar JSON answer produced review metadata: %q, %q, %v", report, id, err)
 	}
 }
 

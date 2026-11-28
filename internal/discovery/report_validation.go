@@ -5,7 +5,10 @@ import "encoding/json"
 // Count values rather than object keys. strictjson preserves lone UTF-16
 // surrogates for other callers; they are not Unicode scalars in OpenAPI.
 func validDiscoveryDocument(root map[string]any) bool {
-	remaining := 8192
+	return validJSONScalars(root, 8192)
+}
+
+func validJSONScalars(value any, remaining int) bool {
 	var visit func(any) bool
 	visit = func(value any) bool {
 		remaining--
@@ -32,5 +35,5 @@ func validDiscoveryDocument(root map[string]any) bool {
 		}
 		return true
 	}
-	return visit(root)
+	return visit(value)
 }
