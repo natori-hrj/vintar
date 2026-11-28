@@ -15,6 +15,7 @@ const modulePath = "github.com/natori-hrj/vintar"
 const tomlModule = "github.com/pelletier/go-toml/v2"
 const punycodePackage = "golang.org/x/net/idna"
 const normalizationPackage = "golang.org/x/text/unicode/norm"
+const httpTransportPackage = "internal/execution/internal/httpio"
 
 type listedPackage struct {
 	ImportPath string
@@ -65,9 +66,6 @@ func checkProductPackage(t *testing.T, pkg listedPackage) {
 	t.Helper()
 	path := pkg.ImportPath
 	switch {
-	case path == "net", strings.HasPrefix(path, "net/http"), path == "net/rpc", path == "net/smtp",
-		path == "crypto/tls":
-		t.Errorf("network dependency in foundation product graph: %s", path)
 	case pkg.Standard:
 		// unsafe/syscall may occur inside the Go standard library (e.g. os).
 		// Direct imports by project code are rejected below.
@@ -92,8 +90,11 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 	// Edges allowed by the foundation layering, not edges that are required.
 	allowed := map[string][]string{
 		"cmd/vintar":          {"internal/cli"},
-		"internal/cli":        {"internal/casefile", "internal/report", "internal/strictjson"},
+		"internal/cli":        {"internal/casefile", "internal/execution", "internal/report", "internal/strictjson"},
 		"internal/casefile":   {"internal/strictjson"},
+		"internal/discovery":  {"internal/strictjson"},
+		"internal/execution":  {httpTransportPackage},
+		httpTransportPackage:  nil,
 		"internal/report":     {"internal/strictjson"},
 		"internal/strictjson": nil,
 		"internal/acceptance": nil, // Test-only; no product package may import it.
@@ -106,6 +107,12 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 		switch {
 		case dep == "C", dep == "unsafe", dep == "syscall", dep == "os/exec", dep == "plugin":
 			t.Errorf("unsafe direct import: %s imports %s", path, dep)
+		case dep == "net" || dep == "net/http" || dep == "crypto/tls":
+			if path != httpTransportPackage {
+				t.Errorf("transport dependency outside %s: %s imports %s", httpTransportPackage, path, dep)
+			}
+		case strings.HasPrefix(dep, "net/http/") || dep == "net/rpc" || dep == "net/smtp":
+			t.Errorf("unapproved network dependency: %s imports %s", path, dep)
 		case dep == tomlModule || strings.HasPrefix(dep, tomlModule+"/"):
 			if path != "internal/casefile" || dep != tomlModule {
 				t.Errorf("TOML decoding must stay in casefile: %s imports %s", path, dep)

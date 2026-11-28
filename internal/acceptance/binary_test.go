@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,6 +119,28 @@ func TestProductBinary(t *testing.T) {
 	root := repoRoot(t)
 	binary := productBinary(t, root)
 	t.Logf("product binary: %s (%s/%s, test toolchain %s)", binary, runtime.GOOS, runtime.GOARCH, runtime.Version())
+
+	t.Run("http-single-local-request", func(t *testing.T) {
+		received := make(chan string, 4)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			received <- r.Method + " " + r.RequestURI
+			w.Header().Set("Location", "/another-resource")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer server.Close()
+		cwd := t.TempDir()
+		bad := runProduct(t, binary, cwd, "http", "send", "GET", server.URL, "-H", ":")
+		if bad.code != 1 || bad.stderr != "" || len(received) != 0 {
+			t.Fatalf("invalid header exit = %d, requests = %d, stderr = %q", bad.code, len(received), bad.stderr)
+		}
+		got := runProduct(t, binary, cwd, "http", "send", "GET", server.URL+"/a%2Fb?ignored=1", "-p", "x=one two+")
+		if got.code != 0 || got.stderr != "" || !strings.Contains(got.stdout, "Status: 302\n") {
+			t.Fatalf("unexpected HTTP output: %+v", got)
+		}
+		if len(received) != 1 || <-received != "GET /a%2Fb?x=one%20two%2B" {
+			t.Fatal("expected precisely one request with the approved bytes")
+		}
+	})
 
 	for _, tc := range []struct {
 		name  string

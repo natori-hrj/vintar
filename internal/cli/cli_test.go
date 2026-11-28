@@ -3,6 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -57,9 +60,9 @@ func TestRun(t *testing.T) {
 		{"HTTP cookie name with Python whitespace", []string{"http", "send", "GET", url, "-C", "\x1f=" + secret}, 1, "Cookie name cannot be empty", ""},
 		{"HTTP malformed parameter", []string{"http", "send", "GET", url, "-p", secret}, 1, "Invalid parameter", ""},
 		{"HTTP empty parameter name", []string{"http", "send", "GET", url, "-p", "=" + secret}, 1, "Parameter name cannot be empty", ""},
-		{"HTTP terminator", []string{"http", "send", "-t.1", "--", "post", "-literal"}, 2, "", "not available"},
+		{"HTTP terminator", []string{"http", "send", "-t.1", "--", "post", "-literal"}, 1, "HTTP request failed.", ""},
 		{"HTTP terminator prevents flag parsing", []string{"http", "send", "GET", url, "--", "--help"}, 2, "", "Unexpected positional"},
-		{"HTTP scalar last wins", []string{"http", "send", "get", "-t", secret, url, "--timeout=60"}, 2, "", "not available"},
+		{"HTTP scalar last wins", []string{"http", "send", "get", "-t", secret, "https://[invalid/" + secret, "--timeout=60"}, 1, "HTTP request failed.", ""},
 		{"HTTP range checked before method", []string{"http", "send", secret, url, "--timeout=60", "-t60.01"}, 2, "", "--timeout"},
 		{"HTTP fullwidth timeout rejected", []string{"http", "send", "PATCH", "unused", "--timeout=１"}, 2, "", "--timeout"},
 		{"HTTP Unicode decimal and exponent rejected", []string{"http", "send", "PATCH", "unused", "--timeout=١.٥e𝟙"}, 2, "", "--timeout"},
@@ -83,6 +86,47 @@ func TestRun(t *testing.T) {
 				t.Error("version must be one exact line")
 			}
 		})
+	}
+}
+
+func TestRunHTTPSendLocal(t *testing.T) {
+	type observed struct{ method, target, body, cookie string }
+	received := make(chan observed, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error("read local fixture request")
+		}
+		received <- observed{r.Method, r.RequestURI, string(body), r.Header.Get("Cookie")}
+		w.Header().Set("Location", "/should-not-follow")
+		w.WriteHeader(http.StatusFound)
+		io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+	var stdout, stderr bytes.Buffer
+	exit := Run(t.Context(), []string{"http", "send", "POST", server.URL, "-H", ":"}, &stdout, &stderr)
+	if exit != 1 || len(received) != 0 || stderr.Len() != 0 {
+		t.Fatalf("malformed input: exit = %d, requests = %d, stderr = %q", exit, len(received), stderr.String())
+	}
+	stdout.Reset()
+	exit = Run(t.Context(), []string{
+		"http", "send", "poſt", server.URL + "/a%2Fb?old=private-token",
+		"-p", "q=a b+", "-p", "q=", "-C", "first=one", "-C", "second=two",
+		"-C", "first=last", "--body", "sample",
+	}, &stdout, &stderr)
+	if exit != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit = %d, stderr = %q", exit, stderr.String())
+	}
+	if len(received) != 1 {
+		t.Fatalf("wanted exactly one request, observed %d", len(received))
+	}
+	if got := <-received; got != (observed{"POST", "/a%2Fb?q=a%20b%2B&q=", "sample", "first=last; second=two"}) {
+		t.Fatalf("unexpected local request: %+v", got)
+	}
+	if !strings.Contains(stdout.String(), "Method: POST\nStatus: 302\n") ||
+		!strings.Contains(stdout.String(), "Content size: 2 bytes\n") ||
+		strings.Contains(stdout.String(), "private-token") {
+		t.Fatalf("unexpected or unsanitized output: %q", stdout.String())
 	}
 }
 

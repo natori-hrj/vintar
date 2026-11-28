@@ -189,6 +189,7 @@ type pair struct {
 
 type httpFields struct {
 	headers, cookies map[string]string
+	cookieNames      []string
 	params           []pair
 }
 
@@ -209,7 +210,15 @@ func parseHTTPFields(args arguments) (httpFields, error) {
 		return fields, err
 	}
 	fields.headers = lastValues(headers)
-	fields.cookies = lastValues(cookies)
+	if len(cookies) != 0 {
+		fields.cookies = make(map[string]string, len(cookies))
+		for _, cookie := range cookies {
+			if _, exists := fields.cookies[cookie.name]; !exists {
+				fields.cookieNames = append(fields.cookieNames, cookie.name)
+			}
+			fields.cookies[cookie.name] = cookie.value
+		}
+	}
 	return fields, nil
 }
 

@@ -38,7 +38,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 
 		if len(cmd.children) == 0 {
-			return runCommand(path, parsed, stdout, stderr)
+			return runCommand(ctx, path, parsed, stdout, stderr)
 		}
 		if len(parsed.remaining) == 0 {
 			if len(args) == 0 && cmd.helpOnEmpty {
@@ -54,7 +54,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runCommand(path string, args arguments, stdout, stderr io.Writer) int {
+func runCommand(ctx context.Context, path string, args arguments, stdout, stderr io.Writer) int {
 	switch path {
 	case "vintar version":
 		return writeText(stdout, stderr, version+"\n", 0)
@@ -75,12 +75,7 @@ func runCommand(path string, args arguments, stdout, stderr io.Writer) int {
 			return diagnostic(stderr, 2, "Draft export requires --selection. Supply a reviewed selection file.")
 		}
 	case "vintar http send":
-		if !httpSendMethod.MatchString(args.positionals[0]) {
-			return writeText(stdout, stderr, "Only GET and POST are supported.\n", 1)
-		}
-		if _, err := parseHTTPFields(args); err != nil {
-			return writeText(stdout, stderr, err.Error()+"\n", 1)
-		}
+		return runHTTPSend(ctx, args, stdout, stderr)
 	}
 	return diagnostic(stderr, 2, path+" is not available")
 }
