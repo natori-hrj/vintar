@@ -71,7 +71,7 @@ func BuildDraftReview(specJSON []byte, source string, draftTOML, answersJSON []b
 		}
 	}
 	if !operation.Compatible || !item.Compatible || item.IgnoredReason != nil ||
-		!currentReviewDraft(draftTOML, source, *operation, *item, query) {
+		!currentReviewDraft(draftTOML, source, *operation, *item) {
 		return nil, "", errDraftStale
 	}
 
@@ -113,7 +113,7 @@ func BuildDraftReview(specJSON []byte, source string, draftTOML, answersJSON []b
 		}
 		result.Parameters[input.Name] = decision
 	}
-	report, err = encodeDraftReviewReport(result)
+	report, err = encodeOfflineJSON(result)
 	if err != nil {
 		return nil, "", err
 	}
@@ -138,42 +138,44 @@ func findReviewInput(inventory Inventory, id string) (*InventoryOperation, *Inpu
 	return operation, input
 }
 
-// The release treats a draft as an exact export, not as editable TOML. Check
-// both the released spelling and Go discover's spelling of U+2028/U+2029.
-func currentReviewDraft(data []byte, source string, operation InventoryOperation, item Input, query []Input) bool {
+// EncodeDraft emits the released deterministic draft for a selected input.
+// Review compares these bytes with a fresh export from the current inventory.
+func EncodeDraft(source string, operation InventoryOperation, item Input) []byte {
+	return encodeDraft(source, operation, item, true)
+}
+
+func currentReviewDraft(data []byte, source string, operation InventoryOperation, item Input) bool {
+	// Keep accepting drafts produced before the Go writer matched the
+	// released Unicode line-separator spelling.
+	return len(data) <= 65536 && (bytes.Equal(data, EncodeDraft(source, operation, item)) ||
+		bytes.Equal(data, encodeDraft(source, operation, item, false)))
+}
+
+func encodeDraft(source string, operation InventoryOperation, item Input, released bool) []byte {
 	const decisions = `["route mapping and baseline query values", "trusted target, authorization, and any credential requirements", "reviewed check configuration and probe inputs", "expected verdict", "trusted limits and required Schema v1 case fields"]`
 	const header = "kind = \"vintar_review_draft\"\ndraft_version = 1\nid = %s\ninput_id = %s\nmethod = %s\npath = %s\nquery_parameter = %s\nmissing_decisions = %s\n\n[source]\nfile = %s\noperation = %s\noperation_definition = %s\ndeclaration = %s\ndefinition = %s\n"
-	if len(data) > 65536 {
-		return false
-	}
 	releaseEscapes := strings.NewReplacer(`\\`, `\\`, `\u2028`, "\u2028", `\u2029`, "\u2029")
-	for _, released := range []bool{false, true} {
-		quote := func(s string) string {
-			var b strings.Builder
-			enc := json.NewEncoder(&b)
-			enc.SetEscapeHTML(false)
-			_ = enc.Encode(s)
-			text := strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
-			if released {
-				return releaseEscapes.Replace(text)
-			}
-			return text
+	quote := func(s string) string {
+		var b strings.Builder
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(s)
+		text := strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
+		if released {
+			return releaseEscapes.Replace(text)
 		}
-		var expected bytes.Buffer
-		fmt.Fprintf(&expected, header, quote("case-"+strings.TrimPrefix(item.ID, "input-")), quote(item.ID),
-			quote(operation.Method), quote(operation.Path), quote(item.Name), decisions, quote(source),
-			quote(operation.Source.Pointer), quote(operation.Definition.Pointer), quote(item.Source.Pointer), quote(item.Definition.Pointer))
-		for _, param := range query {
+		return text
+	}
+	var expected bytes.Buffer
+	fmt.Fprintf(&expected, header, quote("case-"+strings.TrimPrefix(item.ID, "input-")), quote(item.ID),
+		quote(operation.Method), quote(operation.Path), quote(item.Name), decisions, quote(source),
+		quote(operation.Source.Pointer), quote(operation.Definition.Pointer), quote(item.Source.Pointer), quote(item.Definition.Pointer))
+	for _, param := range operation.Inputs {
+		if param.Location == "query" {
 			fmt.Fprintf(&expected, "\n[[query_parameters]]\nname = %s\nrequired = %t\n", quote(param.Name), param.Required)
-			if expected.Len() > len(data) {
-				break
-			}
-		}
-		if bytes.Equal(data, expected.Bytes()) {
-			return true
 		}
 	}
-	return false
+	return expected.Bytes()
 }
 
 type draftReviewCandidates struct {
@@ -457,7 +459,7 @@ func (c *draftReviewCandidates) resolve(value any, site string) (any, string, er
 	}
 }
 
-func encodeDraftReviewReport(result draftReviewReport) ([]byte, error) {
+func encodeOfflineJSON(result any) ([]byte, error) {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetIndent("", "  ")

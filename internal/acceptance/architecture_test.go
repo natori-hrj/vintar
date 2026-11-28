@@ -112,8 +112,8 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 	}
 	for _, dep := range imports {
 		switch {
-		case dep == "os" && (path == "internal/decision" || path == "internal/report"):
-			t.Errorf("offline decision and report packages must not access files or the environment: %s imports %s", path, dep)
+		case dep == "os" && (path == "internal/decision" || path == "internal/report" || path == "internal/discovery"):
+			t.Errorf("pure offline package imports files or environment: %s imports %s", path, dep)
 		case dep == "syscall" && (path == policyReaderPackage || path == "internal/cli" || path == "internal/casefile"):
 			// Local file readers use platform open flags and handle metadata.
 		case dep == "C", dep == "unsafe", dep == "syscall", dep == "os/exec", dep == "plugin":
@@ -125,8 +125,8 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 		case strings.HasPrefix(dep, "net/http/") || dep == "net/rpc" || dep == "net/smtp":
 			t.Errorf("unapproved network dependency: %s imports %s", path, dep)
 		case dep == tomlModule || strings.HasPrefix(dep, tomlModule+"/"):
-			if (path != "internal/casefile" && path != "internal/cli") || dep != tomlModule {
-				t.Errorf("TOML decoding must stay with case and selection inputs: %s imports %s", path, dep)
+			if (path != "internal/casefile" && path != "internal/cli" && path != "internal/discovery") || dep != tomlModule {
+				t.Errorf("TOML decoding must stay with case and offline inputs: %s imports %s", path, dep)
 			}
 		case dep == yamlModule || strings.HasPrefix(dep, yamlModule+"/"):
 			if path != "internal/discovery" || dep != yamlModule {

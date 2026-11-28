@@ -16,8 +16,6 @@ import (
 	"github.com/natori-hrj/vintar/internal/discovery"
 )
 
-const draftDecisions = `["route mapping and baseline query values", "trusted target, authorization, and any credential requirements", "reviewed check configuration and probe inputs", "expected verdict", "trusted limits and required Schema v1 case fields"]`
-
 func draftSource(path string) (string, error) {
 	path, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -54,7 +52,7 @@ func runDiscoveryDrafts(ctx context.Context, directory, spec string, inventory d
 			if input.Selected {
 				id := "case-" + strings.TrimPrefix(input.ID, "input-")
 				name := id + ".draft.toml"
-				draft := encodeDiscoveryDraft(id, source, operation, input)
+				draft := discovery.EncodeDraft(source, operation, input)
 				if len(draft) > 65536 {
 					return diagnostic(stderr, 2, "Draft exceeds 64 KiB. Shorten the declarations and retry.")
 				}
@@ -86,19 +84,6 @@ func draftString(value string) string {
 	return strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
 }
 
-func encodeDiscoveryDraft(id, source string, operation discovery.InventoryOperation, input discovery.Input) []byte {
-	var b strings.Builder
-	fmt.Fprintf(&b, "kind = \"vintar_review_draft\"\ndraft_version = 1\nid = %s\ninput_id = %s\nmethod = %s\npath = %s\nquery_parameter = %s\nmissing_decisions = %s\n\n[source]\nfile = %s\noperation = %s\noperation_definition = %s\ndeclaration = %s\ndefinition = %s\n",
-		draftString(id), draftString(input.ID), draftString(operation.Method), draftString(operation.Path), draftString(input.Name), draftDecisions,
-		draftString(source), draftString(operation.Source.Pointer), draftString(operation.Definition.Pointer), draftString(input.Source.Pointer), draftString(input.Definition.Pointer))
-	for _, parameter := range operation.Inputs {
-		if parameter.Location == "query" {
-			fmt.Fprintf(&b, "\n[[query_parameters]]\nname = %s\nrequired = %t\n", draftString(parameter.Name), parameter.Required)
-		}
-	}
-	return []byte(b.String())
-}
-
 func publishDiscoveryDrafts(ctx context.Context, directory string, names []string, drafts map[string][]byte, inputs []os.FileInfo) error {
 	badDirectory := errors.New("Draft directory traverses a symlink or non-directory. Choose a real directory.")
 	failed := errors.New("cannot write review drafts. Choose a writable output path.")
@@ -126,6 +111,11 @@ func publishDiscoveryDrafts(ctx context.Context, directory string, names []strin
 		return failed
 	}
 	defer root.Close()
+	return publishDraftsAtRoot(ctx, root, names, drafts, inputs)
+}
+
+func publishDraftsAtRoot(ctx context.Context, root *os.Root, names []string, drafts map[string][]byte, inputs []os.FileInfo) error {
+	failed := errors.New("cannot write review drafts. Choose a writable output path.")
 	var pending []string
 	for _, name := range names {
 		info, err := root.Lstat(name)

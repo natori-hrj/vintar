@@ -3,12 +3,27 @@ package discovery
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/natori-hrj/vintar/internal/strictjson"
 )
+
+func TestPostJSONArtifactWriterHasIndependentSizeLimit(t *testing.T) {
+	// Inventory output can exceed the strict JSON input limit, as in the
+	// released writer. It still must stop at the inventory-specific limit.
+	row := map[string]any{"metadata": strings.Repeat("a", (1<<20)+1)}
+	data, err := marshalPostArtifact(row, postMaxReport)
+	if err != nil || len(data) <= 1<<20 || !json.Valid(data) {
+		t.Fatalf("inventory writer applied the strict input limit: bytes=%d, err=%v", len(data), err)
+	}
+	row["metadata"] = strings.Repeat("a", postMaxReport)
+	if data, err := marshalPostArtifact(row, postMaxReport); data != nil || !errors.Is(err, ErrPostArtifactSize) {
+		t.Fatalf("oversized artifact was not consistently rejected: bytes=%d, err=%v", len(data), err)
+	}
+}
 
 const postInventoryGoldenSpec = `{
   "openapi":"3.1.2","paths":{"/items":{"post":{

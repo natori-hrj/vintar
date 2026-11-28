@@ -1,7 +1,6 @@
 package discovery
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -40,16 +39,12 @@ var (
 // BuildPostJSONReview produces only redacted review metadata. The recorded
 // confirmations are assertions from the answers, not execution authority.
 func BuildPostJSONReview(specJSON []byte, source string, inventoryJSON, answersJSON []byte) (report []byte, candidateID string, err error) {
-	supplied, err := strictjson.Canonicalize(inventoryJSON)
+	supplied, err := strictjson.Parse(inventoryJSON)
 	if err != nil || len(answersJSON) > postReviewLimit {
 		return nil, "", errPostReviewJSON
 	}
-	var header struct {
-		Version json.RawMessage `json:"schema_version"`
-		Type    string          `json:"report_type"`
-	}
-	if err := json.Unmarshal(supplied, &header); err != nil || string(header.Version) != "2" ||
-		header.Type != postInventoryType {
+	root, ok := supplied.(map[string]any)
+	if !ok || root["schema_version"] != json.Number("2") || root["report_type"] != postInventoryType {
 		return nil, "", errPostStaleInventory
 	}
 	answerValue, err := strictjson.Parse(answersJSON)
@@ -77,14 +72,7 @@ func BuildPostJSONReview(specJSON []byte, source string, inventoryJSON, answersJ
 	if answer["operation_definition_sha256"] != candidate.Digest {
 		return nil, "", errPostChanged
 	}
-	// Check the entire supplied artifact rather than trusting only the
-	// selected operation's candidate row.
-	current, err := json.Marshal(inventory)
-	if err != nil {
-		return nil, "", errPostStaleInventory
-	}
-	current, err = strictjson.Canonicalize(current)
-	if err != nil || !bytes.Equal(current, supplied) ||
+	if !matchingSuppliedPostReview(root, operation, field, candidate) ||
 		answer["schema_pointer"] != field.Schema || answer["schema_definition_pointer"] != field.Definition {
 		return nil, "", errPostInventoryMatch
 	}
@@ -128,6 +116,73 @@ func BuildPostJSONReview(specJSON []byte, source string, inventoryJSON, answersJ
 		return nil, "", err
 	}
 	return report, id, nil
+}
+
+// Match the selected claim to the current spec. The rest of the inventory
+// may describe other operations, and does not authorize or affect this review.
+func matchingSuppliedPostReview(root map[string]any, operation postOperation, field postField, candidate postCandidate) bool {
+	operations, ok := root["operations"].([]any)
+	if !ok {
+		return false
+	}
+	matches := 0
+	for _, rawOperation := range operations {
+		row, ok := rawOperation.(map[string]any)
+		if !ok {
+			return false
+		}
+		claims, ok := row["review_candidates"].([]any)
+		if !ok {
+			return false
+		}
+		for _, rawClaim := range claims {
+			claim, _ := rawClaim.(map[string]any)
+			if claim["candidate_id"] != candidate.ID {
+				continue
+			}
+			matches++
+			if !postExactKeys(claim, "candidate_id", "approval", "operation_definition_sha256") ||
+				claim["approval"] != candidate.Status || claim["operation_definition_sha256"] != candidate.Digest ||
+				row["path"] != operation.Path || row["operation_pointer"] != operation.Operation ||
+				row["request_body_pointer"] != operation.Body || !matchingSuppliedPostField(row["fields"], field) {
+				return false
+			}
+		}
+	}
+	return matches == 1
+}
+
+func matchingSuppliedPostField(value any, field postField) bool {
+	fields, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	matches := 0
+	for _, rawField := range fields {
+		row, _ := rawField.(map[string]any)
+		if row["json_pointer"] != field.Pointer || row["schema_pointer"] != field.Schema {
+			continue
+		}
+		rawStars, present := row["literal_star_positions"]
+		stars, ok := rawStars.([]any)
+		if (present && !ok) || len(stars) != len(field.Stars) {
+			continue
+		}
+		valid := true
+		for i, index := range field.Stars {
+			if stars[i] != json.Number(strconv.Itoa(index)) {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			matches++
+			if row["schema_definition_pointer"] != field.Definition {
+				return false
+			}
+		}
+	}
+	return matches == 1
 }
 
 func matchPostReviewCandidate(inventory postInventory, id string) (postOperation, postField, postCandidate, error) {

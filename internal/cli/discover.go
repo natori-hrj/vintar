@@ -227,7 +227,7 @@ func checkDiscoveryDestination(root *os.Root, dest string, inputs []os.FileInfo)
 	}
 	for _, input := range inputs {
 		if os.SameFile(info, input) {
-			return errors.New("Output conflicts with the spec or selection. Choose a separate report path.")
+			return errDiscoveryOutputConflict
 		}
 	}
 	return nil

@@ -65,6 +65,29 @@ func TestPostJSONReviewReleaseGolden(t *testing.T) {
 	assertPostJSONEqual(t, report, postGolden(t, "review-post-json/success.json", "review_json"))
 }
 
+func TestPostJSONReviewUsesSelectedProvenance(t *testing.T) {
+	inventory, answers := postReviewAnswers(t, postReviewGoldenSpec, "/orders/0/sku",
+		json.RawMessage(`{"orders":[{"sku":"PRIVATE-BODY-SENTINEL-74d9"}]}`))
+	var supplied map[string]any
+	if err := json.Unmarshal(inventory, &supplied); err != nil {
+		t.Fatal(err)
+	}
+	// The released reviewer does not require unrelated inventory counts
+	// to be current for one selected claim.
+	supplied["counts"].(map[string]any)["operations"] = 5
+	input := postTestMarshal(t, answers)
+	report, _, err := BuildPostJSONReview([]byte(postReviewGoldenSpec), "openapi.json", postTestMarshal(t, supplied), input)
+	if err != nil || len(report) == 0 {
+		t.Fatalf("unrelated inventory metadata blocked the selected review: %v", err)
+	}
+	operation := supplied["operations"].([]any)[0].(map[string]any)
+	operations := supplied["operations"].([]any)
+	supplied["operations"] = append(operations, operation)
+	if report, _, err := BuildPostJSONReview([]byte(postReviewGoldenSpec), "openapi.json", postTestMarshal(t, supplied), input); report != nil || !errors.Is(err, errPostInventoryMatch) {
+		t.Fatalf("ambiguous selected claim was accepted: %v", err)
+	}
+}
+
 func TestPostJSONReviewChecksProvenanceAndDecisions(t *testing.T) {
 	for _, tc := range []struct {
 		name string

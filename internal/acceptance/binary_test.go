@@ -122,6 +122,9 @@ func TestProductBinary(t *testing.T) {
 	t.Logf("product binary: %s (%s/%s, test toolchain %s)", binary, runtime.GOOS, runtime.GOARCH, runtime.Version())
 
 	t.Run("discover-offline", func(t *testing.T) { checkProductDiscovery(t, root, binary) })
+	t.Run("review-draft-offline", func(t *testing.T) { checkReviewDraftCLI(t, root, binary) })
+	t.Run("inventory-post-json-offline", func(t *testing.T) { checkPostInventoryCLI(t, root, binary) })
+	t.Run("review-post-json-offline", func(t *testing.T) { checkPostReviewCLI(t, root, binary) })
 	t.Run("http-single-local-request", func(t *testing.T) {
 		type observation struct{ target, host string }
 		received := make(chan observation, 4)
@@ -272,9 +275,6 @@ func TestProductBinary(t *testing.T) {
 	// Exercise only offline stubs here; no test invokes an authorized route.
 	spec := filepath.Join(root, "tests", "fixtures", "discovery", "openapi30.json")
 	for _, args := range [][]string{
-		{"inventory-post-json", "--spec", spec, "--output", "out.json"},
-		{"review-draft", "--spec", spec, "--draft", "draft.json", "--answers", "answers.json", "--output", "out.json"},
-		{"review-post-json", "--spec", spec, "--inventory", "inventory.json", "--answers", "answers.json", "--output", "out.json"},
 		{"materialize-case", "--spec", spec, "--draft", "draft.json", "--answers", "answers.json", "--review", "review.json", "--config", "config.json", "--output", "out.toml"},
 		{"materialize-post-json-case", "--spec", spec, "--inventory", "inventory.json", "--answers", "answers.json", "--review", "review.json", "--config", "config.json", "--output", "out.toml"},
 	} {

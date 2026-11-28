@@ -75,6 +75,12 @@ func runCommand(ctx context.Context, path string, args arguments, stdout, stderr
 			return diagnostic(stderr, 2, "Draft export requires --selection. Supply a reviewed selection file.")
 		}
 		return runDiscover(ctx, args, stdout, stderr)
+	case "vintar inventory-post-json":
+		return runPostJSONInventory(ctx, args, stdout, stderr)
+	case "vintar review-draft":
+		return runOfflineReview(ctx, args, stdout, stderr, false)
+	case "vintar review-post-json":
+		return runOfflineReview(ctx, args, stdout, stderr, true)
 	case "vintar http send":
 		return runHTTPSend(ctx, args, stdout, stderr)
 	}

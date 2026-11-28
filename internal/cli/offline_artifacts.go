@@ -1,0 +1,254 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/natori-hrj/vintar/internal/discovery"
+)
+
+const (
+	maxOfflineSpecBytes = 1 << 20
+	maxDraftBytes       = 64 << 10
+	maxPostReportBytes  = 2 << 20
+	maxPostReviewBytes  = 256 << 10
+)
+
+var (
+	errOfflineInput            = errors.New("cannot read a bounded regular input file")
+	errDiscoveryOutputConflict = errors.New("Output conflicts with the spec or selection. Choose a separate report path.")
+)
+
+type offlineInput struct {
+	data []byte
+	info os.FileInfo
+}
+
+func readOfflineInput(path string, limit int64) (offlineInput, error) {
+	before, err := os.Lstat(path)
+	if err != nil || !before.Mode().IsRegular() || before.Size() > limit {
+		return offlineInput{}, errOfflineInput
+	}
+	file, err := openOfflineInput(path)
+	if err != nil {
+		return offlineInput{}, errOfflineInput
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !sameOfflineInput(before, opened) {
+		return offlineInput{}, errOfflineInput
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(data)) != opened.Size() {
+		return offlineInput{}, errOfflineInput
+	}
+	after, err := file.Stat()
+	if err != nil || !sameOfflineInput(opened, after) {
+		return offlineInput{}, errOfflineInput
+	}
+	linked, err := os.Lstat(path)
+	if err != nil || !sameOfflineInput(opened, linked) {
+		return offlineInput{}, errOfflineInput
+	}
+	return offlineInput{data, opened}, nil
+}
+
+func sameOfflineInput(a, b os.FileInfo) bool {
+	return b.Mode().IsRegular() && os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
+}
+
+func readOfflineSpec(path string) (offlineInput, error) {
+	spec, err := readOfflineInput(path, maxOfflineSpecBytes)
+	if err != nil {
+		return offlineInput{}, err
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+		spec.data, err = discovery.DecodeYAML(spec.data)
+	case ".json":
+	default:
+		err = errOfflineInput
+	}
+	return spec, err
+}
+
+func runPostJSONInventory(ctx context.Context, args arguments, stdout, stderr io.Writer) int {
+	const failed = "invalid or unreadable OpenAPI spec. Check the local file format, declarations, references, and limits, then try again."
+	const interrupted = "POST JSON inventory was interrupted. Rerun to regenerate the report."
+	source := args.value("spec")
+	spec, err := readOfflineSpec(source)
+	if ctx.Err() != nil {
+		return diagnostic(stderr, 130, interrupted)
+	}
+	if err != nil {
+		return diagnostic(stderr, 2, failed)
+	}
+	report, summary, err := discovery.BuildPostJSONInventory(spec.data, filepath.ToSlash(source))
+	if ctx.Err() != nil {
+		return diagnostic(stderr, 130, interrupted)
+	}
+	if errors.Is(err, discovery.ErrPostArtifactSize) {
+		return diagnostic(stderr, 2, "The POST JSON inventory exceeds the report size limit. Split the OpenAPI spec into smaller specs and run the inventory for each.")
+	}
+	if err != nil {
+		return diagnostic(stderr, 2, failed)
+	}
+	err = publishDiscoveryReport(ctx, args.value("output"), report, []os.FileInfo{spec.info})
+	if ctx.Err() != nil {
+		return diagnostic(stderr, 130, interrupted)
+	}
+	if err != nil {
+		if errors.Is(err, errDiscoveryOutputConflict) {
+			return diagnostic(stderr, 2, "Output conflicts with the spec. Choose a separate report path.")
+		}
+		return diagnostic(stderr, 2, "cannot write the POST JSON inventory. Choose a writable output path separate from the spec.")
+	}
+	return writeText(stdout, stderr, strings.TrimSuffix(summary, "\n")+"\n", 0)
+}
+
+func runOfflineReview(ctx context.Context, args arguments, stdout, stderr io.Writer, post bool) int {
+	pathArg, reportType, idKey := "draft", "discovery_draft_review_summary", "input_id"
+	failed := "cannot complete offline review. Check the local spec, draft, answers, and writable output path."
+	interrupted := "review interrupted. Rerun the command to finish writing the report."
+	artifactLimit, answerLimit := int64(maxDraftBytes), int64(maxOfflineSpecBytes)
+	if post {
+		pathArg, reportType, idKey = "inventory", "post_json_discovery_review_summary", "candidate_id"
+		failed = "cannot complete offline POST JSON review. Check the local spec, current inventory, answers, and writable output path."
+		interrupted = "POST JSON review was interrupted. Rerun to regenerate the review artifact."
+		artifactLimit, answerLimit = maxPostReportBytes, maxPostReviewBytes
+	}
+	specPath := args.value("spec")
+	label := filepath.ToSlash(specPath)
+	if !post && discoveryDraftSpecOutsideCWD(specPath) {
+		return offlineReviewFailure(ctx, stderr, interrupted, "Spec is outside the current working directory. Run from a directory containing the spec.")
+	}
+	spec, err := readOfflineSpec(specPath)
+	if err != nil {
+		if !post {
+			failed = "Cannot inventory the spec. Check its format, declarations, and references, then rerun discovery."
+		}
+		return offlineReviewFailure(ctx, stderr, interrupted, failed)
+	}
+	if !post {
+		label, err = draftSource(specPath)
+		if err != nil {
+			return offlineReviewFailure(ctx, stderr, interrupted, failed)
+		}
+	}
+	artifact, err := readOfflineInput(args.value(pathArg), artifactLimit)
+	if err != nil {
+		return offlineReviewFailure(ctx, stderr, interrupted, failed)
+	}
+	answers, err := readOfflineInput(args.value("answers"), answerLimit)
+	if err != nil {
+		return offlineReviewFailure(ctx, stderr, interrupted, failed)
+	}
+	var report []byte
+	var id string
+	if post {
+		report, id, err = discovery.BuildPostJSONReview(spec.data, label, artifact.data, answers.data)
+	} else {
+		report, id, err = discovery.BuildDraftReview(spec.data, label, artifact.data, answers.data)
+	}
+	if errors.Is(err, discovery.ErrPostArtifactSize) {
+		return offlineReviewFailure(ctx, stderr, interrupted, "POST JSON review exceeds its size limit. Shorten non-secret environment metadata.")
+	}
+	if err != nil {
+		return offlineReviewFailure(ctx, stderr, interrupted, err.Error())
+	}
+	output := args.value("output")
+	name := filepath.Base(output)
+	if name == ".json" || filepath.Ext(name) != ".json" {
+		return offlineReviewFailure(ctx, stderr, interrupted, "Review output requires a .json filename. Pass a JSON path to --output.")
+	}
+	err = publishOfflineReview(ctx, output, report, []os.FileInfo{spec.info, artifact.info, answers.info})
+	if err != nil {
+		// A conflicting output name is supplied by the caller and need not
+		// be included in the diagnostic.
+		return offlineReviewFailure(ctx, stderr, interrupted, "Cannot publish review. Use a separate writable JSON file.")
+	}
+	if ctx.Err() != nil {
+		return diagnostic(stderr, 130, interrupted)
+	}
+	summary, _ := json.Marshal(map[string]any{
+		"schema_version": 1, "report_type": reportType, idKey: id,
+	})
+	return writeText(stdout, stderr, string(summary)+"\n", 0)
+}
+
+func offlineReviewFailure(ctx context.Context, stderr io.Writer, interrupted, message string) int {
+	if ctx.Err() != nil {
+		return diagnostic(stderr, 130, interrupted)
+	}
+	return diagnostic(stderr, 2, message)
+}
+
+func publishOfflineReview(ctx context.Context, output string, report []byte, inputs []os.FileInfo) error {
+	root, err := openOfflineReviewDirectory(ctx, filepath.Dir(output))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	name := filepath.Base(output)
+	return publishDraftsAtRoot(ctx, root, []string{name}, map[string][]byte{name: report}, inputs)
+}
+
+// Anchor each opened parent before walking the next component. Comparing the
+// handle and the non-followed entry prevents a replacement from redirecting
+// publication into a different directory.
+func openOfflineReviewDirectory(ctx context.Context, path string) (*os.Root, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	volume := filepath.VolumeName(absolute)
+	anchor := volume + string(filepath.Separator)
+	root, err := os.OpenRoot(anchor)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if root != nil {
+			root.Close()
+		}
+	}()
+	for name := range strings.SplitSeq(filepath.ToSlash(strings.TrimPrefix(absolute, anchor)), "/") {
+		if name == "" {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		before, err := root.Lstat(name)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := root.Mkdir(name, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+				return nil, err
+			}
+			before, err = root.Lstat(name)
+		}
+		if err != nil || !ordinaryOfflineDirectory(before) {
+			return nil, errOfflineInput
+		}
+		next, err := root.OpenRoot(name)
+		if err != nil {
+			return nil, err
+		}
+		opened, openErr := next.Stat(".")
+		linked, linkErr := root.Lstat(name)
+		if openErr != nil || linkErr != nil || !ordinaryOfflineDirectory(opened) ||
+			!ordinaryOfflineDirectory(linked) || !os.SameFile(before, opened) || !os.SameFile(before, linked) {
+			next.Close()
+			return nil, errOfflineInput
+		}
+		root.Close()
+		root = next
+	}
+	result := root
+	root = nil
+	return result, nil
+}

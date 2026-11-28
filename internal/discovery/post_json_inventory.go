@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	postMaxJSON       = 1 << 20 // strictjson input limit, including re-read inventories
+	postMaxJSON       = 1 << 20 // Strict input and definition-digest budget.
+	postMaxReport     = 2 << 20 // Released writer limit; review input stays bounded by strictjson.
 	postMaxReferences = 4096
 	postMaxWork       = 8192
 	postBodyBlock     = "request_body_case_generation_unsupported"
@@ -25,11 +26,13 @@ const (
 )
 
 var (
-	errPostInput     = errors.New("Invalid POST JSON inventory input. Supply a bounded OpenAPI 3.0 or 3.1 document with valid declarations.")
-	errPostExternal  = errors.New("external_ref_unsupported")
-	errPostRecursive = errors.New("recursive_ref_unsupported")
-	errPostRefLimit  = errors.New("reference_limit_exceeded")
-	errPostWork      = errors.New("POST JSON inventory exceeds its work or size limit. Supply a smaller spec.")
+	// ErrPostArtifactSize distinguishes a generated artifact above its writer limit.
+	ErrPostArtifactSize = errors.New("generated POST JSON artifact exceeds its size limit")
+	errPostInput        = errors.New("Invalid POST JSON inventory input. Supply a bounded OpenAPI 3.0 or 3.1 document with valid declarations.")
+	errPostExternal     = errors.New("external_ref_unsupported")
+	errPostRecursive    = errors.New("recursive_ref_unsupported")
+	errPostRefLimit     = errors.New("reference_limit_exceeded")
+	errPostWork         = errors.New("POST JSON inventory exceeds its work or size limit. Supply a smaller spec.")
 )
 
 type postCounts struct {
@@ -116,7 +119,7 @@ func BuildPostJSONInventory(specJSON []byte, source string) (report []byte, summ
 	if err != nil {
 		return nil, "", err
 	}
-	report, err = marshalPostArtifact(inventory, postMaxJSON)
+	report, err = marshalPostArtifact(inventory, postMaxReport)
 	if err != nil {
 		return nil, "", err
 	}
@@ -394,7 +397,7 @@ func comparePostDiagnostics(a, b postDiagnostic) int {
 func (d *postDocument) spendMetadata(values ...string) error {
 	for _, s := range values {
 		d.metadata += len(s)
-		if d.metadata > postMaxJSON {
+		if d.metadata > postMaxReport {
 			return errPostWork
 		}
 	}
@@ -633,15 +636,23 @@ func marshalPostArtifact(value any, limit int) ([]byte, error) {
 	if err != nil {
 		return nil, errPostInput
 	}
-	raw, err = strictjson.Canonicalize(raw)
+	// Convert only the internally generated report to maps so the writer
+	// sorts members even when the Go inventory uses structs. This does not
+	// impose the smaller strict input limit on the released output format.
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var shaped any
+	if err := decoder.Decode(&shaped); err != nil {
+		return nil, errPostInput
+	}
+	report, err := encodeOfflineJSON(shaped)
 	if err != nil {
-		return nil, errPostWork
+		return nil, err
 	}
-	var pretty bytes.Buffer
-	if err := json.Indent(&pretty, raw, "", "  "); err != nil || pretty.Len() >= limit {
-		return nil, errPostWork
+	if len(report) > limit {
+		return nil, ErrPostArtifactSize
 	}
-	return append(pretty.Bytes(), '\n'), nil
+	return report, nil
 }
 
 type postDefinitionKind string
