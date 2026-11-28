@@ -64,10 +64,22 @@ func splitEndpoint(raw string, version Version, originOnly bool) (origin, string
 			return origin{}, "", false
 		}
 	}
-	host := strings.ToLower(parsed.Hostname())
-	if strings.HasPrefix(parsed.Host, "[") {
-		addr, err := netip.ParseAddr(host)
-		if err != nil || !addr.Is6() {
+	rawHost := authority[strings.LastIndexByte(authority, '@')+1:]
+	var host string
+	if strings.HasPrefix(rawHost, "[") {
+		literal, _, ok := strings.Cut(rawHost[1:], "]")
+		addr, err := netip.ParseAddr(literal)
+		if !ok || err != nil || !addr.Is6() || !asciiHostname(literal) || strings.Count(literal, "%") > 1 {
+			return origin{}, "", false
+		}
+		host = strings.ToLower(literal)
+	} else {
+		// net/url unescapes non-ASCII octets in hosts. HTTPX leaves
+		// percent-escaped ASCII host spellings as literal wire names.
+		rawHost, _, _ = strings.Cut(rawHost, ":")
+		var ok bool
+		host, ok = canonicalHostname(rawHost)
+		if !ok {
 			return origin{}, "", false
 		}
 	}

@@ -183,8 +183,8 @@ func (v *validator) request(version Version, raw any) Request {
 			v.require(false, "unsupported case method")
 		}
 	}
-	r.URL = v.text(m["url"], 1, 2048, true)
-	r.AllowedOrigin = v.text(m["allowed_origin"], 1, 2048, true)
+	r.URL = v.endpointText(m["url"])
+	r.AllowedOrigin = v.endpointText(m["allowed_origin"])
 	if r.Method == GET {
 		r.Params = v.queryPairs(version, m["params"])
 	} else if r.Method == POST {

@@ -1,0 +1,326 @@
+[
+  {
+    "name": "ASCII case and default port",
+    "target": "https://EXAMPLE.invalid:443",
+    "allowed": "https://example.invalid",
+    "accepted": true
+  },
+  {
+    "name": "IDNA dotted capital and ASCII i",
+    "target": "https://İ.invalid",
+    "allowed": "https://i.invalid",
+    "accepted": false
+  },
+  {
+    "name": "IDNA ASCII i and dotted capital",
+    "target": "https://i.invalid",
+    "allowed": "https://İ.invalid",
+    "accepted": false
+  },
+  {
+    "name": "IDNA dotted capital and expanded lowercase",
+    "target": "https://İ.invalid",
+    "allowed": "https://i̇.invalid",
+    "accepted": true
+  },
+  {
+    "name": "IDNA dotted capital and A-label",
+    "target": "https://İ.invalid",
+    "allowed": "https://XN--I-9BB.invalid",
+    "accepted": true
+  },
+  {
+    "name": "IDNA expanded lowercase and A-label",
+    "target": "https://i̇.invalid",
+    "allowed": "https://xn--i-9bb.invalid",
+    "accepted": true
+  },
+  {
+    "name": "IDNA A-label and ASCII i",
+    "target": "https://xn--i-9bb.invalid",
+    "allowed": "https://i.invalid",
+    "accepted": false
+  },
+  {
+    "name": "Japanese release origin",
+    "target": "https://例え.テスト",
+    "allowed": "https://xn--r8jz45g.xn--zckzah",
+    "accepted": true
+  },
+  {
+    "name": "mixed labels use wire spelling",
+    "target": "https://api.例え.テスト",
+    "allowed": "https://api.xn--r8jz45g.xn--zckzah",
+    "accepted": true
+  },
+  {
+    "name": "mixed case fold is not IDNA",
+    "target": "https://faß.invalid",
+    "allowed": "https://fass.invalid",
+    "accepted": false
+  },
+  {
+    "name": "nontransitional A-label sharp s",
+    "target": "https://faß.invalid",
+    "allowed": "https://xn--fa-hia.invalid",
+    "accepted": true
+  },
+  {
+    "name": "Unicode width is not mapped",
+    "target": "https://Ｆ.invalid",
+    "allowed": "https://f.invalid",
+    "accepted": false
+  },
+  {
+    "name": "same invalid fullwidth host",
+    "target": "https://Ｆ.invalid",
+    "allowed": "https://Ｆ.invalid",
+    "accepted": false
+  },
+  {
+    "name": "IDNA Unicode label separators",
+    "target": "https://例え。テスト",
+    "allowed": "https://例え．テスト",
+    "accepted": true
+  },
+  {
+    "name": "IDNA halfwidth separator",
+    "target": "https://例え｡テスト",
+    "allowed": "https://例え.テスト",
+    "accepted": true
+  },
+  {
+    "name": "IDNA different dot root",
+    "target": "https://例え.テスト.",
+    "allowed": "https://例え.テスト",
+    "accepted": false
+  },
+  {
+    "name": "IDNA same dot root",
+    "target": "https://例え。テスト。",
+    "allowed": "https://xn--r8jz45g.xn--zckzah.",
+    "accepted": true
+  },
+  {
+    "name": "Greek sigma sees cased letter after ignorable dot",
+    "target": "https://AΣ.invalid",
+    "allowed": "https://aς.invalid",
+    "accepted": false
+  },
+  {
+    "name": "Greek ordinary sigma across ignorable dot",
+    "target": "https://AΣ.invalid",
+    "allowed": "https://aσ.invalid",
+    "accepted": true
+  },
+  {
+    "name": "Greek sigma before cased letter",
+    "target": "https://AΣA.invalid",
+    "allowed": "https://aσa.invalid",
+    "accepted": true
+  },
+  {
+    "name": "Unicode case alias Kelvin sign",
+    "target": "https://K.invalid",
+    "allowed": "https://k.invalid",
+    "accepted": true
+  },
+  {
+    "name": "NFC required not mapped",
+    "target": "https://é.invalid",
+    "allowed": "https://é.invalid",
+    "accepted": false
+  },
+  {
+    "name": "same non-NFC invalid",
+    "target": "https://é.invalid",
+    "allowed": "https://é.invalid",
+    "accepted": false
+  },
+  {
+    "name": "same emoji invalid",
+    "target": "https://😀.invalid",
+    "allowed": "https://😀.invalid",
+    "accepted": false
+  },
+  {
+    "name": "valid Catalan context",
+    "target": "https://l·l.invalid",
+    "allowed": "https://xn--ll-0ea.invalid",
+    "accepted": true
+  },
+  {
+    "name": "invalid middle dot context",
+    "target": "https://a·b.invalid",
+    "allowed": "https://a·b.invalid",
+    "accepted": false
+  },
+  {
+    "name": "valid Hebrew RTL",
+    "target": "https://עברית.invalid",
+    "allowed": "https://xn--5dbqzzl.invalid",
+    "accepted": true
+  },
+  {
+    "name": "invalid mixed directions",
+    "target": "https://aא.invalid",
+    "allowed": "https://aא.invalid",
+    "accepted": false
+  },
+  {
+    "name": "valid CJK UCD15.1",
+    "target": "https://𮯰.invalid",
+    "allowed": "https://xn--8g0n.invalid",
+    "accepted": true
+  },
+  {
+    "name": "forbidden fake A-label",
+    "target": "https://xn---bbk.invalid",
+    "allowed": "https://xn---bbk.invalid",
+    "accepted": false
+  },
+  {
+    "name": "Unicode-escaped host is not U-label",
+    "target": "https://%C4%B0.invalid",
+    "allowed": "https://İ.invalid",
+    "accepted": false
+  },
+  {
+    "name": "same literal encoded host",
+    "target": "https://%C4%B0.invalid",
+    "allowed": "https://%c4%b0.invalid",
+    "accepted": true
+  },
+  {
+    "name": "percent-escaped names are not A-labels",
+    "target": "https://%C4%B0.invalid",
+    "allowed": "https://xn--i-9bb.invalid",
+    "accepted": false
+  },
+  {
+    "name": "scheme is bound",
+    "target": "http://İ.invalid",
+    "allowed": "https://xn--i-9bb.invalid",
+    "accepted": false
+  },
+  {
+    "name": "port is bound",
+    "target": "https://İ.invalid:444",
+    "allowed": "https://xn--i-9bb.invalid",
+    "accepted": false
+  },
+  {
+    "name": "default port alias",
+    "target": "https://İ.invalid:443",
+    "allowed": "https://xn--i-9bb.invalid",
+    "accepted": true
+  },
+  {
+    "name": "suffix is not authorized",
+    "target": "https://other.İ.invalid",
+    "allowed": "https://xn--i-9bb.invalid",
+    "accepted": false
+  },
+  {
+    "name": "userinfo not authorized",
+    "target": "https://user@İ.invalid",
+    "allowed": "https://xn--i-9bb.invalid",
+    "accepted": false
+  },
+  {
+    "name": "IPv6 spelling lowercase unchanged",
+    "target": "https://[2001:DB8::1]",
+    "allowed": "https://[2001:db8::1]",
+    "accepted": true
+  },
+  {
+    "name": "IPv6 lexical compression untouched",
+    "target": "https://[2001:db8:0:0:0:0:0:1]",
+    "allowed": "https://[2001:db8::1]",
+    "accepted": false
+  },
+  {
+    "name": "IPv4 normal",
+    "target": "https://192.0.2.1",
+    "allowed": "https://192.0.2.1",
+    "accepted": true
+  },
+  {
+    "name": "malformed IPv4 rejected",
+    "target": "https://192.0.2.001",
+    "allowed": "https://192.0.2.001",
+    "accepted": false
+  },
+  {
+    "name": "stream-safe NFC does not insert CGJ",
+    "target": "https://á́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́.invalid",
+    "allowed": "https://xn--1ca20iaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.invalid",
+    "accepted": true
+  },
+  {
+    "name": "long sigma context",
+    "target": "https://aΣ́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́a.invalid",
+    "allowed": "https://xn--aa-8tbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa154e.invalid",
+    "accepted": true
+  },
+  {
+    "name": "Greek true final sigma before noncased label",
+    "target": "https://AΣ.0invalid",
+    "allowed": "https://aς.0invalid",
+    "accepted": true
+  },
+  {
+    "name": "invalid IPv6 Unicode zone alias",
+    "target": "https://[fe80::1%25İ]",
+    "allowed": "https://[fe80::1%25i]",
+    "accepted": false
+  },
+  {
+    "name": "valid IPv6 ASCII zone case",
+    "target": "https://[fe80::1%25A]",
+    "allowed": "https://[fe80::1%25a]",
+    "accepted": true
+  },
+  {
+    "name": "invalid IPv6 repeated zone delimiter",
+    "target": "https://[fe80::1%25x%25y]",
+    "allowed": "https://[fe80::1%25x%25y]",
+    "accepted": false
+  },
+  {
+    "name": "combining mark cannot lead",
+    "target": "https://́a.invalid",
+    "allowed": "https://́a.invalid",
+    "accepted": false
+  },
+  {
+    "name": "mixed Arabic digit sets",
+    "target": "https://ب٢۲.invalid",
+    "allowed": "https://ب٢۲.invalid",
+    "accepted": false
+  },
+  {
+    "name": "valid encoded ZWNJ joining context",
+    "target": "https://xn--mgbb899q.invalid",
+    "allowed": "https://xn--mgbb899q.invalid",
+    "accepted": true
+  },
+  {
+    "name": "valid encoded ZWJ after virama",
+    "target": "https://xn--11b2ezcw70k.invalid",
+    "allowed": "https://xn--11b2ezcw70k.invalid",
+    "accepted": true
+  },
+  {
+    "name": "ACE decode followed by lowercase rejects Cherokee",
+    "target": "https://xn--78d4z.invalid",
+    "allowed": "https://xn--78d4z.invalid",
+    "accepted": false
+  },
+  {
+    "name": "legacy ASCII host with ACE only after the first label",
+    "target": "https://api.xn--78d4z.invalid",
+    "allowed": "https://api.xn--78d4z.invalid",
+    "accepted": true
+  }
+]

@@ -13,6 +13,8 @@ import (
 
 const modulePath = "github.com/natori-hrj/vintar"
 const tomlModule = "github.com/pelletier/go-toml/v2"
+const punycodePackage = "golang.org/x/net/idna"
+const normalizationPackage = "golang.org/x/text/unicode/norm"
 
 type listedPackage struct {
 	ImportPath string
@@ -69,6 +71,9 @@ func checkProductPackage(t *testing.T, pkg listedPackage) {
 	case pkg.Standard:
 		// unsafe/syscall may occur inside the Go standard library (e.g. os).
 		// Direct imports by project code are rejected below.
+	case path == punycodePackage, path == normalizationPackage,
+		path == "golang.org/x/text/secure/bidirule",
+		path == "golang.org/x/text/unicode/bidi", path == "golang.org/x/text/transform":
 	case pkg.Module != nil && pkg.Module.Path == tomlModule:
 		for _, dep := range pkg.Imports {
 			if dep == "os/exec" || dep == "plugin" || dep == "C" {
@@ -104,6 +109,10 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 		case dep == tomlModule || strings.HasPrefix(dep, tomlModule+"/"):
 			if path != "internal/casefile" || dep != tomlModule {
 				t.Errorf("TOML decoding must stay in casefile: %s imports %s", path, dep)
+			}
+		case strings.HasPrefix(dep, "golang.org/x/net/") || strings.HasPrefix(dep, "golang.org/x/text/"):
+			if path != "internal/casefile" || dep != punycodePackage && dep != normalizationPackage {
+				t.Errorf("only casefile may import the hostname codecs: %s imports %s", path, dep)
 			}
 		case strings.HasPrefix(dep, modulePath+"/"):
 			permitted := false
