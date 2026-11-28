@@ -2,16 +2,21 @@
 package httpio
 
 import (
+	"bufio"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
 	"io"
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const maxBodyLimit = 1 << 20
@@ -51,7 +56,11 @@ func Send(ctx context.Context, req Request, timeout time.Duration, limit int64) 
 		return res, err
 	}
 
-	out, err := http.NewRequestWithContext(ctx, req.Method, req.URL, bytes.NewReader(req.Body))
+	target, ok := normalizePort(req.URL)
+	if !ok {
+		return res, errors.New("invalid HTTP URL")
+	}
+	out, err := http.NewRequestWithContext(ctx, req.Method, target, bytes.NewReader(req.Body))
 	if err != nil {
 		return res, errors.New("invalid HTTP URL")
 	}
@@ -76,6 +85,9 @@ func Send(ctx context.Context, req Request, timeout time.Duration, limit int64) 
 			out.Header.Set(name, value)
 		}
 	}
+	if _, explicit := out.Header["Accept-Encoding"]; !explicit {
+		out.Header.Set("Accept-Encoding", "gzip, deflate")
+	}
 
 	transport := newTransport()
 	defer transport.CloseIdleConnections()
@@ -98,13 +110,25 @@ func Send(ctx context.Context, req Request, timeout time.Duration, limit int64) 
 		return res, nil
 	}
 	var reader io.Reader = reply.Body
-	// Transport decodes automatically negotiated gzip, but does not
-	// decode it when the caller sets Accept-Encoding explicitly.
-	if strings.EqualFold(reply.Header.Get("Content-Encoding"), "gzip") {
-		decoded, err := gzip.NewReader(reader)
+	// Decode before enforcing the body limit, regardless of how the
+	// encoding was negotiated.
+	encodings := strings.Split(strings.Join(reply.Header.Values("Content-Encoding"), ","), ",")
+	if len(encodings) > 16 {
+		return res, errors.New("HTTP response encoding chain is too long")
+	}
+	for i := len(encodings) - 1; i >= 0; i-- {
+		var openDecoder func(io.Reader) (io.ReadCloser, error)
+		switch strings.ToLower(strings.TrimSpace(encodings[i])) {
+		case "gzip":
+			openDecoder = func(r io.Reader) (io.ReadCloser, error) { return gzip.NewReader(r) }
+		case "deflate":
+			openDecoder = newDeflateReader
+		default:
+			continue
+		}
+		decoded, err := openDecoder(reader)
 		if err == io.EOF {
 			// A response can carry representation metadata without a body.
-			// gzip returns UnexpectedEOF for a partial header instead.
 			return res, ctx.Err()
 		}
 		if err != nil {
@@ -128,13 +152,158 @@ func Send(ctx context.Context, req Request, timeout time.Duration, limit int64) 
 	return res, nil
 }
 
+// normalizePort rewrites only an explicit port in the authority. The path,
+// query, and fragment are left for net/url to parse as before.
+func normalizePort(raw string) (string, bool) {
+	scheme, rest, found := strings.Cut(raw, "://")
+	defaultPort := 80
+	switch {
+	case !found:
+		return raw, true
+	case strings.EqualFold(scheme, "http"):
+	case strings.EqualFold(scheme, "https"):
+		defaultPort = 443
+	default:
+		return raw, true
+	}
+	end := strings.IndexAny(rest, "/?#")
+	if end == -1 {
+		end = len(rest)
+	}
+	authority := rest[:end]
+	// Leave disallowed user information to the existing URL validation.
+	if strings.Contains(authority, "@") {
+		return raw, true
+	}
+	var host, port string
+	if strings.HasPrefix(authority, "[") {
+		close := strings.IndexByte(authority, ']')
+		if close < 0 {
+			return raw, true
+		}
+		host = authority[:close+1]
+		port, found = strings.CutPrefix(authority[close+1:], ":")
+	} else {
+		host, port, found = strings.Cut(authority, ":")
+	}
+	if !found || port == "" {
+		return raw, true
+	}
+	if host == "" || strings.Contains(port, ":") {
+		return raw, false
+	}
+	digits, negative := strings.CutPrefix(strings.TrimSpace(port), "-")
+	if !negative {
+		digits = strings.TrimPrefix(digits, "+")
+	}
+	if digits == "" {
+		return raw, false
+	}
+	number := 0
+	afterDigit := false
+	for _, r := range digits {
+		if r == '_' && afterDigit {
+			afterDigit = false
+			continue
+		}
+		digit := decimalDigit(r)
+		if digit < 0 {
+			return raw, false
+		}
+		number = number*10 + digit
+		if number > 65535 || (negative && number != 0) {
+			return raw, false
+		}
+		afterDigit = true
+	}
+	if !afterDigit {
+		return raw, false
+	}
+	// In particular, signed zero remains an explicit port, not a
+	// request to fall back to a different destination.
+	if number != defaultPort {
+		host += ":" + strconv.Itoa(number)
+	}
+	return scheme + "://" + host + rest[end:], true
+}
+
+func decimalDigit(r rune) int {
+	// Unicode Nd ranges consist of one or more ordered sets of ten.
+	for _, block := range unicode.Digit.R16 {
+		lo, hi, stride := rune(block.Lo), rune(block.Hi), rune(block.Stride)
+		if r >= lo && r <= hi && (r-lo)%stride == 0 {
+			return int((r - lo) / stride % 10)
+		}
+	}
+	for _, block := range unicode.Digit.R32 {
+		lo, hi, stride := rune(block.Lo), rune(block.Hi), rune(block.Stride)
+		if r >= lo && r <= hi && (r-lo)%stride == 0 {
+			return int((r - lo) / stride % 10)
+		}
+	}
+	return -1
+}
+
+// deflatePrefix retains only a bounded prefix of the compressed body, until
+// the zlib decoder produces output. This allows raw deflate fallback on the
+// same response even when its first bytes happen to look like a zlib header.
+type deflatePrefix struct {
+	data []byte
+	done bool
+}
+
+func (p *deflatePrefix) Write(b []byte) (int, error) {
+	if !p.done {
+		const replayLimit = 32 << 10
+		if len(b) <= replayLimit-len(p.data) {
+			p.data = append(p.data, b...)
+		} else {
+			p.data, p.done = nil, true
+		}
+	}
+	return len(b), nil
+}
+
+func newDeflateReader(r io.Reader) (io.ReadCloser, error) {
+	source := bufio.NewReader(r)
+	if _, err := source.Peek(1); err != nil {
+		// Distinguish an empty HTTP body from a prematurely ended
+		// transfer, before zlib starts parsing the header.
+		return nil, err
+	}
+	prefix := new(deflatePrefix)
+	decoded, err := zlib.NewReader(io.TeeReader(source, prefix))
+	if err == nil {
+		// Probe for output, not merely a valid zlib header. Once any
+		// decoded data exists, a later error cannot switch encodings.
+		var first [1]byte
+		n, readErr := decoded.Read(first[:])
+		if n > 0 || readErr == io.EOF {
+			prefix.data, prefix.done = nil, true
+			return struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(first[:n]), decoded), decoded}, nil
+		}
+		decoded.Close()
+		err = readErr
+	}
+	var corrupt flate.CorruptInputError
+	if !prefix.done && (err == zlib.ErrHeader || err == zlib.ErrDictionary ||
+		err == zlib.ErrChecksum || errors.As(err, &corrupt)) {
+		return flate.NewReader(io.MultiReader(bytes.NewReader(prefix.data), source)), nil
+	}
+	return nil, err
+}
+
 func newTransport() *http.Transport {
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	return &http.Transport{
-		Proxy:             nil,
-		Protocols:         protocols,
-		DisableKeepAlives: true,
+		Proxy:              nil,
+		Protocols:          protocols,
+		DisableKeepAlives:  true,
+		DisableCompression: true,
 	}
 }
 

@@ -121,6 +121,7 @@ func TestProductBinary(t *testing.T) {
 	binary := productBinary(t, root)
 	t.Logf("product binary: %s (%s/%s, test toolchain %s)", binary, runtime.GOOS, runtime.GOARCH, runtime.Version())
 
+	t.Run("discover-offline", func(t *testing.T) { checkProductDiscovery(t, root, binary) })
 	t.Run("http-single-local-request", func(t *testing.T) {
 		received := make(chan string, 4)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -241,7 +242,6 @@ func TestProductBinary(t *testing.T) {
 	// Exercise only offline stubs here; no test invokes an authorized route.
 	spec := filepath.Join(root, "tests", "fixtures", "discovery", "openapi30.json")
 	for _, args := range [][]string{
-		{"discover", "--spec", spec, "--output", "out.json"},
 		{"inventory-post-json", "--spec", spec, "--output", "out.json"},
 		{"review-draft", "--spec", spec, "--draft", "draft.json", "--answers", "answers.json", "--output", "out.json"},
 		{"review-post-json", "--spec", spec, "--inventory", "inventory.json", "--answers", "answers.json", "--output", "out.json"},

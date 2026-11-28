@@ -74,6 +74,7 @@ func runCommand(ctx context.Context, path string, args arguments, stdout, stderr
 		case drafts && !args.has("selection"):
 			return diagnostic(stderr, 2, "Draft export requires --selection. Supply a reviewed selection file.")
 		}
+		return runDiscover(ctx, args, stdout, stderr)
 	case "vintar http send":
 		return runHTTPSend(ctx, args, stdout, stderr)
 	}

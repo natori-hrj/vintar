@@ -16,6 +16,8 @@ const tomlModule = "github.com/pelletier/go-toml/v2"
 const punycodePackage = "golang.org/x/net/idna"
 const normalizationPackage = "golang.org/x/text/unicode/norm"
 const httpTransportPackage = "internal/execution/internal/httpio"
+const policyReaderPackage = "internal/execution/internal/policyfile"
+const yamlModule = "go.yaml.in/yaml/v3"
 
 type listedPackage struct {
 	ImportPath string
@@ -72,9 +74,9 @@ func checkProductPackage(t *testing.T, pkg listedPackage) {
 	case path == punycodePackage, path == normalizationPackage,
 		path == "golang.org/x/text/secure/bidirule",
 		path == "golang.org/x/text/unicode/bidi", path == "golang.org/x/text/transform":
-	case pkg.Module != nil && pkg.Module.Path == tomlModule:
+	case pkg.Module != nil && (pkg.Module.Path == tomlModule || pkg.Module.Path == yamlModule):
 		for _, dep := range pkg.Imports {
-			if dep == "os/exec" || dep == "plugin" || dep == "C" {
+			if dep == "os/exec" || dep == "plugin" || dep == "C" || dep == "net" || strings.HasPrefix(dep, "net/http") {
 				t.Errorf("unsafe dependency: %s imports %s", path, dep)
 			}
 		}
@@ -90,11 +92,12 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 	// Edges allowed by the foundation layering, not edges that are required.
 	allowed := map[string][]string{
 		"cmd/vintar":          {"internal/cli"},
-		"internal/cli":        {"internal/casefile", "internal/execution", "internal/report", "internal/strictjson"},
+		"internal/cli":        {"internal/casefile", "internal/discovery", "internal/execution", "internal/report", "internal/strictjson"},
 		"internal/casefile":   {"internal/strictjson"},
 		"internal/discovery":  {"internal/strictjson"},
-		"internal/execution":  {httpTransportPackage},
+		"internal/execution":  {httpTransportPackage, policyReaderPackage, "internal/strictjson"},
 		httpTransportPackage:  nil,
+		policyReaderPackage:   nil,
 		"internal/report":     {"internal/strictjson"},
 		"internal/strictjson": nil,
 		"internal/acceptance": nil, // Test-only; no product package may import it.
@@ -105,6 +108,8 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 	}
 	for _, dep := range imports {
 		switch {
+		case dep == "syscall" && (path == policyReaderPackage || path == "internal/cli"):
+			// Unix discovery and policy readers use nonblocking / no-follow open flags.
 		case dep == "C", dep == "unsafe", dep == "syscall", dep == "os/exec", dep == "plugin":
 			t.Errorf("unsafe direct import: %s imports %s", path, dep)
 		case dep == "net" || dep == "net/http" || dep == "crypto/tls":
@@ -114,8 +119,12 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 		case strings.HasPrefix(dep, "net/http/") || dep == "net/rpc" || dep == "net/smtp":
 			t.Errorf("unapproved network dependency: %s imports %s", path, dep)
 		case dep == tomlModule || strings.HasPrefix(dep, tomlModule+"/"):
-			if path != "internal/casefile" || dep != tomlModule {
-				t.Errorf("TOML decoding must stay in casefile: %s imports %s", path, dep)
+			if (path != "internal/casefile" && path != "internal/cli") || dep != tomlModule {
+				t.Errorf("TOML decoding must stay with case and selection inputs: %s imports %s", path, dep)
+			}
+		case dep == yamlModule || strings.HasPrefix(dep, yamlModule+"/"):
+			if path != "internal/discovery" || dep != yamlModule {
+				t.Errorf("YAML decoding must stay offline in discovery: %s imports %s", path, dep)
 			}
 		case strings.HasPrefix(dep, "golang.org/x/net/") || strings.HasPrefix(dep, "golang.org/x/text/"):
 			if path != "internal/casefile" || dep != punycodePackage && dep != normalizationPackage {
