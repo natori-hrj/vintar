@@ -77,6 +77,22 @@ func TestBatchStatusPrecedence(t *testing.T) {
 	}
 }
 
+func TestBatchRejectsContradictoryOutcomeStatus(t *testing.T) {
+	data := readFixture(t, "golden", "cli", "verify", "pass.json")
+	var golden struct {
+		Batch Batch `json:"stdout_json"`
+	}
+	if err := json.Unmarshal(data, &golden); err != nil {
+		t.Fatal(err)
+	}
+	outcome := &golden.Batch.Outcomes[0]
+	outcome.ExpectedVerdict = "vulnerable"
+	outcome.ExpectationMatch = false
+	if err := golden.Batch.ValidateSummary(0); err == nil {
+		t.Fatal("accepted a PASS for a verdict that does not meet the expectation")
+	}
+}
+
 func readFixture(t *testing.T, parts ...string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(append([]string{"..", "..", "tests"}, parts...)...))

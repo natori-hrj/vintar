@@ -51,8 +51,10 @@ func TestRun(t *testing.T) {
 		{"HTTP unsupported method", []string{"http", "send", secret, url}, 1, "Only GET and POST", ""},
 		{"HTTP malformed header", []string{"http", "send", "GET", url, "-H" + secret}, 1, "Invalid header", ""},
 		{"HTTP empty header name", []string{"http", "send", "GET", url, "--header= : " + secret}, 1, "Header name cannot be empty", ""},
+		{"HTTP header name with Python whitespace", []string{"http", "send", "GET", url, "--header=\x1c:" + secret}, 1, "Header name cannot be empty", ""},
 		{"HTTP malformed cookie", []string{"http", "send", "GET", url, "-C", secret}, 1, "Invalid cookies", ""},
 		{"HTTP empty cookie name", []string{"http", "send", "GET", url, "-C", " =" + secret}, 1, "Cookie name cannot be empty", ""},
+		{"HTTP cookie name with Python whitespace", []string{"http", "send", "GET", url, "-C", "\x1f=" + secret}, 1, "Cookie name cannot be empty", ""},
 		{"HTTP malformed parameter", []string{"http", "send", "GET", url, "-p", secret}, 1, "Invalid parameter", ""},
 		{"HTTP empty parameter name", []string{"http", "send", "GET", url, "-p", "=" + secret}, 1, "Parameter name cannot be empty", ""},
 		{"HTTP terminator", []string{"http", "send", "-t.1", "--", "post", "-literal"}, 2, "", "not available"},
@@ -95,7 +97,7 @@ func TestParseHTTPRepeats(t *testing.T) {
 	http := rootCommand.child("http").child("send")
 	args, err := http.parse([]string{
 		"POST", "https://example.invalid/",
-		"-H", " X-Demo : first ", "--header=X-Demo: last:part ",
+		"-H", " X-Demo : first ", "--header=X-Demo:\x1d last:part \x1e",
 		"-Cdemo=old", "--cookie", " demo= new=value ",
 		"-p", "tag=one", "--param=tag=", "-ptag=three=four",
 		"--body=first", "--body", "--verbatim",

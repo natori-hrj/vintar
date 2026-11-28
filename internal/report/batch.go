@@ -88,7 +88,11 @@ func (b Batch) ValidateSummary(processExit int) error {
 		if outcome.ExpectationMatch != (outcome.ExpectedVerdict == outcome.ActualVerdict) {
 			return errors.New("inconsistent expectation match")
 		}
-		switch outcome.Status {
+		status := outcome.statusFromVerdict()
+		if status != outcome.Status {
+			return errors.New("inconsistent batch outcome status")
+		}
+		switch status {
 		case Pass:
 			counts.Pass++
 		case Fail:
@@ -113,6 +117,23 @@ func (b Batch) ValidateSummary(processExit int) error {
 		return errors.New("inconsistent batch status or exit code")
 	}
 	return nil
+}
+
+// Check the public mapping without re-evaluating any check-specific evidence.
+func (o Outcome) statusFromVerdict() Status {
+	switch o.ActualVerdict {
+	case "inconclusive":
+		return Inconclusive
+	case "vulnerable":
+		return Fail
+	case "not_detected":
+		if o.ExpectationMatch {
+			return Pass
+		}
+		return Fail
+	default:
+		return ""
+	}
 }
 
 var caseID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)

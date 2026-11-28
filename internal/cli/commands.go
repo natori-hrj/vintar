@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 type command struct {
@@ -220,17 +221,24 @@ func splitFields(items []string, separator, invalid, empty string, trimName, tri
 			return nil, errors.New(invalid)
 		}
 		if trimName {
-			name = strings.TrimSpace(name)
+			name = trimFieldSpace(name)
 		}
 		if name == "" {
 			return nil, errors.New(empty)
 		}
 		if trimValue {
-			value = strings.TrimSpace(value)
+			value = trimFieldSpace(value)
 		}
 		pairs = append(pairs, pair{name, value})
 	}
 	return pairs, nil
+}
+
+func trimFieldSpace(text string) string {
+	// Python's str.strip also trims the four ASCII information separators.
+	return strings.TrimFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || '\x1c' <= r && r <= '\x1f'
+	})
 }
 
 func lastValues(pairs []pair) map[string]string {
