@@ -123,14 +123,16 @@ func TestProductBinary(t *testing.T) {
 
 	t.Run("discover-offline", func(t *testing.T) { checkProductDiscovery(t, root, binary) })
 	t.Run("http-single-local-request", func(t *testing.T) {
-		received := make(chan string, 4)
+		type observation struct{ target, host string }
+		received := make(chan observation, 4)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			received <- r.Method + " " + r.RequestURI
+			received <- observation{r.Method + " " + r.RequestURI, r.Host}
 			w.Header().Set("Location", "/another-resource")
 			w.WriteHeader(http.StatusFound)
 		}))
 		defer server.Close()
 		cwd := t.TempDir()
+		host := strings.TrimPrefix(server.URL, "http://")
 		bad := runProduct(t, binary, cwd, "http", "send", "GET", server.URL, "-H", ":")
 		if bad.code != 1 || bad.stderr != "" || len(received) != 0 {
 			t.Fatalf("invalid header exit = %d, requests = %d, stderr = %q", bad.code, len(received), bad.stderr)
@@ -142,7 +144,7 @@ func TestProductBinary(t *testing.T) {
 		if !regexp.MustCompile(`(?m)^Response time: [0-9]+\.[0-9]{3}s$`).MatchString(got.stdout) {
 			t.Fatalf("unexpected response time format: %q", got.stdout)
 		}
-		if len(received) != 1 || <-received != "GET /a%2Fb?x=one%20two%2B" {
+		if len(received) != 1 || <-received != (observation{"GET /a%2Fb?x=one%20two%2B", host}) {
 			t.Fatal("expected precisely one request with the approved bytes")
 		}
 		for _, tc := range []struct{ suffix, target string }{
@@ -155,7 +157,7 @@ func TestProductBinary(t *testing.T) {
 			{"/a/..?", "/?"},
 		} {
 			got := runProduct(t, binary, cwd, "http", "send", "GET", server.URL+tc.suffix)
-			if got.code != 0 || got.stderr != "" || len(received) != 1 || <-received != "GET "+tc.target {
+			if got.code != 0 || got.stderr != "" || len(received) != 1 || <-received != (observation{"GET " + tc.target, host}) {
 				t.Fatalf("%q did not send exactly one request with target %q: %+v", tc.suffix, tc.target, got)
 			}
 		}
@@ -166,8 +168,12 @@ func TestProductBinary(t *testing.T) {
 		}
 		wideSeparators := strings.Replace(server.URL, "127.0.0.1", "127．0．0．1", 1)
 		got = runProduct(t, binary, cwd, "http", "send", "GET", wideSeparators+"/fixed")
-		if got.code != 0 || len(received) != 1 || <-received != "GET /fixed" {
+		if got.code != 0 || len(received) != 1 || <-received != (observation{"GET /fixed", host}) {
 			t.Fatalf("recognized label separators did not preserve the target: %+v", got)
+		}
+		got = runProduct(t, binary, cwd, "http", "send", "GET", wideSeparators+"/fixed", "-H", "Host: fixture.invalid")
+		if got.code != 0 || len(received) != 1 || <-received != (observation{"GET /fixed", "fixture.invalid"}) {
+			t.Fatalf("explicit Host override was not preserved: %+v", got)
 		}
 	})
 

@@ -83,6 +83,9 @@ func send(ctx context.Context, req Request, timeout time.Duration, limit int64, 
 		if err := normalizePublicHost(out.URL, authority); err != nil {
 			return res, err
 		}
+		// Use the same authority for dialing and the default HTTP Host.
+		// An explicit Host supplied below still overrides the default.
+		out.Host = out.URL.Host
 		normalizePublicPath(out.URL, rawPath)
 	}
 	if req.RawQuery != nil {
