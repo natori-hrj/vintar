@@ -6,11 +6,29 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 if [[ -n ${GO_ROOT:-} ]]; then
+    if [[ ! -x $GO_ROOT/bin/go || ! -x $GO_ROOT/bin/gofmt ]]; then
+        printf 'GO_ROOT must contain go and gofmt: %s\n' "$GO_ROOT" >&2
+        exit 1
+    fi
     export PATH="$GO_ROOT/bin:$PATH"
     export GOROOT="$GO_ROOT"
 fi
 export GOTOOLCHAIN=local CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=readonly
 unset VINTAR_TEST_BINARY
+
+commit=${VINTAR_VALIDATED_COMMIT:-}
+check_checkout() {
+    local head status
+    [[ -n $commit ]] || return 0
+    head=$(git rev-parse --verify HEAD)
+    status=$(git --no-optional-locks status --porcelain=v1 --untracked-files=all \
+        --ignored=matching --ignore-submodules=none)
+    if [[ $head != "$commit" || -n $status ]]; then
+        printf 'Foundation requires a clean checkout of %s\n' "$commit" >&2
+        return 1
+    fi
+}
+check_checkout
 
 expected=${EXPECTED_GO_VERSION:-go1.26.0}
 actual=$(go env GOVERSION)
@@ -45,6 +63,7 @@ if [[ -n $unformatted ]]; then
     printf 'Run gofmt on:\n%s\n' "$unformatted" >&2
     exit 1
 fi
+go mod download
 go mod verify
 go test -count=1 ./...
 go vet ./...
@@ -60,6 +79,37 @@ checksum() {
     fi
 }
 
+vcs_flags=()
+if [[ -n $commit ]]; then
+    vcs_flags=(-buildvcs=true)
+fi
+mkdir -p -- "$scratch/cache-first" "$scratch/cache-repeat"
+
+build_target() {
+    local dir=$1 cache=$2 os=$3 arch=$4 exe=$5 metadata
+    mkdir -p -- "$dir"
+    GOCACHE="$cache" GOOS="$os" GOARCH="$arch" \
+        go build -trimpath "${vcs_flags[@]}" -o "$dir/$exe" ./cmd/vintar
+    (cd -- "$dir" && go version -m "$exe" >"$exe.buildinfo" &&
+        checksum "$exe" >"$exe.sha256")
+    metadata=$(cat -- "$dir/$exe.buildinfo")
+    [[ ${metadata%%$'\n'*} == *": $actual" ]]
+    grep -Fxq $'\tpath\tgithub.com/natori-hrj/vintar/cmd/vintar' <<<"$metadata"
+    grep -Fxq $'\tbuild\tCGO_ENABLED=0' <<<"$metadata"
+    grep -Fxq $'\tbuild\tGOOS='"$os" <<<"$metadata"
+    grep -Fxq $'\tbuild\tGOARCH='"$arch" <<<"$metadata"
+    if [[ -n $commit ]]; then
+        grep -Fxq $'\tbuild\tvcs=git' <<<"$metadata"
+        grep -Fxq $'\tbuild\tvcs.revision='"$commit" <<<"$metadata"
+        grep -Fxq $'\tbuild\tvcs.modified=false' <<<"$metadata"
+    fi
+    if grep -Fq 'github.com/santhosh-tekuri/jsonschema/v6' <<<"$metadata"; then
+        printf 'Test-only JSON Schema module is linked into %s/%s\n' "$os" "$arch" >&2
+        return 1
+    fi
+}
+
+printf 'commit\tgo\ttarget\tsha256\trepeated-build\n' >"$out/targets.tsv"
 for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
     os=${target%/*}
     arch=${target#*/}
@@ -68,24 +118,19 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; d
         exe=vintar.exe
     fi
     dir="$out/$os-$arch"
-    mkdir -p -- "$dir"
-    binary="$dir/$exe"
-    printf 'Build %s (CGO_ENABLED=0)\n' "$target"
-    GOOS="$os" GOARCH="$arch" go build -trimpath -o "$binary" ./cmd/vintar
-    metadata=$(go version -m "$binary")
-    printf '%s\n' "$metadata"
-    printf '%s\n' "$metadata" >"$binary.buildinfo"
-    [[ ${metadata%%$'\n'*} == *": $actual" ]]
-    grep -Fxq $'\tpath\tgithub.com/natori-hrj/vintar/cmd/vintar' <<<"$metadata"
-    grep -Fxq $'\tbuild\tCGO_ENABLED=0' <<<"$metadata"
-    grep -Fxq $'\tbuild\tGOOS='"$os" <<<"$metadata"
-    grep -Fxq $'\tbuild\tGOARCH='"$arch" <<<"$metadata"
-    if grep -Fq 'github.com/santhosh-tekuri/jsonschema/v6' <<<"$metadata"; then
-        printf 'Test-only JSON Schema module is linked into %s\n' "$target" >&2
-        exit 1
-    fi
-    (cd -- "$dir" && checksum "$exe" >"$exe.sha256")
+    repeat="$scratch/repeat/$os-$arch"
+    printf 'Build and independently rebuild %s (CGO_ENABLED=0)\n' "$target"
+    build_target "$dir" "$scratch/cache-first" "$os" "$arch" "$exe"
+    build_target "$repeat" "$scratch/cache-repeat" "$os" "$arch" "$exe"
+    cmp -- "$dir/$exe" "$repeat/$exe"
+    cmp -- "$dir/$exe.sha256" "$repeat/$exe.sha256"
+    cmp -- "$dir/$exe.buildinfo" "$repeat/$exe.buildinfo"
+    cat -- "$dir/$exe.buildinfo"
+    read -r digest _ <"$dir/$exe.sha256"
+    printf '%s\t%s\t%s\t%s\tmatch\n' "${commit:--}" "$actual" "$target" "$digest" \
+        >>"$out/targets.tsv"
 done
+check_checkout
 
 # Cross-builds and matching metadata are not evidence of runtime conformance.
 # Only run a built artifact when both the observed runner and Go host match.
@@ -106,6 +151,7 @@ case "$native" in
     linux/amd64 | linux/arm64 | darwin/amd64 | darwin/arm64 | windows/amd64)
         if [[ $native != "$GOOS/$GOARCH" ]]; then
             printf 'Native artifact gate not run: runner %s, Go host %s/%s\n' "$native" "$GOOS" "$GOARCH"
+            [[ -z $commit ]] || exit 1
             exit 0
         fi
         exe=vintar
@@ -123,5 +169,7 @@ case "$native" in
         ;;
     *)
         printf 'Native artifact gate not run: unsupported runner (%s, %s)\n' "$(uname -s)" "$(uname -m)"
+        [[ -z $commit ]] || exit 1
         ;;
 esac
+check_checkout

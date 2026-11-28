@@ -1,0 +1,25 @@
+name: Vintar Go CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go-ci:
+    name: Go foundation and security checks (Linux amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact workflow commit with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Go toolchains and run Go CI
+        shell: bash
+        run: bash scripts/run_go_ci.sh
