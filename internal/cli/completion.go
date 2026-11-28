@@ -15,6 +15,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf16"
+
+	"github.com/natori-hrj/vintar/internal/cli/internal/completionhost"
 )
 
 const explicitCompletionShell = "_TYPER_COMPLETE_TEST_DISABLE_SHELL_DETECTION"
@@ -182,6 +184,16 @@ func installCompletion(ctx context.Context, shell, script string) (string, error
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	if shell == "powershell" || shell == "pwsh" {
+		path, err := completionhost.PowerShellProfile(ctx, shell)
+		if err != nil {
+			return "", err
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return path, appendCompletion(path, strings.TrimSpace(script))
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || !filepath.IsAbs(home) {
 		return "", errors.New("invalid home directory")
@@ -209,17 +221,6 @@ func installCompletion(ctx context.Context, shell, script string) (string, error
 			dir = filepath.Join(home, ".config")
 		}
 		path = filepath.Join(dir, "fish", "completions", "vintar.fish")
-	case "powershell", "pwsh":
-		dir := filepath.Join(home, ".config", "powershell")
-		if runtime.GOOS == "windows" {
-			folder := "PowerShell"
-			if shell == "powershell" {
-				folder = "WindowsPowerShell"
-			}
-			dir = filepath.Join(home, "Documents", folder)
-		}
-		path = filepath.Join(dir, "Microsoft.PowerShell_profile.ps1")
-		return path, appendCompletion(path, strings.TrimSpace(script))
 	}
 	if err := installCompletionScript(path, script); err != nil {
 		return "", err

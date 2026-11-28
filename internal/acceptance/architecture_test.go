@@ -17,6 +17,7 @@ const punycodePackage = "golang.org/x/net/idna"
 const normalizationPackage = "golang.org/x/text/unicode/norm"
 const httpTransportPackage = "internal/execution/internal/httpio"
 const policyReaderPackage = "internal/execution/internal/policyfile"
+const completionHostPackage = "internal/cli/internal/completionhost"
 const yamlModule = "go.yaml.in/yaml/v3"
 
 type listedPackage struct {
@@ -95,7 +96,8 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 	// Edges allowed by the foundation layering, not edges that are required.
 	allowed := map[string][]string{
 		"cmd/vintar":          {"internal/cli"},
-		"internal/cli":        {"internal/casefile", "internal/discovery", "internal/execution", "internal/report", "internal/strictjson"},
+		"internal/cli":        {"internal/casefile", "internal/discovery", "internal/execution", "internal/report", "internal/strictjson", completionHostPackage},
+		completionHostPackage: nil,
 		"internal/casefile":   {"internal/strictjson"},
 		"internal/decision":   nil,
 		"internal/discovery":  {"internal/strictjson"},
@@ -116,6 +118,8 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 			t.Errorf("pure offline package imports files or environment: %s imports %s", path, dep)
 		case dep == "syscall" && (path == policyReaderPackage || path == "internal/cli" || path == "internal/casefile"):
 			// Local file readers use platform open flags and handle metadata.
+		case dep == "os/exec" && path == completionHostPackage:
+			// Fixed, bounded shell-completion probes, unavailable to other product layers.
 		case dep == "C", dep == "unsafe", dep == "syscall", dep == "os/exec", dep == "plugin":
 			t.Errorf("unsafe direct import: %s imports %s", path, dep)
 		case dep == "net" || dep == "net/http" || dep == "crypto/tls":
