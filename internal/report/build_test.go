@@ -161,6 +161,12 @@ func TestMarshalBatchRejectsUnsafeInputs(t *testing.T) {
 		"opaque digest":    func(r *Record) { r.Decision.Verification.Observations[0].BodyDigest = unsafe },
 		"elapsed":          func(r *Record) { r.Decision.Verification.Observations[0].Elapsed = math.Inf(1) },
 		"similarity":       func(r *Record) { r.Decision.Verification.Evidence.TrueFalse = math.NaN() },
+		"contradictory analytical similarity": func(r *Record) {
+			r.Decision.Verification.Evidence = &decision.Similarity{}
+		},
+		"unstable observations with a passing verdict": func(r *Record) {
+			r.Decision.Verification.Observations[2].BodyDigest = strings.Repeat("b", 64)
+		},
 		"confirmation": func(r *Record) {
 			r.Decision.Confirmation = &decision.Confirmation{Configured: true, Status: "not_eligible", Reason: new(unsafe)}
 		},
@@ -187,12 +193,22 @@ func TestMarshalBatchRequiresReleasedDecisionFacts(t *testing.T) {
 	assertNoWriterOutput(t, []string{"a"}, []Record{{"a", decision.Inconclusive, result}})
 }
 
+func TestMarshalBatchRejectsContradictoryOperationalFacts(t *testing.T) {
+	result := writerRateLimit()
+	result.Verification.Observations[0].StatusCode = 200
+	result.Verification.Observations[0].Truncated = false
+	assertNoWriterOutput(t, []string{"a"}, []Record{{"a", decision.Inconclusive, result}})
+}
+
 func TestMarshalBatchFactVariants(t *testing.T) {
 	schema := writerSchema(t)
 	response := writerBoolean()
 	response.Reason, response.Verification.Reason = "possible_dynamic_response", "possible_dynamic_response"
 	response.Verdict, response.Verification.Verdict = decision.Inconclusive, decision.Inconclusive
 	response.Verification.Evidence = nil
+	response.Verification.Observations[2].BodySize = 5
+	response.Verification.Observations[3].BodySize = 7
+	response.Verification.Observations[3].BodyDigest = strings.Repeat("b", 64)
 	response.Facts.Response = &decision.ResponseFacts{
 		UnstablePairs: []decision.UnstablePair{{
 			Kind: "true", Localization: "localized",
@@ -203,6 +219,10 @@ func TestMarshalBatchFactVariants(t *testing.T) {
 	confirmation := writerBoolean()
 	confirmation.Reason, confirmation.Verification.Reason = "candidate_confirmation_mismatch", "boolean_candidate"
 	confirmation.Verdict, confirmation.Verification.Verdict = decision.Inconclusive, decision.Inconclusive
+	confirmation.Verification.Evidence = &decision.Similarity{BaselineTrue: 1}
+	for _, i := range []int{4, 5} {
+		confirmation.Verification.Observations[i].BodyDigest = strings.Repeat("c", 64)
+	}
 	confirmation.RequestCount = 18
 	confirmation.Confirmation = &decision.Confirmation{
 		Configured: true, Status: "mismatch", Reason: new("candidate_confirmation_mismatch"), RequestCount: 12,

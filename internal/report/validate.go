@@ -2,6 +2,7 @@ package report
 
 import (
 	"math"
+	"reflect"
 	"regexp"
 	"slices"
 
@@ -95,7 +96,7 @@ func validError(r decision.Result) bool {
 
 func validBoolean(r decision.Result) bool {
 	v := r.Verification
-	if v == nil || !validVerification(v) {
+	if v == nil || !validVerification(v) || !matchesBooleanObservations(r) {
 		return false
 	}
 	initialUnchanged := r.Reason == v.Reason && r.Verdict == v.Verdict && r.RequestCount == v.RequestCount
@@ -211,6 +212,38 @@ func validVerification(v *decision.Verification) bool {
 		}
 	}
 	return v.Verdict == decision.Inconclusive || (len(v.Failures) == 0 && v.Evidence != nil)
+}
+
+func matchesBooleanObservations(r decision.Result) bool {
+	v := r.Verification
+	// Historical summaries do not represent outcomes of the released
+	// Boolean classifier. Retain their bounded structural validation.
+	if oneOf(v.Reason, "boolean_differential", "connection_error") {
+		return true
+	}
+	input := decision.BooleanInput{
+		Observations: v.Observations, Failures: v.Failures,
+		RequestCount: v.RequestCount, BudgetUnavailable: v.Reason == "budget_unavailable",
+	}
+	if f := r.Facts.Response; f != nil {
+		input.UnstablePairs = f.UnstablePairs
+		if f.NormalizationApplied {
+			// Verification already holds the normalized projection.
+			input.Normalized, input.NormalizedEchoCount = v.Observations, f.NormalizedEchoCount
+		}
+	}
+	replayed, err := decision.EvaluateBoolean(input)
+	if err != nil || replayed.Verdict != v.Verdict || replayed.Reason != v.Reason ||
+		!reflect.DeepEqual(replayed.Verification.Evidence, v.Evidence) {
+		return false
+	}
+	if c := r.Confirmation; c != nil && c.Configured && c.Status != "not_eligible" {
+		// A recorded confirmation has its own facts and follows separate
+		// validation; only its initial verification is replayable.
+		return true
+	}
+	return reflect.DeepEqual(replayed.Facts.Operational, r.Facts.Operational) &&
+		reflect.DeepEqual(replayed.Facts.Response, r.Facts.Response)
 }
 
 func eligibleInitial(v *decision.Verification) bool {
