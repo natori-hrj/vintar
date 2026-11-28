@@ -20,13 +20,25 @@ class Blocked(Exception):
 def interrupt(args, cwd, ready, delay):
     if os.name == "nt":
         request = json.dumps([list(map(str, args)), str(cwd), str(ready) if ready else None, delay])
-        worker = subprocess.run([sys.executable, "-B", __file__, request], capture_output=True,
-                                text=True, encoding="utf-8", timeout=20,
-                                creationflags=subprocess.CREATE_NEW_CONSOLE)
+        try:
+            worker = subprocess.run([sys.executable, "-B", __file__, request], capture_output=True,
+                                    text=True, encoding="utf-8", timeout=20,
+                                    creationflags=subprocess.CREATE_NEW_CONSOLE)
+        except OSError as error:
+            raise Blocked(f"could not create a separate Windows console: {error}") from error
         if worker.returncode:
-            raise Blocked(f"could not deliver native console Ctrl+C: {worker.stderr[-700:]}")
-        return tuple(json.loads(worker.stdout))
+            raise AssertionError(f"console worker failed: {worker.stderr[-700:]}")
+        return decode_worker(worker.stdout)
     return interrupt_child(args, cwd, ready, delay)
+
+
+def decode_worker(output):
+    outcome, payload = json.loads(output)
+    if outcome == "blocked":
+        raise Blocked(payload)
+    if outcome != "observed":
+        raise AssertionError(payload)
+    return tuple(payload)
 
 
 def interrupt_child(args, cwd, ready, delay):
@@ -64,7 +76,8 @@ def worker():
     if not ctypes.windll.kernel32.SetConsoleCtrlHandler(callback, True):
         raise Blocked("SetConsoleCtrlHandler failed")
     args, cwd, ready, delay = json.loads(sys.argv[1])
-    print(json.dumps(interrupt_child(args, cwd, Path(ready) if ready else None, delay)))
+    result = interrupt_child(args, cwd, Path(ready) if ready else None, delay)
+    print(json.dumps(["observed", result]))
 
 
 def http_send(binary):
@@ -140,4 +153,9 @@ def offline(root, binary, command):
 
 
 if __name__ == "__main__":
-    worker()
+    try:
+        worker()
+    except Blocked as error:
+        print(json.dumps(["blocked", str(error)]))
+    except Exception as error:
+        print(json.dumps(["failed", f"{type(error).__name__}: {error}"]))
