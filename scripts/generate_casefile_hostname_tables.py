@@ -1,4 +1,4 @@
-"""Generate the IDNA2008 and casing data used by the Go casefile reader.
+"""Generate the IDNA2008, casing and decimal data used by the Go casefile reader.
 
 Run from the locked v0.6.0 Python environment and pass the output path.
 The generated file is used by Go; Python is not needed to build or run it.
@@ -94,6 +94,12 @@ def main() -> None:
             if len(s) != 1:
                 literal = "".join(f"\\U{ord(ch):08x}" for ch in s)
                 output.write(f'\t0x{cp:X}: "{literal}",\n')
+        output.write("}\n")
+        output.write("\n// First code point of each Unicode decimal digit block.\n")
+        output.write("var storedDecimalStarts = [...]rune{\n")
+        for cp in codepoints:
+            if unicodedata.decimal(chr(cp), -1) == 0:
+                output.write(f"\t0x{cp:X},\n")
         output.write("}\n")
 
 

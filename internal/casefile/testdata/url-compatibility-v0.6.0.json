@@ -1,0 +1,1201 @@
+[
+  {
+    "name": "[fe80::1%eth0] vs [fe80::1%ETH0]",
+    "target": "https://[fe80::1%eth0]/items",
+    "allowed": "https://[fe80::1%ETH0]",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[fe80::1%7] vs [fe80::1%7]",
+    "target": "https://[fe80::1%7]/items",
+    "allowed": "https://[fe80::1%7]",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[fe80::1%25eth0] vs [fe80::1%eth0]",
+    "target": "https://[fe80::1%25eth0]/items",
+    "allowed": "https://[fe80::1%eth0]",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[fe80::1%eth0] vs [fe80::1%eth1]",
+    "target": "https://[fe80::1%eth0]/items",
+    "allowed": "https://[fe80::1%eth1]",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[fe80::1%] vs [fe80::1%]",
+    "target": "https://[fe80::1%]/items",
+    "allowed": "https://[fe80::1%]",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[fe80::1%eth%30] vs [fe80::1%eth%30]",
+    "target": "https://[fe80::1%eth%30]/items",
+    "allowed": "https://[fe80::1%eth%30]",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[fe80::1%25] vs [fe80::1%25]",
+    "target": "https://[fe80::1%25]/items",
+    "allowed": "https://[fe80::1%25]",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[fe80::1%a:b] vs [fe80::1%a:b]",
+    "target": "https://[fe80::1%a:b]/items",
+    "allowed": "https://[fe80::1%a:b]",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[fe80::1%two words] vs [fe80::1%two words]",
+    "target": "https://[fe80::1%two words]/items",
+    "allowed": "https://[fe80::1%two words]",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[fe80::1%a[b]c] vs [fe80::1%a[b]c]",
+    "target": "https://[fe80::1%a[b]c]/items",
+    "allowed": "https://[fe80::1%a[b]c]",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[fe80::1]junk vs [fe80::1]",
+    "target": "https://[fe80::1]junk/items",
+    "allowed": "https://[fe80::1]",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[::FFFF:192.0.2.1] vs [::ffff:192.0.2.1]",
+    "target": "https://[::FFFF:192.0.2.1]/items",
+    "allowed": "https://[::ffff:192.0.2.1]",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[2001:0db8::1] vs [2001:db8::1]",
+    "target": "https://[2001:0db8::1]/items",
+    "allowed": "https://[2001:db8::1]",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "target port '+443'",
+    "target": "https://example.invalid:+443/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '+443'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:+443",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '+444'",
+    "target": "https://example.invalid:+444/items",
+    "allowed": "https://example.invalid:444",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '+444'",
+    "target": "https://example.invalid:444/items",
+    "allowed": "https://example.invalid:+444",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '-443'",
+    "target": "https://example.invalid:-443/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "origin port '-443'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:-443",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "target port '-0'",
+    "target": "https://example.invalid:-0/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '-0'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:-0",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '-٠'",
+    "target": "https://example.invalid:-٠/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '-٠'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:-٠",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '٤٤٣'",
+    "target": "https://example.invalid:٤٤٣/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '٤٤٣'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:٤٤٣",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '４４３'",
+    "target": "https://example.invalid:４４３/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '４４３'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:４４３",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '𝟜𝟜𝟜'",
+    "target": "https://example.invalid:𝟜𝟜𝟜/items",
+    "allowed": "https://example.invalid:444",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '𝟜𝟜𝟜'",
+    "target": "https://example.invalid:444/items",
+    "allowed": "https://example.invalid:𝟜𝟜𝟜",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '٠44٣'",
+    "target": "https://example.invalid:٠44٣/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '٠44٣'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:٠44٣",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '04_43'",
+    "target": "https://example.invalid:04_43/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '04_43'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:04_43",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '+٤_٤٣'",
+    "target": "https://example.invalid:+٤_٤٣/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '+٤_٤٣'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:+٤_٤٣",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port ' 443'",
+    "target": "https://example.invalid: 443/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port ' 443'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid: 443",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '\\u2003443'",
+    "target": "https://example.invalid: 443/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '\\u2003443'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid: 443",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '443_'",
+    "target": "https://example.invalid:443_/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "origin port '443_'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:443_",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "target port '_443'",
+    "target": "https://example.invalid:_443/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "origin port '_443'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:_443",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "target port '4__43'",
+    "target": "https://example.invalid:4__43/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "origin port '4__43'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:4__43",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "target port '+ 443'",
+    "target": "https://example.invalid:+ 443/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "origin port '+ 443'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:+ 443",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "target port '⁴⁴³'",
+    "target": "https://example.invalid:⁴⁴³/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "origin port '⁴⁴³'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:⁴⁴³",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "target port '65535'",
+    "target": "https://example.invalid:65535/items",
+    "allowed": "https://example.invalid:65535",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '65535'",
+    "target": "https://example.invalid:65535/items",
+    "allowed": "https://example.invalid:65535",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '65536'",
+    "target": "https://example.invalid:65536/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "origin port '65536'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:65536",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "target port '000443'",
+    "target": "https://example.invalid:000443/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '000443'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:000443",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port '0'",
+    "target": "https://example.invalid:0/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port '0'",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:0",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "target port ''",
+    "target": "https://example.invalid:/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "origin port ''",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid:",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "%61.invalid vs a.invalid",
+    "target": "https://%61.invalid/items",
+    "allowed": "https://a.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "%C4%B0.invalid vs İ.invalid",
+    "target": "https://%C4%B0.invalid/items",
+    "allowed": "https://İ.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "%ZZ.invalid vs %ZZ.invalid",
+    "target": "https://%ZZ.invalid/items",
+    "allowed": "https://%ZZ.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "a b.invalid vs a%20b.invalid",
+    "target": "https://a b.invalid/items",
+    "allowed": "https://a%20b.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "abc\\def.invalid vs abc\\def.invalid",
+    "target": "https://abc\\def.invalid/items",
+    "allowed": "https://abc\\def.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "abc|def.invalid vs abc|def.invalid",
+    "target": "https://abc|def.invalid/items",
+    "allowed": "https://abc|def.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "abc<def.invalid vs abc%3cdef.invalid",
+    "target": "https://abc<def.invalid/items",
+    "allowed": "https://abc%3cdef.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "abc\"def.invalid vs abc\"def.invalid",
+    "target": "https://abc\"def.invalid/items",
+    "allowed": "https://abc\"def.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "192.0.2.001 vs 192.0.2.001",
+    "target": "https://192.0.2.001/items",
+    "allowed": "https://192.0.2.001",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "0x7f000001 vs 0x7f000001",
+    "target": "https://0x7f000001/items",
+    "allowed": "https://0x7f000001",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "例え.テスト vs xn--r8jz45g.xn--zckzah",
+    "target": "https://例え.テスト/items",
+    "allowed": "https://xn--r8jz45g.xn--zckzah",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "İ.invalid vs i.invalid",
+    "target": "https://İ.invalid/items",
+    "allowed": "https://i.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "Ｆ.invalid vs f.invalid",
+    "target": "https://Ｆ.invalid/items",
+    "allowed": "https://f.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "case.invalid. vs case.invalid",
+    "target": "https://case.invalid./items",
+    "allowed": "https://case.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "@example.invalid vs example.invalid",
+    "target": "https://@example.invalid/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      false,
+      false
+    ]
+  },
+  {
+    "name": ":@example.invalid vs example.invalid",
+    "target": "https://:@example.invalid/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "user@example.invalid vs example.invalid",
+    "target": "https://user@example.invalid/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "user:pw@example.invalid vs example.invalid",
+    "target": "https://user:pw@example.invalid/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "declared suffix /./",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid/./",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "declared suffix /a/..",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid/a/..",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "declared suffix /%2e/",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid/%2e/",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "declared suffix //",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid//",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "declared suffix ?",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid?",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "declared suffix #",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid#",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "declared suffix /?",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid/?",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "declared suffix /#",
+    "target": "https://example.invalid/items",
+    "allowed": "https://example.invalid/#",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "request suffix /./items",
+    "target": "https://example.invalid/./items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/./items",
+    "accepted": [
+      true,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "request suffix /items%ZZ",
+    "target": "https://example.invalid/items%ZZ",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items%ZZ",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "request suffix /items%2Fhere",
+    "target": "https://example.invalid/items%2Fhere",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items%2Fhere",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "request suffix /a%2Fb/%7Euser",
+    "target": "https://example.invalid/a%2Fb/%7Euser",
+    "allowed": "https://example.invalid",
+    "approval_path": "/a%2Fb/%7Euser",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "request suffix /items?",
+    "target": "https://example.invalid/items?",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "request suffix /items#",
+    "target": "https://example.invalid/items#",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "request suffix /items?a=b",
+    "target": "https://example.invalid/items?a=b",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "request suffix /items#ref",
+    "target": "https://example.invalid/items#ref",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "request suffix /items space",
+    "target": "https://example.invalid/items space",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items space",
+    "accepted": [
+      true,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "request suffix /é",
+    "target": "https://example.invalid/é",
+    "allowed": "https://example.invalid",
+    "approval_path": "/é",
+    "accepted": [
+      true,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "request suffix /raw\\name",
+    "target": "https://example.invalid/raw\\name",
+    "allowed": "https://example.invalid",
+    "approval_path": "/raw\\name",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[::1]443 compared to [::1]",
+    "target": "https://[::1]443/items",
+    "allowed": "https://[::1]",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[::1]４４４ compared to [::1]:444",
+    "target": "https://[::1]４４４/items",
+    "allowed": "https://[::1]:444",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[::1] compared to [::1]443",
+    "target": "https://[::1]/items",
+    "allowed": "https://[::1]443",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[fe80::1%25ETH0]:+443 compared to [fe80::1%25eth0]",
+    "target": "https://[fe80::1%25ETH0]:+443/items",
+    "allowed": "https://[fe80::1%25eth0]",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[fe80::1%7]:４４４ compared to [fe80::1%7]:444",
+    "target": "https://[fe80::1%7]:４４４/items",
+    "allowed": "https://[fe80::1%7]:444",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "[fe80::1%7] compared to [fe80::1%07]",
+    "target": "https://[fe80::1%7]/items",
+    "allowed": "https://[fe80::1%07]",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[fe80::1%eth0] compared to [fe80::1]",
+    "target": "https://[fe80::1%eth0]/items",
+    "allowed": "https://[fe80::1]",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[fe80::1%eth0] compared to [fe80::1%eth0]:444",
+    "target": "https://[fe80::1%eth0]/items",
+    "allowed": "https://[fe80::1%eth0]:444",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "[fe80::1%eth0] compared to [fe80::1%25eth0]",
+    "target": "https://[fe80::1%eth0]/items",
+    "allowed": "https://[fe80::1%25eth0]",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "example.invalid:+444 compared to example.invalid",
+    "target": "https://example.invalid:+444/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "example.invalid:٤٤٣ compared to example.invalid:444",
+    "target": "https://example.invalid:٤٤٣/items",
+    "allowed": "https://example.invalid:444",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "name": "example.invalid:0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000443 compared to example.invalid",
+    "target": "https://example.invalid:0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000443/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "name": "example.invalid:9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999 compared to example.invalid",
+    "target": "https://example.invalid:9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999/items",
+    "allowed": "https://example.invalid",
+    "approval_path": "/items",
+    "accepted": [
+      false,
+      false,
+      false
+    ]
+  }
+]
