@@ -76,6 +76,7 @@ For development, clone the repository and install from the lockfile.
 ```bash
 git clone https://github.com/natori-hrj/vintar.git
 cd vintar
+git switch --detach v0.6.0
 uv sync --locked
 ```
 

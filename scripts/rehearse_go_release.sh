@@ -81,10 +81,13 @@ version_dir="$proxy/$module/@v"
 mkdir -p -- "$version_dir" "$scratch/install-cwd"
 git show "$commit:go.mod" >"$version_dir/$version.mod"
 printf '{"Version":"%s","Time":"%s"}\n' "$version" "$(git show -s --format=%cI "$commit")" >"$version_dir/$version.info"
+printf '%s\n' "$version" >"$version_dir/list"
 git archive --format=zip --prefix="$module@$version/" -o "$version_dir/$version.zip" "$commit"
 (
     cd -- "$scratch/install-cwd"
-    export GOPROXY="file://$proxy,file://$GOMODCACHE/cache/download"
+    GOPROXY=$(python3 -B -c 'import pathlib, sys; print(",".join(pathlib.Path(p).as_uri() for p in sys.argv[1:]))' \
+        "$proxy" "$GOMODCACHE/cache/download")
+    export GOPROXY
     export GOMODCACHE="$scratch/install-modules" GOBIN="$scratch/install-bin" GOCACHE="$scratch/install-cache"
     go install -trimpath "$module/cmd/vintar@$version"
     [[ $("$GOBIN/vintar" version) == "Vintar $version" ]] || die 'go install binary version differs'
@@ -92,6 +95,9 @@ git archive --format=zip --prefix="$module@$version/" -o "$version_dir/$version.
     awk -F '\t' -v module="$module" -v version="$version" \
         '$2 == "mod" && $3 == module && $4 == version && $5 ~ /^h1:/ { ok = 1 } END { exit !ok }' \
         "$stage/evidence/go-install.buildinfo"
+    awk 'NR == FNR { sums[$1, $2, $3] = 1; next }
+         $1 == "dep" { if (!sums[$2, $3, $4]) exit 1; count++ }
+         END { if (!count) exit 1 }' "$repo/go.sum" "$stage/evidence/go-install.buildinfo"
     sha256sum -- "$version_dir/$version.zip" | cut -d' ' -f1 >"$stage/evidence/go-install-source.sha256"
 )
 
