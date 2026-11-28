@@ -2,14 +2,15 @@ package discovery
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"net/url"
+	"path"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -103,18 +104,24 @@ type postAuth struct {
 }
 
 type postDocument struct {
-	root       map[string]any
-	version    string
-	targets    map[string]referenceTarget
-	references int
-	work       int
-	metadata   int
+	root        map[string]any
+	version     string
+	targets     map[string]referenceTarget
+	references  int
+	work        int
+	metadata    int
+	definitions postDefinitionBudget
 }
 
 // BuildPostJSONInventory describes declared POST JSON inputs without creating any
 // requests or runnable cases. The v2 inventory has no source-file member.
 func BuildPostJSONInventory(specJSON []byte, source string) (report []byte, summary string, err error) {
-	inventory, _, err := analyzePostJSON(specJSON)
+	return BuildPostJSONInventoryContext(context.Background(), specJSON, "")
+}
+
+// BuildPostJSONInventoryContext builds the inventory from a JSON or YAML spec.
+func BuildPostJSONInventoryContext(ctx context.Context, spec []byte, source string) (report []byte, summary string, err error) {
+	inventory, _, err := analyzePostSpec(ctx, spec, source)
 	if err != nil {
 		return nil, "", err
 	}
@@ -128,7 +135,18 @@ func BuildPostJSONInventory(specJSON []byte, source string) (report []byte, summ
 }
 
 func analyzePostJSON(data []byte) (postInventory, *postDocument, error) {
-	value, err := strictjson.Parse(data)
+	return analyzePostSpec(context.Background(), data, "")
+}
+
+func analyzePostSpec(ctx context.Context, data []byte, source string) (postInventory, *postDocument, error) {
+	if err := ctx.Err(); err != nil {
+		return postInventory{}, nil, err
+	}
+	decode := strictjson.Parse
+	if ext := strings.ToLower(path.Ext(source)); ext == ".yaml" || ext == ".yml" {
+		decode = decodeYAMLValue
+	}
+	value, err := decode(data)
 	if err != nil {
 		return postInventory{}, nil, err
 	}
@@ -145,13 +163,17 @@ func analyzePostJSON(data []byte) (postInventory, *postDocument, error) {
 	if _, present := root["paths"]; !ok && (present || strings.HasPrefix(version, "3.0.")) {
 		return postInventory{}, nil, errPostInput
 	}
-	d := &postDocument{root: root, version: version, targets: make(map[string]referenceTarget)}
+	d := &postDocument{root: root, version: version, targets: make(map[string]referenceTarget),
+		definitions: newPostDefinitionBudget(ctx)}
 	schemes, err := postSecuritySchemes(root)
 	if err != nil {
 		return postInventory{}, nil, err
 	}
 	out := postInventory{SchemaVersion: 2, ReportType: postInventoryType, Operations: []postOperation{}}
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
+		if err := ctx.Err(); err != nil {
+			return postInventory{}, nil, err
+		}
 		if strings.HasPrefix(path, "x-") {
 			continue
 		}
@@ -697,154 +719,4 @@ var postDefinitionChildren = map[postDefinitionKind]map[string]postDefinitionSha
 	postMediaDef:     {"schema": {postSchemaDef, 0}, "examples": {postExampleDef, 'm'}, "encoding": {postEncodingDef, 'm'}},
 	postEncodingDef:  {"headers": {postHeaderDef, 'm'}},
 	postResponseDef:  {"headers": {postHeaderDef, 'm'}, "content": {postMediaDef, 'm'}, "links": {postLinkDef, 'm'}},
-}
-
-type postDefinition struct {
-	doc       *postDocument
-	remaining int
-}
-
-func (d *postDocument) operationDigest(operation map[string]any, pointer string, pathItem map[string]any, pathPointer string, trail []string) (string, error) {
-	b := postDefinition{doc: d, remaining: postMaxWork}
-	op, err := b.value(operation, pointer, trail, postDefinitionShape{postOperationDef, 0}, 0)
-	if err != nil {
-		return "", err
-	}
-	params, has := pathItem["parameters"]
-	if !has {
-		params = []any{}
-	}
-	params, err = b.value(params, postChild(pathPointer, "parameters"), trail, postDefinitionShape{postParameterDef, 'a'}, 0)
-	if err != nil {
-		return "", err
-	}
-	servers, has := pathItem["servers"]
-	if !has {
-		servers = []any{}
-	}
-	extensions := map[string]any{}
-	for _, k := range slices.Sorted(maps.Keys(pathItem)) {
-		if strings.HasPrefix(strings.ToLower(k), "x-") {
-			v := pathItem[k]
-			if !strings.HasPrefix(k, "x-") {
-				v, err = b.value(v, postChild(pathPointer, k), trail, postDefinitionShape{postPathDef, 0}, 0)
-				if err != nil {
-					return "", err
-				}
-			}
-			extensions[k] = v
-		}
-	}
-	return postDigest(map[string]any{"operation": op, "path_parameters": params,
-		"path_servers": servers, "path_extensions": extensions})
-}
-
-func (b *postDefinition) value(raw any, pointer string, trail []string, shape postDefinitionShape, depth int) (any, error) {
-	if shape.kind == postOpaque {
-		return raw, nil
-	}
-	b.remaining--
-	if b.remaining < 0 || depth > 72 {
-		return nil, errPostWork
-	}
-	childShape := postDefinitionShape{kind: shape.kind}
-	if shape.collection == 'a' {
-		list, ok := raw.([]any)
-		if !ok {
-			return raw, nil
-		}
-		out := make([]any, len(list))
-		for i, child := range list {
-			var err error
-			out[i], err = b.value(child, postChild(pointer, strconv.Itoa(i)), trail, childShape, depth+1)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return out, nil
-	}
-	node, ok := raw.(map[string]any)
-	if !ok {
-		return raw, nil
-	}
-	if shape.collection != 0 {
-		out := make(map[string]any, len(node))
-		for _, key := range slices.Sorted(maps.Keys(node)) {
-			child := node[key]
-			if shape.collection != 'x' || !strings.HasPrefix(key, "x-") {
-				var err error
-				child, err = b.value(child, postChild(pointer, key), trail, childShape, depth+1)
-				if err != nil {
-					return nil, err
-				}
-			}
-			out[key] = child
-		}
-		return out, nil
-	}
-	ref, hasRef := node["$ref"]
-	if shape.kind == postOperationDef {
-		hasRef = false // an Operation Object is not a Reference Object
-	}
-	var resolved any
-	if hasRef {
-		text, ok := ref.(string)
-		if !ok || text == "" {
-			return nil, errPostInput
-		}
-		target, err := b.doc.target(text)
-		if err != nil {
-			return nil, err
-		}
-		if target.pointer == pointer || slices.Contains(trail, target.pointer) {
-			if shape.kind != postSchemaDef {
-				return nil, errPostRecursive
-			}
-			resolved = map[string]any{"$ref": "#" + target.pointer}
-		} else {
-			if len(trail) >= 24 {
-				return nil, errPostRefLimit
-			}
-			next := append(trail[:len(trail):len(trail)], target.pointer)
-			resolved, err = b.value(target.value, target.pointer, next, shape, depth+1)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	out := make(map[string]any, len(node))
-	for _, key := range slices.Sorted(maps.Keys(node)) {
-		if hasRef && key == "$ref" {
-			continue
-		}
-		child := node[key]
-		childShape := postDefinitionChildren[shape.kind][key]
-		switch {
-		case strings.HasPrefix(key, "x-"):
-			childShape = postDefinitionShape{}
-		case shape.kind == postPathDef && slices.Contains(methods[:], strings.ToLower(key)):
-			childShape = postDefinitionShape{postOperationDef, 0}
-		case shape.kind == postCallbackDef:
-			childShape = postDefinitionShape{postPathDef, 0}
-		}
-		child, err := b.value(child, postChild(pointer, key), trail, childShape, depth+1)
-		if err != nil {
-			return nil, err
-		}
-		out[key] = child
-	}
-	if hasRef {
-		return map[string]any{"$ref_target": resolved, "siblings": out}, nil
-	}
-	return out, nil
-}
-
-// postDigest hashes bounded assembled values without imposing the input
-// limit on their ASCII representation or losing strictjson's number types.
-func postDigest(value any) (string, error) {
-	canonical, err := strictjson.CanonicalizeValue(value)
-	if err != nil {
-		return "", errPostWork
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(canonical)), nil
 }

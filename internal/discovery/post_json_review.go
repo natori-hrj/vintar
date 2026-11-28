@@ -1,6 +1,8 @@
 package discovery
 
 import (
+	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -17,7 +19,10 @@ import (
 	"github.com/natori-hrj/vintar/internal/strictjson"
 )
 
-const postReviewLimit = 262144
+const (
+	postReviewLimit   = 262144
+	postBaselineLimit = 1 << 20 // v0.6.0's limit on the normalized JsonBody input
+)
 
 var (
 	errPostStaleInventory = errors.New("POST JSON inventory is stale or was edited. Regenerate it with vintar inventory-post-json and review the new candidate.")
@@ -39,6 +44,18 @@ var (
 // BuildPostJSONReview produces only redacted review metadata. The recorded
 // confirmations are assertions from the answers, not execution authority.
 func BuildPostJSONReview(specJSON []byte, source string, inventoryJSON, answersJSON []byte) (report []byte, candidateID string, err error) {
+	return buildPostJSONReview(context.Background(), specJSON, "", source, inventoryJSON, answersJSON)
+}
+
+// BuildPostJSONReviewContext reviews a candidate against a JSON or YAML spec.
+func BuildPostJSONReviewContext(ctx context.Context, spec []byte, source string, inventoryJSON, answersJSON []byte) (report []byte, candidateID string, err error) {
+	return buildPostJSONReview(ctx, spec, source, source, inventoryJSON, answersJSON)
+}
+
+func buildPostJSONReview(ctx context.Context, spec []byte, formatSource, source string, inventoryJSON, answersJSON []byte) ([]byte, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	supplied, err := strictjson.Parse(inventoryJSON)
 	if err != nil || len(answersJSON) > postReviewLimit {
 		return nil, "", errPostReviewJSON
@@ -61,8 +78,11 @@ func BuildPostJSONReview(specJSON []byte, source string, inventoryJSON, answersJ
 	if !ok {
 		return nil, "", errPostAnswers
 	}
-	inventory, d, err := analyzePostJSON(specJSON)
+	inventory, d, err := analyzePostSpec(ctx, spec, formatSource)
 	if err != nil {
+		if ctx.Err() != nil || errors.Is(err, ErrPostDefinitionLimit) {
+			return nil, "", err
+		}
 		return nil, "", errPostStaleInventory
 	}
 	operation, field, candidate, err := matchPostReviewCandidate(inventory, id)
@@ -103,7 +123,7 @@ func BuildPostJSONReview(specJSON []byte, source string, inventoryJSON, answersJ
 	if len(field.Stars) != 0 {
 		fieldReport["literal_star_positions"] = field.Stars
 	}
-	report, err = marshalPostArtifact(map[string]any{
+	report, err := marshalPostArtifact(map[string]any{
 		"schema_version": 2, "report_type": "post_json_discovery_review", "candidate_id": id, "identity_id": identity,
 		"operation": map[string]any{"approved": true, "method": "POST", "path": operation.Path,
 			"operation_pointer": operation.Operation, "request_body_pointer": operation.Body,
@@ -264,7 +284,7 @@ func postReviewConfirmations(answer map[string]any) (string, error) {
 func (d *postDocument) reviewBaseline(media, source string, raw any, answers []byte) (map[string]any, any, error) {
 	baseline, _ := raw.(map[string]any)
 	var value, provenance any = nil, "reviewer"
-	var digest string
+	var bodyValue any
 	switch {
 	case postExactKeys(baseline, "value", "body_sha256"):
 		value = baseline["value"]
@@ -276,11 +296,11 @@ func (d *postDocument) reviewBaseline(media, source string, raw any, answers []b
 		if err := json.Unmarshal(answers, &tokens); err != nil {
 			return nil, nil, errPostBaseline
 		}
-		canonical, err := strictjson.Canonicalize(tokens.Baseline["value"])
+		parsed, err := strictjson.Parse(tokens.Baseline["value"])
 		if err != nil {
 			return nil, nil, errPostBaseline
 		}
-		digest = fmt.Sprintf("%x", sha256.Sum256(canonical))
+		bodyValue = parsed
 	case postExactKeys(baseline, "pointer", "body_sha256"):
 		pointer, ok := baseline["pointer"].(string)
 		if !ok {
@@ -294,18 +314,31 @@ func (d *postDocument) reviewBaseline(media, source string, raw any, answers []b
 			return nil, nil, errPostExample
 		}
 		provenance = Source{File: path.Base(source), Pointer: pointer}
-		var err error
-		digest, err = postDigest(value)
-		if err != nil {
-			return nil, nil, errPostBaseline
-		}
+		bodyValue = value
 	default:
 		return nil, nil, errPostBaseline
+	}
+	digest, err := postBaselineDigest(d.definitions.ctx, bodyValue)
+	if err != nil {
+		return nil, nil, err
 	}
 	if baseline["body_sha256"] != digest {
 		return nil, nil, errPostBaselineDigest
 	}
 	return map[string]any{"source": provenance, "body_sha256": digest}, value, nil
+}
+
+func postBaselineDigest(ctx context.Context, value any) (string, error) {
+	sum := sha256.New()
+	remaining := postBaselineLimit
+	dst := bufio.NewWriterSize(postDigestWriter{ctx, sum, &remaining, errPostBaseline}, postDigestBuffer)
+	if err := strictjson.NewEncoder(dst, nil).Value(value); err != nil {
+		return "", err
+	}
+	if err := dst.Flush(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sum.Sum(nil)), nil
 }
 
 func (d *postDocument) reviewExample(media, chosen string) (any, bool) {

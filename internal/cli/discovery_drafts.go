@@ -87,7 +87,7 @@ func draftString(value string) string {
 func publishDiscoveryDrafts(ctx context.Context, directory string, names []string, drafts map[string][]byte, inputs []os.FileInfo) error {
 	root, err := openOfflineOutputDirectory(ctx, directory, len(names) != 0)
 	if err != nil {
-		if len(names) == 0 || errors.Is(err, errOfflineOutputDirectory) {
+		if !offlineNameTooLong(err) && (len(names) == 0 || errors.Is(err, errOfflineOutputDirectory)) {
 			return errOfflineOutputDirectory
 		}
 		return errors.New("cannot write review drafts. Choose a writable output path.")

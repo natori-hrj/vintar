@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -24,4 +25,9 @@ func openOfflineInput(path string) (*os.File, error) {
 func ordinaryOfflineDirectory(info os.FileInfo) bool {
 	attrs, ok := info.Sys().(*syscall.Win32FileAttributeData)
 	return ok && info.IsDir() && attrs.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
+func offlineNameTooLong(err error) bool {
+	const errorFilenameExcedRange = syscall.Errno(206) // ERROR_FILENAME_EXCED_RANGE
+	return errors.Is(err, errorFilenameExcedRange) || errors.Is(err, syscall.ENAMETOOLONG)
 }

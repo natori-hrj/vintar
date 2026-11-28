@@ -9,3 +9,5 @@ func openOfflineInput(string) (*os.File, error) {
 }
 
 func ordinaryOfflineDirectory(os.FileInfo) bool { return false }
+
+func offlineNameTooLong(error) bool { return false }

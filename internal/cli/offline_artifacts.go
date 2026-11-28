@@ -63,14 +63,16 @@ func sameOfflineInput(a, b os.FileInfo) bool {
 	return b.Mode().IsRegular() && os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
 }
 
-func readOfflineSpec(path string) (offlineInput, error) {
+func readOfflineSpec(path string, decodeYAML bool) (offlineInput, error) {
 	spec, err := readOfflineInput(path, maxOfflineSpecBytes)
 	if err != nil {
 		return offlineInput{}, err
 	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yaml", ".yml":
-		spec.data, err = discovery.DecodeYAML(spec.data)
+		if decodeYAML {
+			spec.data, err = discovery.DecodeYAML(spec.data)
+		}
 	case ".json":
 	default:
 		err = errOfflineInput
@@ -82,19 +84,22 @@ func runPostJSONInventory(ctx context.Context, args arguments, stdout, stderr io
 	const failed = "invalid or unreadable OpenAPI spec. Check the local file format, declarations, references, and limits, then try again."
 	const interrupted = "POST JSON inventory was interrupted. Rerun to regenerate the report."
 	source := args.value("spec")
-	spec, err := readOfflineSpec(source)
+	spec, err := readOfflineSpec(source, false)
 	if ctx.Err() != nil {
 		return diagnostic(stderr, 130, interrupted)
 	}
 	if err != nil {
 		return diagnostic(stderr, 2, failed)
 	}
-	report, summary, err := discovery.BuildPostJSONInventory(spec.data, filepath.ToSlash(source))
+	report, summary, err := discovery.BuildPostJSONInventoryContext(ctx, spec.data, filepath.ToSlash(source))
 	if ctx.Err() != nil {
 		return diagnostic(stderr, 130, interrupted)
 	}
 	if errors.Is(err, discovery.ErrPostArtifactSize) {
 		return diagnostic(stderr, 2, "The POST JSON inventory exceeds the report size limit. Split the OpenAPI spec into smaller specs and run the inventory for each.")
+	}
+	if errors.Is(err, discovery.ErrPostDefinitionLimit) {
+		return diagnostic(stderr, 2, err.Error())
 	}
 	if err != nil {
 		return diagnostic(stderr, 2, failed)
@@ -128,7 +133,7 @@ func runOfflineReview(ctx context.Context, args arguments, stdout, stderr io.Wri
 	if !post && discoveryDraftSpecOutsideCWD(specPath) {
 		return offlineReviewFailure(ctx, stderr, interrupted, "Spec is outside the current working directory. Run from a directory containing the spec.")
 	}
-	spec, err := readOfflineSpec(specPath)
+	spec, err := readOfflineSpec(specPath, !post)
 	if err != nil {
 		if !post {
 			failed = "Cannot inventory the spec. Check its format, declarations, and references, then rerun discovery."
@@ -152,7 +157,7 @@ func runOfflineReview(ctx context.Context, args arguments, stdout, stderr io.Wri
 	var report []byte
 	var id string
 	if post {
-		report, id, err = discovery.BuildPostJSONReview(spec.data, label, artifact.data, answers.data)
+		report, id, err = discovery.BuildPostJSONReviewContext(ctx, spec.data, label, artifact.data, answers.data)
 	} else {
 		report, id, err = discovery.BuildDraftReview(spec.data, label, artifact.data, answers.data)
 	}
@@ -161,6 +166,9 @@ func runOfflineReview(ctx context.Context, args arguments, stdout, stderr io.Wri
 	}
 	if err != nil {
 		return offlineReviewFailure(ctx, stderr, interrupted, err.Error())
+	}
+	if ctx.Err() != nil {
+		return diagnostic(stderr, 130, interrupted)
 	}
 	output := args.value("output")
 	name := filepath.Base(output)
@@ -203,8 +211,9 @@ func publishOfflineReview(ctx context.Context, output string, report []byte, inp
 	return publishDraftsAtRoot(ctx, root, []string{name}, map[string][]byte{name: report}, inputs)
 }
 
-// Validate the entire raw path before creating anything. When create is false,
-// only validate; otherwise return an anchored root owned by the caller.
+// Inspect existing raw path components before creating anything. Missing
+// components are only materialized when create is true; the filesystem may
+// reject a name at that point. A returned root is owned by the caller.
 func openOfflineOutputDirectory(ctx context.Context, path string, create bool) (*os.Root, error) {
 	// Do not use filepath.Abs, Join or Clean on the original path before
 	// examining its components: each directory before ".." must be checked.
@@ -298,6 +307,9 @@ func openOfflineOutputComponent(parent *os.Root, name string, create bool) (*os.
 			return nil, err
 		}
 		before, err = parent.Lstat(name)
+	}
+	if offlineNameTooLong(err) {
+		return nil, err
 	}
 	if err != nil || !ordinaryOfflineDirectory(before) {
 		return nil, errOfflineOutputDirectory

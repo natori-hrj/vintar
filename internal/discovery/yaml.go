@@ -53,6 +53,24 @@ func ListYAMLOperations(data []byte) ([]Operation, error) {
 // most 1 MiB of YAML, a value depth of 48 (root depth 0), and 8192 values
 // (mapping keys are not counted). On error it returns no JSON.
 func DecodeYAML(data []byte) ([]byte, error) {
+	value, err := decodeYAML(data, false)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, errYAMLEncoding
+	}
+	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), nil
+}
+
+func decodeYAMLValue(data []byte) (any, error) {
+	return decodeYAML(data, true)
+}
+
+func decodeYAML(data []byte, normalizeNumbers bool) (any, error) {
 	if len(data) > maxYAMLBytes {
 		return nil, errYAMLSize
 	}
@@ -73,7 +91,7 @@ func DecodeYAML(data []byte) ([]byte, error) {
 	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
 		return nil, errYAMLSyntax
 	}
-	normalizer := yamlNormalizer{marks: indexYAMLMarks(data)}
+	normalizer := yamlNormalizer{marks: indexYAMLMarks(data), normalizeNumbers: normalizeNumbers}
 	value, err := normalizer.value(document.Content[0], 0)
 	if err != nil {
 		return nil, err
@@ -87,18 +105,13 @@ func DecodeYAML(data []byte) ([]byte, error) {
 		return nil, errYAMLSyntax
 	}
 
-	var out bytes.Buffer
-	encoder := json.NewEncoder(&out)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return nil, errYAMLEncoding
-	}
-	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), nil
+	return value, nil
 }
 
 type yamlNormalizer struct {
-	marks yamlSourceMarks
-	nodes int
+	marks            yamlSourceMarks
+	nodes            int
+	normalizeNumbers bool
 }
 
 func (n *yamlNormalizer) checkNode(node *yaml.Node) error {
@@ -142,8 +155,12 @@ func (n *yamlNormalizer) value(node *yaml.Node, depth int) (any, error) {
 			if yamlJSONNumber.MatchString(node.Value) {
 				// Share the strict JSON numeric limits, including for long
 				// mantissas and exponents, but keep the JSON number spelling.
-				if _, err := strictjson.Parse([]byte(node.Value)); err != nil {
+				value, err := strictjson.Parse([]byte(node.Value))
+				if err != nil {
 					return nil, errYAMLNumber
+				}
+				if n.normalizeNumbers {
+					return value, nil
 				}
 				return json.Number(node.Value), nil
 			}
