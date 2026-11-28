@@ -64,7 +64,7 @@ func runHTTPSend(ctx context.Context, args arguments, stdout, stderr io.Writer) 
 	if err != nil {
 		return writeText(stdout, stderr, "HTTP request failed.\n", 1)
 	}
-	text := fmt.Sprintf("Target: %s\nMethod: %s\nStatus: %d\nResponse time: %.3f s\nContent size: %d bytes\n",
+	text := fmt.Sprintf("Target: %s\nMethod: %s\nStatus: %d\nResponse time: %.3fs\nContent size: %d bytes\n",
 		httpTargetLabel(request.URL), method, response.Status, response.Elapsed.Seconds(), len(response.Body))
 	return writeText(stdout, stderr, text, 0)
 }

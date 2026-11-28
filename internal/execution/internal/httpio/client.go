@@ -3,6 +3,7 @@ package httpio
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -32,8 +33,8 @@ type Response struct {
 // Send performs one GET or POST. The timeout covers the entire transfer,
 // including response body reads. A 429 response is returned without its body.
 func Send(ctx context.Context, req Request, timeout time.Duration, limit int64) (res Response, err error) {
-	if timeout <= 0 {
-		return res, errors.New("HTTP timeout must be positive")
+	if timeout <= 0 || timeout > 60*time.Second {
+		return res, errors.New("HTTP timeout must be in (0, 60s]")
 	}
 	if limit < 1 || limit > maxBodyLimit {
 		return res, errors.New("HTTP body limit must be between 1 and 1048576 bytes")
@@ -88,11 +89,26 @@ func Send(ctx context.Context, req Request, timeout time.Duration, limit int64) 
 	}
 	defer reply.Body.Close()
 	res.Status = reply.StatusCode
-	// A 101 may expose an upgraded connection rather than an HTTP body.
-	if res.Status == http.StatusTooManyRequests || res.Status == http.StatusSwitchingProtocols {
+	if res.Status == http.StatusTooManyRequests {
+		res.Truncated = true
 		return res, nil
 	}
-	body, err := io.ReadAll(io.LimitReader(reply.Body, limit+1))
+	// A 101 may expose an upgraded connection rather than an HTTP body.
+	if res.Status == http.StatusSwitchingProtocols {
+		return res, nil
+	}
+	var reader io.Reader = reply.Body
+	// Transport decodes automatically negotiated gzip, but does not
+	// decode it when the caller sets Accept-Encoding explicitly.
+	if strings.EqualFold(reply.Header.Get("Content-Encoding"), "gzip") {
+		decoded, err := gzip.NewReader(reader)
+		if err != nil {
+			return res, safeError(ctx, "HTTP response body read failed")
+		}
+		defer decoded.Close()
+		reader = decoded
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		return res, safeError(ctx, "HTTP response body read failed")
 	}

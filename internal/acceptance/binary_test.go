@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -136,6 +137,9 @@ func TestProductBinary(t *testing.T) {
 		got := runProduct(t, binary, cwd, "http", "send", "GET", server.URL+"/a%2Fb?ignored=1", "-p", "x=one two+")
 		if got.code != 0 || got.stderr != "" || !strings.Contains(got.stdout, "Status: 302\n") {
 			t.Fatalf("unexpected HTTP output: %+v", got)
+		}
+		if !regexp.MustCompile(`(?m)^Response time: [0-9]+\.[0-9]{3}s$`).MatchString(got.stdout) {
+			t.Fatalf("unexpected response time format: %q", got.stdout)
 		}
 		if len(received) != 1 || <-received != "GET /a%2Fb?x=one%20two%2B" {
 			t.Fatal("expected precisely one request with the approved bytes")

@@ -78,9 +78,13 @@ func TestSendGzipLimitAndMalformedRedirect(t *testing.T) {
 		body.Close()
 	}))
 	defer srv.Close()
-	res, err := Send(t.Context(), Request{Method: "GET", URL: srv.URL}, testTimeout, 4)
-	if err != nil || res.Status != 302 || string(res.Body) != "abcd" || !res.Truncated || hits.Load() != 1 {
-		t.Fatalf("unexpected response or request count: %+v, %v; requests = %d", res, err, hits.Load())
+	for i, headers := range []map[string]string{nil, {"Accept-Encoding": "gzip"}} {
+		res, err := Send(t.Context(), Request{
+			Method: "GET", URL: srv.URL, Headers: headers,
+		}, testTimeout, 4)
+		if err != nil || res.Status != 302 || string(res.Body) != "abcd" || !res.Truncated || hits.Load() != int32(i+1) {
+			t.Fatalf("unexpected response or request count: %+v, %v; requests = %d", res, err, hits.Load())
+		}
 	}
 }
 
@@ -179,8 +183,24 @@ func TestSend429DoesNotReadBody(t *testing.T) {
 	defer close(release)
 
 	res, err := Send(context.Background(), Request{Method: http.MethodGet, URL: srv.URL}, testTimeout, 1)
-	if err != nil || res.Status != http.StatusTooManyRequests || len(res.Body) != 0 || res.Truncated {
+	if err != nil || res.Status != http.StatusTooManyRequests || len(res.Body) != 0 || !res.Truncated {
 		t.Fatalf("Send = %+v, %v", res, err)
+	}
+}
+
+func TestSendRejectsTimeoutAboveLimitBeforeConnecting(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	req := Request{Method: http.MethodGet, URL: srv.URL}
+	if _, err := Send(t.Context(), req, 61*time.Second, 1); err == nil || hits.Load() != 0 {
+		t.Fatalf("want rejected timeout and zero requests; error = %v, requests = %d", err, hits.Load())
+	}
+	if _, err := Send(t.Context(), req, 60*time.Second, 1); err != nil || hits.Load() != 1 {
+		t.Fatalf("want accepted maximum and one request; error = %v, requests = %d", err, hits.Load())
 	}
 }
 
@@ -247,7 +267,7 @@ func TestSendValidationAndErrorScrubbing(t *testing.T) {
 		timeout                    time.Duration
 		limit                      int64
 	}{
-		{"timeout", "GET", "", "HTTP timeout must be positive", 0, 1},
+		{"timeout", "GET", "", "HTTP timeout must be in (0, 60s]", 0, 1},
 		{"lower limit", "GET", "", "HTTP body limit must be between 1 and 1048576 bytes", time.Second, 0},
 		{"upper limit", "GET", "", "HTTP body limit must be between 1 and 1048576 bytes", time.Second, (1 << 20) + 1},
 		{"method", "SECRET", "", "unsupported HTTP method", time.Second, 1},
