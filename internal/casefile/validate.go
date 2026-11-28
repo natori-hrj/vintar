@@ -146,7 +146,7 @@ func validate(root map[string]any) (Case, error) {
 	}
 	var budget int64
 	c.Probes, budget = v.probes(c.Version, c.Check, root["probes"])
-	if c.Version == Version2 && (c.Injection.Query == nil || c.Injection.Query.Mode == Replace) {
+	if c.Injection.Query == nil || c.Injection.Query.Mode == Replace {
 		v.require(!c.Probes.replacesWith(baseline), "case probe equals the baseline value")
 	}
 	m := v.table(root["limits"], "invalid case limits fields", "max_requests", "requests_per_second", "timeout_seconds")
@@ -261,7 +261,12 @@ func (v *validator) queryInjection(version Version, raw any, params []QueryPair)
 func (p Probes) replacesWith(value string) bool {
 	switch {
 	case p.Boolean != nil:
-		return p.Boolean.TruePayload == value || p.Boolean.FalsePayload == value
+		b := p.Boolean
+		if b.TruePayload == value || b.FalsePayload == value {
+			return true
+		}
+		c := b.Confirmation
+		return c != nil && (c.TruePayload == value || c.FalsePayload == value || c.BaselinePreservingControl == value)
 	case p.Time != nil:
 		return p.Time.DelayPayload == value || p.Time.ControlPayload == value
 	case p.Error != nil:

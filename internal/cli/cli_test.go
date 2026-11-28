@@ -59,6 +59,9 @@ func TestRun(t *testing.T) {
 		{"HTTP terminator prevents flag parsing", []string{"http", "send", "GET", url, "--", "--help"}, 2, "", "Unexpected positional"},
 		{"HTTP scalar last wins", []string{"http", "send", "get", "-t", secret, url, "--timeout=60"}, 2, "", "not available"},
 		{"HTTP range checked before method", []string{"http", "send", secret, url, "--timeout=60", "-t60.01"}, 2, "", "--timeout"},
+		{"HTTP fullwidth timeout rejected", []string{"http", "send", "PATCH", "unused", "--timeout=１"}, 2, "", "--timeout"},
+		{"HTTP Unicode decimal and exponent rejected", []string{"http", "send", "PATCH", "unused", "--timeout=١.٥e𝟙"}, 2, "", "--timeout"},
+		{"verify Unicode integer limit rejected", []string{"verify", "--cases", "unused", "--max-requests=７６８"}, 2, "", "--max-requests"},
 		{"HTTP non-finite value", []string{"http", "send", "GET", url, "--timeout=NaN"}, 2, "", "--timeout"},
 		{"HTTP hexadecimal value", []string{"http", "send", "GET", url, "--timeout=0x1p+1"}, 2, "", "--timeout"},
 	}

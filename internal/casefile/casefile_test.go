@@ -166,6 +166,10 @@ baseline_preserving_control = "confirm-control"`, CheckBoolean, 18},
 				if c.Probes.Boolean == nil || c.Probes.Boolean.Confirmation == nil {
 					t.Fatal("missing confirmation")
 				}
+				noOp := strings.Replace(src, `value = ""`, `value = "confirm-control"`, 1)
+				if _, err := Parse([]byte(noOp)); err == nil {
+					t.Fatal("accepted a confirmation replacement equal to the selected value")
+				}
 			case CheckTime:
 				if c.Probes.Time == nil || c.Probes.Time.ExpectedDelaySeconds != 0.25 {
 					t.Fatal("missing delay")
@@ -190,6 +194,11 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"duplicate table", v1, "[injection]", "[target]\n[injection]"},
 		{"duplicate inline key", v1, `value = ""`, `value = "", value = ""`},
 		{"malformed", v1, `value = ""`, `value = "secret_field`},
+		{"TOML 1.1 short escape", v1, `"true-probe"`, `"\x74rue-probe"`},
+		{"TOML 1.1 multiline inline table", v1, `{ name = "name", value = "baseline" }`,
+			"{\nname = \"name\", value = \"baseline\"\n}"},
+		{"TOML 1.1 inline trailing comma", v1, `{ name = "name", value = "baseline" }`,
+			`{ name = "name", value = "baseline", }`},
 		{"bad utf8", v1, "baseline", "\xff"},
 		{"oversized", v1, "baseline", strings.Repeat("界", MaxCaseBytes/3)},
 		{"unsupported version", v1, "version = 1", "version = 3"},
@@ -224,6 +233,7 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"v1 invalid port", v1, `allowed_origin = "https://case.invalid"`, `allowed_origin = "https://case.invalid:99999"`},
 		{"v1 relative URL", v1, `url = "https://case.invalid/items"`, `url = "/items"`},
 		{"v1 padded URL", v1, `url = "https://case.invalid/items"`, `url = " https://case.invalid/items"`},
+		{"v1 replacing with baseline", v1, `name = "name", value = ""`, `name = "name", value = "true-probe"`},
 		{"v2 GET path mismatch", v2Get, `path = "/items"`, `path = "/different"`},
 		{"v2 POST path mismatch", v2Post, `path = "/items"`, `path = "/different"`},
 		{"v2 GET replacing with baseline", v2Get, `["name", ""]`, `["name", "true-probe"]`},
