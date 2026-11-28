@@ -94,6 +94,7 @@ def powershell(exe, env, home):
         raise Blocked("Windows Documents redirection requires a disposable Actions runner")
     with documents_directory(home):
         version = call("[Console]::Write($PSVersionTable.PSVersion.ToString())")
+        print(f"R1 shell {Path(exe).name}: {version}", flush=True)
         profile = Path(call("[Console]::Write([string]$PROFILE)")).resolve()
         if not profile.is_relative_to(home):
             raise Blocked(f"PowerShell {version} resolves its profile outside the disposable home")
@@ -131,6 +132,7 @@ def accept(binary, name):
         if name in ("powershell", "pwsh"):
             return powershell(exe, env, home)
         version = shell_run([exe, "--version"], env).splitlines()[0]
+        print(f"R1 shell {name}: {version}", flush=True)
         launch = {"bash": [exe, "--noprofile", "--norc", "-c"], "zsh": [exe, "-fc"],
                   "fish": [exe, "--no-config", "-c"]}[name]
         script, marker = {

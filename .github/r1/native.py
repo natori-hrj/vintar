@@ -170,6 +170,9 @@ def identity(root, binary, target, candidate, manifest):
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     print(f"R1 binary observed_sha256={digest} expected_sha256={row['sha256']}\n{metadata}", flush=True)
     check(digest == row["sha256"], f"binary differs from distribution: {digest} != {row['sha256']}")
+    check(metadata.splitlines()[0].endswith(": go1.27.4")
+          and "\tpath\tgithub.com/natori-hrj/vintar/cmd/vintar" in metadata.splitlines(),
+          "unexpected binary toolchain or package")
     for field in (f"vcs.revision={candidate}", "vcs.modified=false", "CGO_ENABLED=0", "-trimpath=true",
                   f"GOOS={govars['GOHOSTOS']}", f"GOARCH={govars['GOHOSTARCH']}"):
         check(f"\tbuild\t{field}" in metadata.splitlines(), f"missing binary metadata: {field}")

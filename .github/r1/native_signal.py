@@ -45,7 +45,10 @@ def interrupt_child(args, cwd, ready, delay):
                     if not ctypes.windll.kernel32.GenerateConsoleCtrlEvent(0, 0):
                         raise Blocked("GenerateConsoleCtrlEvent(CTRL_C_EVENT) failed")
                 else:
-                    child.send_signal(signal.SIGINT)
+                    try:
+                        child.send_signal(signal.SIGINT)
+                    except ProcessLookupError:
+                        pass  # The command finished before signal delivery.
             stdout, stderr = child.communicate(timeout=8)
             return child.returncode, stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace")
         finally:
@@ -98,14 +101,23 @@ def http_send(binary):
 
 def offline(root, binary, command):
     spec = (root / "tests/fixtures/discovery/openapi30.json").read_bytes()
+    if command == "discover":
+        document = json.loads(spec)
+        paths = document["paths"]
+        fixture_path = paths["/a"]
+        for index in range(160):
+            paths[f"/r1-fixture-{index}"] = fixture_path
+        spec = json.dumps(document, separators=(",", ":")).encode()
+    if len(spec) > 900_000:
+        raise AssertionError("offline cancellation input is too large")
     golden = root / "tests/golden/cli/discover/drafts.json"
     drafts = json.loads(golden.read_bytes())["draft_files"]
     name, draft = next((name, draft) for name, draft in drafts.items() if name.startswith("case-24a9c"))
     observed = []
-    for delay in (0.002, 0.004, 0.008, 0.016, 0.032):
+    for delay in (0.002, 0.003, 0.004, 0.006, 0.009, 0.014, 0.023, 0.040):
         with tempfile.TemporaryDirectory(prefix="vintar-r1-interrupt-") as temp:
             work = Path(temp)
-            (work / "openapi.json").write_bytes(spec + b" " * 850_000)
+            (work / "openapi.json").write_bytes(spec.ljust(900_000, b" "))
             (work / name).write_text(draft, encoding="utf-8")
             (work / "answers.json").write_text(
                 '{"version":1,"expected_verdict":"not_detected","parameters":{"q":{"value":"fixture-baseline"}}}',
