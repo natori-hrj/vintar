@@ -25,7 +25,10 @@ import (
 	"github.com/natori-hrj/vintar/internal/report"
 )
 
-const fixedPipelineSecret = "fixture-private-pipeline"
+const (
+	fixedPipelineSecret = "fixture-private-pipeline"
+	fixedResponseMarker = "rawmark" // Shorter than the response cap.
+)
 
 // This composition belongs to the tests: the only possible wire request is
 // the fixed baseline POST below, to a supplied IPv4 loopback listener. Cases
@@ -228,6 +231,7 @@ func TestFixedPipelineMock(t *testing.T) {
 		{"already canceled", 130, 0, false},
 		{"insufficient aggregate ceiling", 2, 0, false},
 		{"invalid case deadline", 2, 0, false},
+		{"independent origin mismatch", 2, 0, false},
 		{"second approval mismatch", 2, 0, false},
 		{"invalid observation", 2, 4, true},
 		{"unexpected second case response", 2, 5, true},
@@ -247,6 +251,8 @@ func TestFixedPipelineMock(t *testing.T) {
 					f.budget--
 				case "invalid case deadline":
 					f.timeDeadline = 0
+				case "independent origin mismatch":
+					f.trusted.port++
 				case "second approval mismatch":
 					i := strings.LastIndex(f.policy, "5e5c0546")
 					f.policy = f.policy[:i] + strings.Replace(f.policy[i:], "5e5c0546", "00000000", 1)
@@ -349,8 +355,9 @@ func readFixedPipelineReport(t *testing.T, data []byte, exit, attempts int) fixe
 	t.Helper()
 	var batch fixedPipelineReport
 	if err := json.Unmarshal(data, &batch); err != nil || batch.Exit != exit ||
-		batch.Requests != attempts || bytes.Contains(data, []byte(fixedPipelineSecret)) {
-		t.Fatal("report does not match exit code and attempts, or contains a credential")
+		batch.Requests != attempts || bytes.Contains(data, []byte(fixedPipelineSecret)) ||
+		bytes.Contains(data, []byte(fixedResponseMarker)) {
+		t.Fatal("report does not match exit code and attempts, or contains private data")
 	}
 	return batch
 }
@@ -370,10 +377,9 @@ func TestFixedPipelineLoopback(t *testing.T) {
 		}
 		if received.Add(1) == 2 {
 			w.WriteHeader(http.StatusTooManyRequests)
-			io.WriteString(w, fixedPipelineSecret)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		io.WriteString(w, fixedResponseMarker)
 	}))
 	server.Listener.Close()
 	server.Listener = listener
@@ -386,14 +392,27 @@ func TestFixedPipelineLoopback(t *testing.T) {
 	defer server.Close()
 
 	rejected := newFixedPipeline(t, server.URL, false)
-	rejected.target.port++
-	data, exit, err := rejected.run(t.Context(), httpio.Send)
-	if err == nil || exit != 2 || len(data) != 0 || len(rejected.lookups) != 0 || connections.Load() != 0 {
+	rejected.trusted.port++ // The attempted target and policy still match the watched listener.
+	var rejectedCalls int
+	data, exit, err := rejected.run(t.Context(), func(ctx context.Context, req httpio.Request, timeout time.Duration, cap int64) (httpio.Response, error) {
+		rejectedCalls++
+		return httpio.Send(ctx, req, timeout, cap)
+	})
+	if err == nil || exit != 2 || len(data) != 0 || len(rejected.lookups) != 0 ||
+		rejectedCalls != 0 || connections.Load() != 0 {
 		t.Fatal("unapproved target reached credentials, output, or the listener")
 	}
 	f := newFixedPipeline(t, server.URL, false)
-	data, exit, err = f.run(t.Context(), httpio.Send)
-	if err != nil || exit != 3 || received.Load() != 2 || !slices.Equal(f.lookups, []string{"PIPELINE_FIXTURE_KEY"}) {
+	var sawMarker bool
+	data, exit, err = f.run(t.Context(), func(ctx context.Context, req httpio.Request, timeout time.Duration, cap int64) (httpio.Response, error) {
+		res, err := httpio.Send(ctx, req, timeout, cap)
+		if res.Status == http.StatusOK && !res.Truncated && string(res.Body) == fixedResponseMarker {
+			sawMarker = true
+		}
+		return res, err
+	})
+	if err != nil || exit != 3 || received.Load() != 2 || !sawMarker ||
+		!slices.Equal(f.lookups, []string{"PIPELINE_FIXTURE_KEY"}) {
 		t.Fatal("rate limit did not stop the two-case loopback batch")
 	}
 	batch := readFixedPipelineReport(t, data, exit, 2)
