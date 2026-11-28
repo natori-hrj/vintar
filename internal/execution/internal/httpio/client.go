@@ -38,6 +38,16 @@ type Response struct {
 // Send performs one GET or POST. The timeout covers the entire transfer,
 // including response body reads. A 429 response is returned without its body.
 func Send(ctx context.Context, req Request, timeout time.Duration, limit int64) (res Response, err error) {
+	return send(ctx, req, timeout, limit, false)
+}
+
+// SendPublic applies URL compatibility for the user-directed http send
+// command. Callers with already-validated request targets use Send.
+func SendPublic(ctx context.Context, req Request, timeout time.Duration, limit int64) (Response, error) {
+	return send(ctx, req, timeout, limit, true)
+}
+
+func send(ctx context.Context, req Request, timeout time.Duration, limit int64, public bool) (res Response, err error) {
 	if timeout <= 0 || timeout > 60*time.Second {
 		return res, errors.New("HTTP timeout must be in (0, 60s]")
 	}
@@ -68,9 +78,19 @@ func Send(ctx context.Context, req Request, timeout time.Duration, limit int64) 
 		out.URL.Hostname() == "" || out.URL.Opaque != "" || out.URL.User != nil {
 		return res, errors.New("HTTP URL must be an absolute http or https URL without user information")
 	}
+	if public {
+		// Do not reinterpret an escaped scope as an interface selection
+		// unless scoped-address dial and wire semantics are established.
+		if strings.Contains(out.URL.Hostname(), "%") {
+			return res, errors.New("scoped HTTP destinations are unsupported")
+		}
+		normalizePublicPath(out.URL)
+	}
 	if req.RawQuery != nil {
 		out.URL.RawQuery = *req.RawQuery
 		out.URL.ForceQuery = false
+	} else if public {
+		out.URL.RawQuery = escapePublicQuery(out.URL.RawQuery)
 	}
 	for _, c := range out.URL.RawQuery {
 		if c <= ' ' || c == 0x7f || c == '#' {

@@ -109,7 +109,7 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 	for _, dep := range imports {
 		switch {
 		case dep == "syscall" && (path == policyReaderPackage || path == "internal/cli"):
-			// Unix discovery and policy readers use nonblocking / no-follow open flags.
+			// File readers use no-follow flags and Windows checks the open handle.
 		case dep == "C", dep == "unsafe", dep == "syscall", dep == "os/exec", dep == "plugin":
 			t.Errorf("unsafe direct import: %s imports %s", path, dep)
 		case dep == "net" || dep == "net/http" || dep == "crypto/tls":

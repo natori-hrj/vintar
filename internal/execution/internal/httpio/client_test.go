@@ -145,6 +145,31 @@ func TestNormalizePortDoesNotRewriteOtherComponents(t *testing.T) {
 	}
 }
 
+func TestSendPublicRejectsScopedIPv6(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skip("IPv6 loopback is unavailable")
+	}
+	var hits atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.Listener.Close()
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+
+	scoped := strings.Replace(server.URL, "[::1]", "[::1%25test-zone]", 1)
+	if _, err := SendPublic(t.Context(), Request{Method: "GET", URL: scoped}, testTimeout, 10); err == nil ||
+		err.Error() != "scoped HTTP destinations are unsupported" || hits.Load() != 0 {
+		t.Fatalf("unsafe scope handling: %v, requests = %d", err, hits.Load())
+	}
+	if _, err := SendPublic(t.Context(), Request{Method: "GET", URL: server.URL}, testTimeout, 10); err != nil || hits.Load() != 1 {
+		t.Fatalf("unscoped loopback request failed: %v, requests = %d", err, hits.Load())
+	}
+}
+
 func TestSendGzipLimitAndMalformedRedirect(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

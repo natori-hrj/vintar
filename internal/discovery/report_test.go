@@ -42,6 +42,73 @@ func TestInventoryAcceptsFiniteDecimals(t *testing.T) {
 	}
 }
 
+func TestInventoryReferencedPathItemHoldsSiblings(t *testing.T) {
+	raw := []byte(`{
+		"openapi": "3.1.0",
+		"paths": {"/a": {"$ref": "#/components/pathItems/café", "summary": "info", "parameters": []}},
+		"components": {"pathItems": {"café": {
+			"future": {},
+			"get": {"parameters": [{"in": "query", "name": "q", "schema": {"type": "string"}}]}
+		}}}
+	}`)
+	report, err := BuildInventory(raw, "spec.json")
+	if err != nil || len(report.Operations) != 1 || len(report.Held) != 2 {
+		t.Fatalf("unexpected inventory: %+v, %v", report, err)
+	}
+	item := report.Operations[0]
+	if item.Source.Pointer != "/paths/~1a" || item.Definition.Pointer != "/components/pathItems/café/get" ||
+		item.Compatible || item.CompatibilityStatus != "unverified" || item.CompatibilityBlocker == nil ||
+		item.CompatibilityBlocker.Source.Pointer != "/paths/~1a/parameters" ||
+		item.CompatibilityBlocker.Reason != referenceSiblingHold {
+		t.Fatalf("operation lost provenance or compatibility blocker: %+v", item)
+	}
+	if report.Held[0].Source.Pointer != "/components/pathItems/café/future" ||
+		report.Held[1].Source.Pointer != "/paths/~1a/parameters" {
+		t.Fatalf("unexpected held declarations: %+v", report.Held)
+	}
+}
+
+func TestInventoryValidatesPathItemsWithoutOperations(t *testing.T) {
+	for _, raw := range []string{
+		`{"openapi":"3.1.0","paths":{"/a":{"parameters":[{}]}}}`,
+		`{"openapi":"3.1.0","paths":{"/a":{"$ref":"other.json#/paths/a"}}}`,
+		`{"openapi":"3.1.0","paths":{"/a":{"$ref":"#/paths/~1a"}}}`,
+	} {
+		if report, err := BuildInventory([]byte(raw), "spec.json"); err == nil || report.ReportType != "" {
+			t.Fatalf("invalid path item produced an inventory: %s", raw)
+		}
+	}
+	for _, raw := range []string{`{"openapi":"3.1.0"}`, `{"openapi":"3.0.01","paths":{}}`} {
+		if report, err := BuildInventory([]byte(raw), "spec.json"); err != nil || len(report.Operations) != 0 {
+			t.Fatalf("valid empty inventory rejected: %s: %v", raw, err)
+		}
+	}
+}
+
+func TestInventoryHoldsReferencedBooleanParameterSchema(t *testing.T) {
+	raw := []byte(`{
+		"openapi": "3.1.0",
+		"paths": {"/a": {"parameters": [{"$ref": "#/components/parameters/Q", "summary": "info"}], "get": {}}},
+		"components": {
+			"parameters": {"Q": {"in": "query", "name": "q", "required": true, "schema": {"$ref": "#/components/schemas/B"}}},
+			"schemas": {"B": false}
+		}
+	}`)
+	report, err := BuildInventory(raw, "spec.json")
+	if err != nil || len(report.Operations) != 1 || len(report.Held) != 1 {
+		t.Fatalf("unexpected inventory: %+v, %v", report, err)
+	}
+	held := report.Held[0]
+	if held.Source.Pointer != "/components/parameters/Q/schema" || held.Definition == nil ||
+		held.Definition.Pointer != "/components/schemas/B" || held.Reason != booleanSchemaHold {
+		t.Fatalf("unexpected schema provenance: %+v", held)
+	}
+	item := report.Operations[0]
+	if item.Compatible || item.CompatibilityBlocker == nil || *item.CompatibilityBlocker != held {
+		t.Fatalf("required boolean schema did not block compatibility: %+v", item)
+	}
+}
+
 func TestInventoryBooleanSchemaHold(t *testing.T) {
 	raw := []byte(`{"openapi":"3.1.0","paths":{"/fixture":{"post":{"requestBody":{"content":{"application/json":{"schema":false}}}}}}}`)
 	report, err := BuildInventory(raw, "spec.json")

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
+	"maps"
 	"slices"
 	"strings"
 	"unicode/utf16"
@@ -59,16 +59,13 @@ type Inventory struct {
 
 const scalarQueryHold = "Parameter is outside the v1 scalar query model. Review it separately."
 const booleanSchemaHold = "Boolean schema is unsupported for compatibility. Review this input separately or use a schema object."
+const referenceSiblingHold = "Reference sibling is unsupported. Move it into the referenced declaration."
 
 var errInventoryInput = errors.New("unsupported or invalid OpenAPI inventory input")
 
 // BuildInventory builds provenance and parameter metadata without constructing
 // requests or supplying any test values.
 func BuildInventory(data []byte, source string) (Inventory, error) {
-	list, err := ListOperations(data)
-	if err != nil || len(list) > 512 {
-		return Inventory{}, errInventoryInput
-	}
 	value, err := strictjson.Parse(data)
 	if err != nil {
 		return Inventory{}, errInventoryInput
@@ -77,16 +74,17 @@ func BuildInventory(data []byte, source string) (Inventory, error) {
 	if !ok || !validDiscoveryDocument(root) {
 		return Inventory{}, errInventoryInput
 	}
-	if paths, ok := root["paths"].(map[string]any); ok {
-		for name := range paths {
-			if !strings.HasPrefix(name, "x-") && (!strings.HasPrefix(name, "/") ||
-				strings.HasPrefix(name, "//") || strings.ContainsAny(name, "?#\\")) {
-				return Inventory{}, errInventoryInput
-			}
-		}
+	version, ok := root["openapi"].(string)
+	if !ok || !(strings.HasPrefix(version, "3.0.") || strings.HasPrefix(version, "3.1.")) ||
+		len(version) == 4 || strings.ContainsFunc(version[4:], func(r rune) bool { return r < '0' || r > '9' }) {
+		return Inventory{}, errInventoryInput
+	}
+	paths, mapPaths := root["paths"].(map[string]any)
+	if _, hasPaths := root["paths"]; !mapPaths && (hasPaths || strings.HasPrefix(version, "3.0.")) {
+		return Inventory{}, errInventoryInput
 	}
 	out := Inventory{
-		Version: root["openapi"].(string), Source: Source{File: source},
+		Version: version, Source: Source{File: source},
 		SchemaVersion: 1, ReportType: "discovery_inventory",
 		Operations: []InventoryOperation{}, Held: []Held{},
 	}
@@ -94,81 +92,60 @@ func BuildInventory(data []byte, source string) (Inventory, error) {
 		out.Held = append(out.Held, Held{Source: Source{source, "/webhooks"}, Reason: "Webhooks are outside the inventory model. Review them separately."})
 	}
 	work := 0
-	for _, row := range list {
-		definition := Source{source, row.Pointer}
-		declaration := Source{source, "/paths/" + escapeToken.Replace(row.Path)}
-		if declaration.Pointer+"/"+row.Method == row.Pointer {
-			declaration = definition
+	resolver := inventoryReferences{root: root, targets: make(map[string]referenceTarget), held: &out.Held, work: &work}
+	for _, path := range slices.Sorted(maps.Keys(paths)) {
+		if strings.HasPrefix(path, "x-") {
+			continue
 		}
-		container := row.Pointer[:strings.LastIndexByte(row.Pointer, '/')]
-		pathItem, err := inventoryObject(root, container)
+		if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || strings.ContainsAny(path, "?#\\") {
+			return Inventory{}, errInventoryInput
+		}
+		declared := Source{source, "/paths/" + escapeToken.Replace(path)}
+		startHolds := len(out.Held)
+		resolved, pathDefinition, _, err := resolver.resolve(paths[path], declared, nil)
+		pathItem, ok := resolved.(map[string]any)
+		if err != nil || !ok {
+			return Inventory{}, errInventoryInput
+		}
+		var pathBlocker *Held
+		for _, hold := range out.Held[startHolds:] {
+			if strings.HasSuffix(hold.Source.Pointer, "/parameters") {
+				pathBlocker = &hold
+				break
+			}
+		}
+		inherited, blockers, err := inventoryParameters(&resolver, pathItem, pathDefinition, version)
 		if err != nil {
 			return Inventory{}, err
 		}
-		operation, err := inventoryObject(root, row.Pointer)
-		if err != nil {
-			return Inventory{}, err
-		}
-		body, hasBody := operation["requestBody"]
-		params, err := inventoryParameters(root, pathItem, Source{source, container}, &out.Held, &work)
-		if err != nil {
-			return Inventory{}, err
-		}
-		override, err := inventoryParameters(root, operation, definition, &out.Held, &work)
-		if err != nil {
-			return Inventory{}, err
-		}
-		var blocker *Held
-		for key, input := range params {
-			if _, replaced := override[key]; !replaced && input.Required && !input.Compatible && input.IgnoredReason == nil {
-				held := Held{Source: input.Source, Reason: scalarQueryHold}
-				if blocker == nil || held.Source.Pointer < blocker.Source.Pointer {
-					blocker = &held
+		for key := range pathItem {
+			if !slices.Contains(methods[:], key) && !slices.Contains([]string{"summary", "description", "servers", "parameters"}, key) && !strings.HasPrefix(key, "x-") {
+				if !resolver.hold(pathDefinition, key, "Unsupported path item field. Review it separately.") {
+					return Inventory{}, errInventoryInput
 				}
 			}
 		}
-		for key, input := range override {
-			params[key] = input
-		}
-		method := strings.ToUpper(row.Method)
-		item := InventoryOperation{
-			Method: method, Path: row.Path, Source: declaration, Definition: definition,
-			ID: shortID("op-", method+" "+row.Path), Inputs: []Input{},
-			CompatibilityBlocker: blocker,
-		}
-		if blocker != nil {
-			item.CompatibilityStatus = "unverified"
-		}
-		if row.Method != "get" {
-			out.Held = append(out.Held, Held{Source: definition, Reason: "Method is outside the v1 GET model. Review it separately."})
-		}
-		if _, has := operation["callbacks"]; has {
-			out.Held = append(out.Held, Held{Source: Source{source, row.Pointer + "/callbacks"}, Reason: "Callbacks are outside the inventory model. Review them separately."})
-		}
-		anyCompatible, allRequiredCompatible := false, true
-		for key, input := range params {
-			input.Compatible = row.Method == "get" && !hasBody && blocker == nil && input.Compatible
-			input.ID = shortID("input-", "["+identityString(item.ID)+", "+identityString(key.location)+", "+identityString(key.name)+"]")
-			item.Inputs = append(item.Inputs, input)
-			anyCompatible = anyCompatible || input.Compatible
-			allRequiredCompatible = allRequiredCompatible && (input.IgnoredReason != nil || !input.Required || input.Compatible)
-		}
-		if hasBody {
-			inventoryBody := bodyInventory{root: root, held: &out.Held, work: &work, operationID: item.ID, version: out.Version}
-			fields, err := inventoryBody.inputs(body, Source{source, row.Pointer + "/requestBody"})
+		for _, method := range methods {
+			raw, found := pathItem[method]
+			if !found {
+				continue
+			}
+			operation, ok := raw.(map[string]any)
+			if !ok || len(out.Operations) == 512 {
+				return Inventory{}, errInventoryInput
+			}
+			definition := Source{source, pathDefinition.Pointer + "/" + method}
+			declaration := declared
+			if declared == pathDefinition {
+				declaration = definition
+			}
+			row := Operation{Method: method, Path: path, Pointer: definition.Pointer}
+			item, err := inventoryOperation(&out, &resolver, row, operation, inherited, blockers, declaration, definition, pathBlocker)
 			if err != nil {
 				return Inventory{}, err
 			}
-			item.Inputs = append(item.Inputs, fields...)
+			out.Operations = append(out.Operations, item)
 		}
-		item.Compatible = anyCompatible && allRequiredCompatible
-		slices.SortFunc(item.Inputs, func(a, b Input) int {
-			if a.Location != b.Location {
-				return strings.Compare(a.Location, b.Location)
-			}
-			return strings.Compare(a.Name, b.Name)
-		})
-		out.Operations = append(out.Operations, item)
 	}
 	slices.SortFunc(out.Operations, func(a, b InventoryOperation) int {
 		if a.Method != b.Method {
@@ -182,117 +159,162 @@ func BuildInventory(data []byte, source string) (Inventory, error) {
 		}
 		return strings.Compare(a.Reason, b.Reason)
 	})
-	out.Held = slices.Compact(out.Held)
+	out.Held = slices.CompactFunc(out.Held, func(a, b Held) bool {
+		if a.Source != b.Source || a.Reason != b.Reason {
+			return false
+		}
+		if a.Definition == nil || b.Definition == nil {
+			return a.Definition == b.Definition
+		}
+		return *a.Definition == *b.Definition
+	})
 	return out, nil
 }
 
-func inventoryObject(root map[string]any, pointer string) (map[string]any, error) {
-	fragment := (&url.URL{Fragment: pointer}).EscapedFragment()
-	value, _, err := lookupLocalPointer(root, "#"+fragment)
-	object, ok := value.(map[string]any)
-	if err != nil || !ok {
-		return nil, errInventoryInput
+func inventoryOperation(out *Inventory, refs *inventoryReferences, row Operation, operation map[string]any, inherited map[parameterKey]Input, blockers []parameterBlocker, declaration, definition Source, blocker *Held) (InventoryOperation, error) {
+	body, hasBody := operation["requestBody"]
+	params := maps.Clone(inherited)
+	override, _, err := inventoryParameters(refs, operation, definition, out.Version)
+	if err != nil {
+		return InventoryOperation{}, err
 	}
-	return object, nil
+	if blocker == nil {
+		for _, entry := range blockers {
+			if _, replaced := override[entry.key]; !replaced {
+				blocker = &entry.held
+				break
+			}
+		}
+	}
+	for key, input := range override {
+		params[key] = input
+	}
+	*refs.work += len(params)
+	if *refs.work > 8192 {
+		return InventoryOperation{}, errInventoryInput
+	}
+	method := strings.ToUpper(row.Method)
+	item := InventoryOperation{
+		Method: method, Path: row.Path, Source: declaration, Definition: definition,
+		ID: shortID("op-", method+" "+row.Path), Inputs: []Input{},
+		CompatibilityBlocker: blocker,
+	}
+	if blocker != nil {
+		item.CompatibilityStatus = "unverified"
+	}
+	if row.Method != "get" {
+		out.Held = append(out.Held, Held{Source: definition, Reason: "Method is outside the v1 GET model. Review it separately."})
+	}
+	if _, has := operation["callbacks"]; has {
+		out.Held = append(out.Held, Held{Source: Source{definition.File, row.Pointer + "/callbacks"}, Reason: "Callbacks are outside the inventory model. Review them separately."})
+	}
+	anyCompatible, allRequiredCompatible := false, true
+	for key, input := range params {
+		input.Compatible = row.Method == "get" && !hasBody && blocker == nil && input.Compatible
+		input.ID = shortID("input-", "["+identityString(item.ID)+", "+identityString(key.location)+", "+identityString(key.name)+"]")
+		item.Inputs = append(item.Inputs, input)
+		anyCompatible = anyCompatible || input.Compatible
+		allRequiredCompatible = allRequiredCompatible && (input.IgnoredReason != nil || !input.Required || input.Compatible)
+	}
+	if hasBody {
+		inventoryBody := bodyInventory{refs: refs, operationID: item.ID, version: out.Version}
+		fields, err := inventoryBody.inputs(body, Source{definition.File, row.Pointer + "/requestBody"})
+		if err != nil {
+			return InventoryOperation{}, err
+		}
+		item.Inputs = append(item.Inputs, fields...)
+	}
+	item.Compatible = anyCompatible && allRequiredCompatible
+	slices.SortStableFunc(item.Inputs, func(a, b Input) int {
+		if a.Location != b.Location {
+			return strings.Compare(a.Location, b.Location)
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	return item, nil
 }
 
 type parameterKey struct{ location, name string }
 
-func inventoryParameters(root, object map[string]any, source Source, held *[]Held, work *int) (map[parameterKey]Input, error) {
+type parameterBlocker struct {
+	key  parameterKey
+	held Held
+}
+
+func inventoryParameters(refs *inventoryReferences, object map[string]any, source Source, version string) (map[parameterKey]Input, []parameterBlocker, error) {
 	result := make(map[parameterKey]Input)
+	var blockers []parameterBlocker
 	value, has := object["parameters"]
 	if !has {
-		return result, nil
+		return result, nil, nil
 	}
 	values, ok := value.([]any)
-	if !ok || len(values) > 8192-*work {
-		return nil, errInventoryInput
+	if !ok || len(values) > 8192-*refs.work {
+		return nil, nil, errInventoryInput
 	}
-	*work += len(values)
+	*refs.work += len(values)
 	for i, value := range values {
 		declared := Source{source.File, fmt.Sprintf("%s/parameters/%d", source.Pointer, i)}
-		parameter, definition, err := resolveParameter(root, value, declared)
-		if err != nil {
-			return nil, err
+		startHolds := len(*refs.held)
+		resolved, definition, trail, err := refs.resolve(value, declared, nil)
+		parameter, ok := resolved.(map[string]any)
+		if err != nil || !ok {
+			return nil, nil, errInventoryInput
 		}
 		location, locationOK := parameter["in"].(string)
 		name, nameOK := parameter["name"].(string)
 		if !locationOK || !nameOK || location == "" || name == "" {
-			return nil, errInventoryInput
+			return nil, nil, errInventoryInput
 		}
 		key := parameterKey{location, name}
 		if location == "header" {
 			key.name = strings.ToLower(name)
 		}
 		if _, found := result[key]; found {
-			return nil, errInventoryInput
+			return nil, nil, errInventoryInput
 		}
 		required, validBool := parameter["required"].(bool)
 		if _, explicit := parameter["required"]; explicit && !validBool || location == "path" && !required {
-			return nil, errInventoryInput
+			return nil, nil, errInventoryInput
 		}
 		item := Input{Location: location, Name: name, Required: required, Source: declared, Definition: definition}
 		if location == "header" && slices.Contains([]string{"accept", "content-type", "authorization"}, key.name) {
 			reason := "OpenAPI ignores this header parameter. Remove the parameter declaration."
 			item.IgnoredReason = &reason
 		} else {
-			compatible, err := scalarQuery(root, parameter, definition, location)
-			if err != nil {
-				return nil, err
+			schema := map[string]any{}
+			if raw, hasSchema := parameter["schema"]; hasSchema {
+				schema, _, _, err = refs.schema(raw, Source{definition.File, definition.Pointer + "/schema"}, trail, version)
+				if err != nil {
+					return nil, nil, err
+				}
 			}
-			item.Compatible = compatible
+			item.Compatible = len(*refs.held) == startHolds && scalarQuery(schema, parameter, location)
 			switch {
 			case !slices.Contains([]string{"path", "query", "header", "cookie"}, location):
-				*held = append(*held, Held{Source: Source{source.File, definition.Pointer + "/in"}, Reason: "Unknown parameter location. Use path, query, header, or cookie."})
-			case !compatible:
-				*held = append(*held, Held{Source: declared, Reason: scalarQueryHold})
+				*refs.held = append(*refs.held, Held{Source: Source{source.File, definition.Pointer + "/in"}, Reason: "Unknown parameter location. Use path, query, header, or cookie."})
+			case !item.Compatible && schema != nil:
+				*refs.held = append(*refs.held, Held{Source: declared, Reason: scalarQueryHold})
+			}
+			for _, held := range (*refs.held)[startHolds:] {
+				if required || strings.HasSuffix(held.Source.Pointer, "/required") {
+					blockers = append(blockers, parameterBlocker{key, held})
+					break
+				}
 			}
 		}
 		result[key] = item
 	}
-	return result, nil
+	return result, blockers, nil
 }
 
-func resolveParameter(root map[string]any, value any, definition Source) (map[string]any, Source, error) {
-	seen := map[string]bool{definition.Pointer: true}
-	for i := 0; i <= 24; i++ {
-		item, ok := value.(map[string]any)
-		if !ok {
-			break
-		}
-		ref, has := item["$ref"]
-		if !has {
-			return item, definition, nil
-		}
-		text, ok := ref.(string)
-		if !ok || len(item) != 1 {
-			break
-		}
-		next, pointer, err := lookupLocalPointer(root, text)
-		if err != nil || seen[pointer] {
-			break
-		}
-		seen[pointer] = true
-		value, definition.Pointer = next, pointer
-	}
-	return nil, Source{}, errInventoryInput
-}
-
-func scalarQuery(root, parameter map[string]any, definition Source, location string) (bool, error) {
-	value, has := parameter["schema"]
-	if !has {
-		return false, nil
-	}
-	schema, _, err := resolveParameter(root, value, Source{definition.File, definition.Pointer + "/schema"})
-	if err != nil {
-		return false, err
-	}
+func scalarQuery(schema, parameter map[string]any, location string) bool {
 	style, hasStyle := parameter["style"]
 	reserved, hasReserved := parameter["allowReserved"]
 	_, hasContent := parameter["content"]
 	kind, _ := schema["type"].(string)
 	return location == "query" && slices.Contains([]string{"string", "integer", "number", "boolean"}, kind) &&
-		(!hasStyle || style == "form") && (!hasReserved || reserved == false) && !hasContent, nil
+		(!hasStyle || style == "form") && (!hasReserved || reserved == false) && !hasContent
 }
 
 func shortID(prefix, input string) string {

@@ -213,6 +213,9 @@ func lookupLocalPointer(root map[string]any, ref string) (any, string, error) {
 		return nil, "", errPathItemRef
 	}
 	fragment := ref[1:]
+	if fragment == "" {
+		return nil, "", errPathItemRef
+	}
 	// Require a URI fragment: non-ASCII and characters outside RFC 3986's
 	// fragment grammar must be percent-encoded.
 	for i := 0; i < len(fragment); i++ {
@@ -221,6 +224,13 @@ func lookupLocalPointer(root map[string]any, ref string) (any, string, error) {
 			strings.ContainsRune("-._~!$&'()*+,;=:@/?%", rune(b))) {
 			return nil, "", errPathItemRef
 		}
+	}
+	return lookupPointerFragment(root, fragment)
+}
+
+func lookupPointerFragment(root map[string]any, fragment string) (any, string, error) {
+	if fragment == "" {
+		return root, "", nil
 	}
 	pointer, err := url.PathUnescape(fragment)
 	if err != nil || !utf8.ValidString(pointer) || !strings.HasPrefix(pointer, "/") {

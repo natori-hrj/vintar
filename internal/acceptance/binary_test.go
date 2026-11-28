@@ -145,6 +145,17 @@ func TestProductBinary(t *testing.T) {
 		if len(received) != 1 || <-received != "GET /a%2Fb?x=one%20two%2B" {
 			t.Fatal("expected precisely one request with the approved bytes")
 		}
+		for _, tc := range []struct{ suffix, target string }{
+			{"/a/./b/../c?x=a b&y=é&z=+", "/a/c?x=a%20b&y=%C3%A9&z=+"},
+			{"/a//b/../c", "/a//c"},
+			{"/a/%2e/%2E%2E/c?x=%2f&x=", "/a/%2e/%2E%2E/c?x=%2f&x="},
+			{"/a/..?", "/?"},
+		} {
+			got := runProduct(t, binary, cwd, "http", "send", "GET", server.URL+tc.suffix)
+			if got.code != 0 || got.stderr != "" || len(received) != 1 || <-received != "GET "+tc.target {
+				t.Fatalf("%q did not send exactly one request with target %q: %+v", tc.suffix, tc.target, got)
+			}
+		}
 	})
 
 	for _, tc := range []struct {
