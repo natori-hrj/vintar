@@ -74,6 +74,9 @@ func checkProductPackage(t *testing.T, pkg listedPackage) {
 	case path == punycodePackage, path == normalizationPackage,
 		path == "golang.org/x/text/secure/bidirule",
 		path == "golang.org/x/text/unicode/bidi", path == "golang.org/x/text/transform":
+	case path == "golang.org/x/text/cases", path == "golang.org/x/text/language",
+		path == "golang.org/x/text/internal", path == "golang.org/x/text/internal/tag",
+		path == "golang.org/x/text/internal/language", path == "golang.org/x/text/internal/language/compact":
 	case pkg.Module != nil && (pkg.Module.Path == tomlModule || pkg.Module.Path == yamlModule):
 		for _, dep := range pkg.Imports {
 			if dep == "os/exec" || dep == "plugin" || dep == "C" || dep == "net" || strings.HasPrefix(dep, "net/http") {
@@ -127,8 +130,10 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 				t.Errorf("YAML decoding must stay offline in discovery: %s imports %s", path, dep)
 			}
 		case strings.HasPrefix(dep, "golang.org/x/net/") || strings.HasPrefix(dep, "golang.org/x/text/"):
-			if path != "internal/casefile" || dep != punycodePackage && dep != normalizationPackage {
-				t.Errorf("only casefile may import the hostname codecs: %s imports %s", path, dep)
+			casefileCodec := path == "internal/casefile" && (dep == punycodePackage || dep == normalizationPackage)
+			publicHTTPCodec := path == httpTransportPackage && (dep == punycodePackage || dep == "golang.org/x/text/cases" || dep == "golang.org/x/text/language")
+			if !casefileCodec && !publicHTTPCodec {
+				t.Errorf("unapproved hostname codec: %s imports %s", path, dep)
 			}
 		case strings.HasPrefix(dep, modulePath+"/"):
 			permitted := false

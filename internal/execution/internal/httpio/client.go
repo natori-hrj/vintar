@@ -79,12 +79,11 @@ func send(ctx context.Context, req Request, timeout time.Duration, limit int64, 
 		return res, errors.New("HTTP URL must be an absolute http or https URL without user information")
 	}
 	if public {
-		// Do not reinterpret an escaped scope as an interface selection
-		// unless scoped-address dial and wire semantics are established.
-		if strings.Contains(out.URL.Hostname(), "%") {
-			return res, errors.New("scoped HTTP destinations are unsupported")
+		authority, rawPath := publicTargetParts(target)
+		if err := normalizePublicHost(out.URL, authority); err != nil {
+			return res, err
 		}
-		normalizePublicPath(out.URL)
+		normalizePublicPath(out.URL, rawPath)
 	}
 	if req.RawQuery != nil {
 		out.URL.RawQuery = *req.RawQuery

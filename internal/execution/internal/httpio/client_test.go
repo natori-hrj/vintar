@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -167,6 +168,37 @@ func TestSendPublicRejectsScopedIPv6(t *testing.T) {
 	}
 	if _, err := SendPublic(t.Context(), Request{Method: "GET", URL: server.URL}, testTimeout, 10); err != nil || hits.Load() != 1 {
 		t.Fatalf("unscoped loopback request failed: %v, requests = %d", err, hits.Load())
+	}
+}
+
+func TestPublicHostCompatibility(t *testing.T) {
+	for _, tc := range []struct{ host, want string }{
+		{"例え.テスト", "xn--r8jz45g.xn--zckzah"},
+		{"xn--r8jz45g.xn--zckzah", "xn--r8jz45g.xn--zckzah"},
+		{"İ.invalid", "xn--i-9bb.invalid"},
+		{"127．0．0．1", "127.0.0.1"},
+		{"[::1]", "[::1]"},
+		{"ｅxample.invalid", ""},
+		{"１２７.0.0.1", ""},
+		{"127.00.0.1", ""},
+		{"%C3%A9.invalid", ""},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			raw := "http://" + tc.host + ":8080/fixed"
+			target, err := url.Parse(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authority, _ := publicTargetParts(raw)
+			err = normalizePublicHost(target, authority)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatal("unsupported host was accepted")
+				}
+			} else if err != nil || target.Host != tc.want+":8080" {
+				t.Fatalf("host = %q, %v; want %q", target.Host, err, tc.want)
+			}
+		})
 	}
 }
 

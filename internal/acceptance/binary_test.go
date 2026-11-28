@@ -149,12 +149,25 @@ func TestProductBinary(t *testing.T) {
 			{"/a/./b/../c?x=a b&y=é&z=+", "/a/c?x=a%20b&y=%C3%A9&z=+"},
 			{"/a//b/../c", "/a//c"},
 			{"/a/%2e/%2E%2E/c?x=%2f&x=", "/a/%2e/%2E%2E/c?x=%2f&x="},
+			{"/a/%2e/b c", "/a/%2e/b%20c"},
+			{"/a/%2e/b%20c", "/a/%2e/b%20c"},
+			{"/a/%2f/é b", "/a/%2f/%C3%A9%20b"},
 			{"/a/..?", "/?"},
 		} {
 			got := runProduct(t, binary, cwd, "http", "send", "GET", server.URL+tc.suffix)
 			if got.code != 0 || got.stderr != "" || len(received) != 1 || <-received != "GET "+tc.target {
 				t.Fatalf("%q did not send exactly one request with target %q: %+v", tc.suffix, tc.target, got)
 			}
+		}
+		wideDigits := strings.Replace(server.URL, "127.0.0.1", "１２７.0.0.1", 1)
+		got = runProduct(t, binary, cwd, "http", "send", "GET", wideDigits+"/fixed")
+		if got.code != 1 || len(received) != 0 || strings.Contains(got.stdout+got.stderr, "１２７") {
+			t.Fatalf("width alias was not safely refused: %+v, requests = %d", got, len(received))
+		}
+		wideSeparators := strings.Replace(server.URL, "127.0.0.1", "127．0．0．1", 1)
+		got = runProduct(t, binary, cwd, "http", "send", "GET", wideSeparators+"/fixed")
+		if got.code != 0 || len(received) != 1 || <-received != "GET /fixed" {
+			t.Fatalf("recognized label separators did not preserve the target: %+v", got)
 		}
 	})
 
