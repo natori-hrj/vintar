@@ -200,6 +200,41 @@ func TestMarshalBatchRejectsContradictoryOperationalFacts(t *testing.T) {
 	assertNoWriterOutput(t, []string{"a"}, []Record{{"a", decision.Inconclusive, result}})
 }
 
+func TestMarshalBatchConfirmationStopUsesRecordedAttempt(t *testing.T) {
+	result := writerBoolean()
+	result.Verification.Verdict = decision.Inconclusive
+	result.Verification.Reason = "boolean_candidate"
+	result.Verification.Evidence = &decision.Similarity{BaselineTrue: 1}
+	for _, i := range []int{4, 5} {
+		result.Verification.Observations[i].BodyDigest = strings.Repeat("c", 64)
+	}
+	result.Verdict, result.Reason, result.RequestCount = decision.Inconclusive, "confirmation_timeout", 7
+	result.Confirmation = &decision.Confirmation{
+		Configured: true, Status: "operational", Reason: &result.Reason, RequestCount: 1,
+	}
+	result.Facts.Operational = &decision.OperationalFacts{
+		Stage: "confirmation", Sequence: 7, Kind: "baseline", Condition: "timeout",
+	}
+	planned := []string{"a"}
+	records := []Record{{"a", decision.Inconclusive, result}}
+	if _, exit, err := MarshalBatch(planned, records, false); err != nil || exit != 3 {
+		t.Fatalf("recorded confirmation timeout rejected: exit=%d, err=%v", exit, err)
+	}
+	result.Facts.Operational.Sequence = 8
+	result.Facts.Operational.Kind = "true_1"
+	assertNoWriterOutput(t, planned, records)
+
+	result.Reason, result.RequestCount = "confirmation_budget_unavailable", 6
+	result.Confirmation.RequestCount = 0
+	result.Facts.Operational.Sequence = 7
+	result.Facts.Operational.Kind = "baseline"
+	result.Facts.Operational.Condition = "budget_unavailable"
+	records[0].Decision = result
+	if _, exit, err := MarshalBatch(planned, records, false); err != nil || exit != 3 {
+		t.Fatalf("budget stop before the next attempt rejected: exit=%d, err=%v", exit, err)
+	}
+}
+
 func TestMarshalBatchFactVariants(t *testing.T) {
 	schema := writerSchema(t)
 	response := writerBoolean()

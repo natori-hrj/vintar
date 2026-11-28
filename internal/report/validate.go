@@ -96,48 +96,26 @@ func validError(r decision.Result) bool {
 
 func validBoolean(r decision.Result) bool {
 	v := r.Verification
-	if v == nil || !validVerification(v) || !matchesBooleanObservations(r) {
+	if v == nil || !validVerification(v) {
 		return false
 	}
-	initialUnchanged := r.Reason == v.Reason && r.Verdict == v.Verdict && r.RequestCount == v.RequestCount
+	if !oneOf(v.Reason, "boolean_differential", "connection_error") {
+		return matchesBooleanObservations(r)
+	}
+	// Historical summaries do not represent outcomes of the released
+	// Boolean classifier. Retain bounded structural validation for them.
+	if r.Reason != v.Reason || r.Verdict != v.Verdict || r.RequestCount != v.RequestCount {
+		return false
+	}
 	c := r.Confirmation
 	if c == nil {
-		return initialUnchanged
-	}
-	if c.Status == "not_configured" {
-		return initialUnchanged && !c.Configured && c.Reason == nil && c.RequestCount == 0
-	}
-	if !c.Configured || c.Reason == nil || c.RequestCount < 0 || c.RequestCount > 12 ||
-		r.RequestCount != v.RequestCount+c.RequestCount {
-		return false
-	}
-	eligible := eligibleInitial(v)
-	if c.Status == "not_eligible" {
-		return !eligible && initialUnchanged && c.RequestCount == 0 && *c.Reason == "initial_not_eligible"
-	}
-	if !eligible || r.Verdict != decision.Inconclusive {
-		return false
+		return true
 	}
 	switch c.Status {
-	case "matched":
-		return *c.Reason == "confirmation_pattern_matched" && c.RequestCount == 12 && r.Reason == "boolean_candidate"
-	case "mismatch":
-		return *c.Reason == "candidate_confirmation_mismatch" && c.RequestCount == 12 && r.Reason == *c.Reason
-	case "operational":
-		if r.Reason != *c.Reason {
-			return false
-		}
-		switch r.Reason {
-		case "confirmation_budget_unavailable", "confirmation_preflight_failed":
-			return c.RequestCount == 0
-		case "confirmation_budget_exceeded":
-			return true
-		case "confirmation_unstable", "confirmation_cross_phase_mismatch":
-			return c.RequestCount == 12
-		case "confirmation_rate_limit_interrupted", "confirmation_timeout", "confirmation_request_failed",
-			"confirmation_rate_limited", "confirmation_truncated", "confirmation_non_success_status":
-			return c.RequestCount >= 1
-		}
+	case "not_configured":
+		return !c.Configured && c.Reason == nil && c.RequestCount == 0
+	case "not_eligible":
+		return c.Configured && c.Reason != nil && *c.Reason == "initial_not_eligible" && c.RequestCount == 0
 	}
 	return false
 }
@@ -216,14 +194,13 @@ func validVerification(v *decision.Verification) bool {
 
 func matchesBooleanObservations(r decision.Result) bool {
 	v := r.Verification
-	// Historical summaries do not represent outcomes of the released
-	// Boolean classifier. Retain their bounded structural validation.
-	if oneOf(v.Reason, "boolean_differential", "connection_error") {
-		return true
-	}
 	input := decision.BooleanInput{
 		Observations: v.Observations, Failures: v.Failures,
 		RequestCount: v.RequestCount, BudgetUnavailable: v.Reason == "budget_unavailable",
+		Confirmation: r.Confirmation,
+	}
+	if c := r.Confirmation; c != nil && c.Configured && c.Status != "not_eligible" {
+		input.ConfirmationFacts = r.Facts
 	}
 	if f := r.Facts.Response; f != nil {
 		input.UnstablePairs = f.UnstablePairs
@@ -233,32 +210,14 @@ func matchesBooleanObservations(r decision.Result) bool {
 		}
 	}
 	replayed, err := decision.EvaluateBoolean(input)
-	if err != nil || replayed.Verdict != v.Verdict || replayed.Reason != v.Reason ||
+	if err != nil || replayed.Verdict != r.Verdict || replayed.Reason != r.Reason ||
+		replayed.RequestCount != r.RequestCount ||
+		replayed.Verification.Verdict != v.Verdict || replayed.Verification.Reason != v.Reason ||
 		!reflect.DeepEqual(replayed.Verification.Evidence, v.Evidence) {
 		return false
 	}
-	if c := r.Confirmation; c != nil && c.Configured && c.Status != "not_eligible" {
-		// A recorded confirmation has its own facts and follows separate
-		// validation; only its initial verification is replayable.
-		return true
-	}
 	return reflect.DeepEqual(replayed.Facts.Operational, r.Facts.Operational) &&
 		reflect.DeepEqual(replayed.Facts.Response, r.Facts.Response)
-}
-
-func eligibleInitial(v *decision.Verification) bool {
-	if v.Verdict != decision.Inconclusive || v.Reason != "boolean_candidate" || v.RequestCount != 6 ||
-		len(v.Observations) != 6 || len(v.Failures) != 0 || v.Evidence == nil {
-		return false
-	}
-	kinds := make(map[string]int, 3)
-	for _, o := range v.Observations {
-		if o.Truncated || o.StatusCode < 200 || o.StatusCode > 299 {
-			return false
-		}
-		kinds[o.Kind]++
-	}
-	return kinds["baseline"] == 2 && kinds["true"] == 2 && kinds["false"] == 2
 }
 
 func booleanKind(kind string) bool { return oneOf(kind, "baseline", "true", "false") }

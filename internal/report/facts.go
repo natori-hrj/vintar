@@ -48,9 +48,9 @@ func validOperationalFacts(r decision.Result, f *decision.OperationalFacts) bool
 	switch r.Check {
 	case decision.Boolean:
 		if r.Confirmation != nil && r.Confirmation.Status == "operational" {
-			// Confirmation facts use the combined initial/confirmation sequence.
-			if f.Stage != "confirmation" || int64(f.Sequence) <= r.Verification.RequestCount || !confirmationKind(f.Kind) ||
-				int64(f.Sequence) > r.RequestCount+1 || !confirmationCondition(r.Reason, f.Condition) {
+			// Decision replay has already validated the stop reason,
+			// combined sequence, and recorded observation kind.
+			if f.Stage != "confirmation" {
 				return false
 			}
 		} else {
@@ -140,30 +140,6 @@ func errorCondition(reason, condition string) bool {
 		return oneOf(condition, "rate_limit", "cancelled")
 	}
 	return responseCondition(reason, condition)
-}
-
-func confirmationCondition(reason, condition string) bool {
-	switch reason {
-	case "confirmation_budget_unavailable":
-		return condition == "budget_unavailable"
-	case "confirmation_preflight_failed":
-		return condition == "preflight_failed"
-	case "confirmation_budget_exceeded":
-		return condition == "budget_exceeded"
-	case "confirmation_rate_limit_interrupted":
-		return condition == "rate_limit_interrupted"
-	case "confirmation_timeout":
-		return condition == "timeout"
-	case "confirmation_request_failed":
-		return oneOf(condition, "connection", "response_read", "unknown")
-	case "confirmation_rate_limited":
-		return condition == "rate_limited"
-	case "confirmation_truncated":
-		return condition == "truncated"
-	case "confirmation_non_success_status":
-		return condition == "non_success_status"
-	}
-	return false
 }
 
 func confirmationKind(kind string) bool {
