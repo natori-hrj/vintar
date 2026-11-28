@@ -25,7 +25,8 @@ func validDiscoveryDocument(root map[string]any) bool {
 					return false
 				}
 			}
-		case bool, string, json.Number, nil:
+		case bool, string, json.Number, float64, nil:
+			// strictjson.Parse rejects non-finite floats before validation.
 		default:
 			return false
 		}

@@ -21,6 +21,27 @@ func TestInventoryValidatesWholeDocument(t *testing.T) {
 	}
 }
 
+func TestInventoryAcceptsFiniteDecimals(t *testing.T) {
+	for format, data := range map[string][]byte{
+		"json": []byte(`{"openapi":"3.0.0","paths":{},"x-note":[0.5,-0.0,1e-2]}`),
+		"yaml": []byte("openapi: '3.0.0'\npaths: {}\nx-note: [0.5, -0.0, 1e-2]\n"),
+	} {
+		t.Run(format, func(t *testing.T) {
+			if format == "yaml" {
+				decoded, err := DecodeYAML(data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = decoded
+			}
+			report, err := BuildInventory(data, "spec."+format)
+			if err != nil || report.ReportType == "" || len(report.Operations) != 0 {
+				t.Fatalf("valid decimals did not produce an empty inventory: %v", err)
+			}
+		})
+	}
+}
+
 func TestInventoryBooleanSchemaHold(t *testing.T) {
 	raw := []byte(`{"openapi":"3.1.0","paths":{"/fixture":{"post":{"requestBody":{"content":{"application/json":{"schema":false}}}}}}}`)
 	report, err := BuildInventory(raw, "spec.json")
