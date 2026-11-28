@@ -165,6 +165,6 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.17.1",
     "twine==7.0.0",
-    "types-pyyaml==6.0.12.20261113",
+    "types-pyyaml==6.0.12.20261122",
     "uvicorn>=0.54.0",
 ]
