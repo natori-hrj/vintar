@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 
@@ -53,10 +52,7 @@ func runHTTPSend(ctx context.Context, args arguments, stdout, stderr io.Writer) 
 		query := casefile.EncodeQuery(params)
 		request.RawQuery = &query
 	}
-	seconds, err := strconv.ParseFloat(strings.TrimSpace(args.value("timeout")), 64)
-	if err != nil {
-		return diagnostic(stderr, 2, "invalid timeout")
-	}
+	seconds := args.decimals["timeout"]
 	response, err := execution.SendHTTP(ctx, request, time.Duration(seconds*float64(time.Second)), 1<<20)
 	if ctx.Err() != nil {
 		return diagnostic(stderr, 130, "interrupted")

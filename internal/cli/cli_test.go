@@ -39,7 +39,9 @@ func TestRun(t *testing.T) {
 		{"verify requires authorization", []string{"verify", "--cases", secret}, 2, "", "explicit testing authorization"},
 		{"verify upper boundaries", []string{"verify", "--cases", secret, "--authorized", "--max-requests=768", "--max-response-size=1048576", "--time-deadline=120", "--rps=10", "--timeout=60"}, 2, "", "not available"},
 		{"verify small count", []string{"verify", "--cases", secret, "--authorized", "--max-requests=0"}, 2, "", "--max-requests"},
-		{"verify fraction as count", []string{"verify", "--cases", secret, "--authorized", "--max-requests=1.0"}, 2, "", "--max-requests"},
+		{"verify zero fraction as count", []string{"verify", "--cases", secret, "--max-requests=1.00"}, 2, "", "explicit testing authorization"},
+		{"verify nonzero fraction as count", []string{"verify", "--cases", secret, "--max-requests=1.01"}, 2, "", "--max-requests"},
+		{"verify explicit error wins over absent option", []string{"verify", "--timeout=bad", "--max-requests=0"}, 2, "", "--timeout"},
 		{"verify large deadline", []string{"verify", "--cases", secret, "--authorized", "--time-deadline=120.01"}, 2, "", "--time-deadline"},
 		{"sqli requires authorization", []string{"sqli", "verify", "--url", url, "--allow-origin", secret, "--inject-param", secret, "--true-payload", secret, "--false-payload", secret}, 2, "", "explicit authorization"},
 		{"sqli accepts public flags", []string{"sqli", "verify", "--url", url, "--allow-origin=https://example.invalid", "--inject-param", "id", "--true-payload", "fixture-a", "--false-payload", "fixture-b", "--authorized", "--append", "--pretty", "--param", "id=1", "--param=id=2", "--occurrence=0"}, 2, "", "not available"},
@@ -69,6 +71,8 @@ func TestRun(t *testing.T) {
 		{"verify Unicode integer limit rejected", []string{"verify", "--cases", "unused", "--max-requests=７６８"}, 2, "", "--max-requests"},
 		{"HTTP non-finite value", []string{"http", "send", "GET", url, "--timeout=NaN"}, 2, "", "--timeout"},
 		{"HTTP hexadecimal value", []string{"http", "send", "GET", url, "--timeout=0x1p+1"}, 2, "", "--timeout"},
+		{"HTTP exponent separators", []string{"http", "send", "PATCH", "unused", "-t1_._0e+_1"}, 1, "Only GET and POST", ""},
+		{"HTTP separators with whitespace rejected", []string{"http", "send", "PATCH", "unused", "--timeout= 1_0 "}, 2, "", "--timeout"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,7 +116,7 @@ func TestRunHTTPSendLocal(t *testing.T) {
 	exit = Run(t.Context(), []string{
 		"http", "send", "poſt", server.URL + "/a%2Fb?old=private-token",
 		"-p", "q=a b+", "-p", "q=", "-C", "first=one", "-C", "second=two",
-		"-C", "first=last", "--body", "sample",
+		"-C", "first=last", "--body", "sample", "-t0_._5",
 	}, &stdout, &stderr)
 	if exit != 0 || stderr.Len() != 0 {
 		t.Fatalf("exit = %d, stderr = %q", exit, stderr.String())
