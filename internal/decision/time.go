@@ -13,42 +13,23 @@ func EvaluateTime(in TimeInput) (Result, error) {
 	if n < 0 || n > int64(len(timeKinds)) {
 		return Result{}, errInvalidEvidence
 	}
-	result := Result{Check: Time, Verdict: Inconclusive, RequestCount: n}
-	status := "inconclusive"
+	var reason string
+	var facts Facts
 	switch {
 	case in.Terminal != nil:
 		f := *in.Terminal
-		if in.Predicates != nil || f.Stage != "time" || f.Sequence < 1 ||
-			f.Sequence > len(timeKinds) || f.Kind != timeKinds[f.Sequence-1] ||
-			!validOperationalStatus(f) {
+		if in.Predicates != nil {
 			return Result{}, errInvalidEvidence
 		}
-		if f.Condition == "deadline" && int64(f.Sequence) == n+1 {
-			result.Reason = "incomplete_probes"
-		} else if int64(f.Sequence) != n {
-			return Result{}, errInvalidEvidence
-		} else {
-			switch f.Condition {
-			case "timeout":
-				result.Reason = "probe_timeout"
-			case "request_failed":
-				result.Reason = "probe_failed"
-			case "interrupted", "deadline":
-				result.Reason = "probe_interrupted"
-			case "rate_limited", "truncated", "non_success_status":
-				result.Reason = responseReason(f.Condition)
-			default:
-				return Result{}, errInvalidEvidence
-			}
-		}
+		reason = timeStopReason(n, f)
 		f.StatusCode = copyPointer(f.StatusCode)
-		result.Facts.Operational = &f
+		facts.Operational = &f
 	case n < int64(len(timeKinds)):
 		if in.Predicates != nil {
 			return Result{}, errInvalidEvidence
 		}
-		result.Reason = "incomplete_probes"
-		result.Facts.Operational = &OperationalFacts{
+		reason = "incomplete_probes"
+		facts.Operational = &OperationalFacts{
 			Stage: "time", Sequence: int(n) + 1, Kind: timeKinds[n], Condition: "deadline",
 		}
 	case in.Predicates == nil:
@@ -74,15 +55,15 @@ func EvaluateTime(in TimeInput) (Result, error) {
 		baselineControlUnstable := len(causes) != 0 && causes[0] != "delay_span"
 		switch {
 		case baselineControlUnstable || (p.DelaySpanExceeded && !candidate):
-			result.Reason = "unstable_timing"
-			result.Facts.Timing = &TimingFacts{InstabilityCauses: causes}
+			reason = "unstable_timing"
+			facts.Timing = &TimingFacts{InstabilityCauses: causes}
 		case candidate:
-			result.Reason, status = "timing_pattern_matched", "candidate"
+			reason = "timing_pattern_matched"
 		case p.NoDelayConditionMet:
-			result.Reason, status, result.Verdict = "timing_pattern_not_matched", "not_confirmed", NotDetected
+			reason = "timing_pattern_not_matched"
 		default:
-			result.Reason = "ambiguous_timing"
-			result.Facts.Timing = &TimingFacts{
+			reason = "ambiguous_timing"
+			facts.Timing = &TimingFacts{
 				InstabilityCauses:   causes,
 				CandidateMedianMet:  &p.CandidateMedianMet,
 				CandidateMarginMet:  &p.CandidateMarginMet,
@@ -90,8 +71,79 @@ func EvaluateTime(in TimeInput) (Result, error) {
 			}
 		}
 	}
-	result.Timing = &Timing{Status: status, Reason: result.Reason, RequestCount: n}
-	return result, nil
+	return timeResult(n, reason, facts)
+}
+
+func timeStopReason(n int64, f OperationalFacts) string {
+	if f.Stage != "time" || f.Sequence < 1 || f.Sequence > len(timeKinds) ||
+		f.Kind != timeKinds[f.Sequence-1] || !validOperationalStatus(f) {
+		return ""
+	}
+	if f.Condition == "deadline" && int64(f.Sequence) == n+1 {
+		return "incomplete_probes"
+	}
+	if int64(f.Sequence) != n {
+		return ""
+	}
+	switch f.Condition {
+	case "timeout":
+		return "probe_timeout"
+	case "request_failed":
+		return "probe_failed"
+	case "interrupted", "deadline":
+		return "probe_interrupted"
+	case "rate_limited", "truncated", "non_success_status":
+		return responseReason(f.Condition)
+	}
+	return ""
+}
+
+// timeResult is shared by assessment and validation of saved summaries.
+func timeResult(n int64, reason string, facts Facts) (Result, error) {
+	if n < 0 || n > int64(len(timeKinds)) || reason == "" {
+		return Result{}, errInvalidEvidence
+	}
+	verdict, status := Inconclusive, "inconclusive"
+	if facts.Operational != nil {
+		if facts.Timing != nil || timeStopReason(n, *facts.Operational) != reason {
+			return Result{}, errInvalidEvidence
+		}
+	} else {
+		if n != int64(len(timeKinds)) {
+			return Result{}, errInvalidEvidence
+		}
+		switch reason {
+		case "timing_pattern_matched":
+			status = "candidate"
+		case "timing_pattern_not_matched":
+			verdict, status = NotDetected, "not_confirmed"
+		case "unstable_timing", "ambiguous_timing":
+		default:
+			return Result{}, errInvalidEvidence
+		}
+		if !validTimingFacts(reason, facts.Timing) {
+			return Result{}, errInvalidEvidence
+		}
+	}
+	return Result{
+		Check: Time, Verdict: verdict, Reason: reason, RequestCount: n,
+		Timing: &Timing{Status: status, Reason: reason, RequestCount: n}, Facts: facts,
+	}, nil
+}
+
+func validTimingFacts(reason string, f *TimingFacts) bool {
+	switch reason {
+	case "unstable_timing":
+		return f != nil && len(f.InstabilityCauses) != 0 &&
+			orderedSubset(f.InstabilityCauses, []string{"baseline_span", "control_span", "baseline_control_difference", "drift", "delay_span"}) &&
+			f.CandidateMedianMet == nil && f.CandidateMarginMet == nil && f.NoDelayConditionMet == nil
+	case "ambiguous_timing":
+		return f != nil && len(f.InstabilityCauses) == 0 && f.CandidateMedianMet != nil &&
+			f.CandidateMarginMet != nil && f.NoDelayConditionMet != nil &&
+			!(*f.CandidateMedianMet && *f.CandidateMarginMet) && !*f.NoDelayConditionMet
+	default:
+		return f == nil
+	}
 }
 
 func validStatus(status int) bool   { return status >= 100 && status <= 599 }

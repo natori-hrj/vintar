@@ -80,9 +80,7 @@ func EvaluateBoolean(in BooleanInput) (Result, error) {
 		facts.Operational = &OperationalFacts{Stage: "initial", Sequence: 1, Kind: "baseline", Condition: v.Reason}
 	case len(v.Failures) != 0:
 		f := &v.Failures[0]
-		if f.Kind != booleanKinds[n] ||
-			!slices.Contains([]string{"timeout", "connection", "response_read", "budget_exceeded", "rate_limit", "cancelled", "unknown"}, f.Reason) ||
-			(f.Elapsed != nil && !validElapsed(*f.Elapsed)) {
+		if f.Kind != booleanKinds[n] || !validBooleanFailure(*f) {
 			return Result{}, errInvalidEvidence
 		}
 		f.Elapsed = copyPointer(f.Elapsed)
@@ -128,6 +126,11 @@ func EvaluateBoolean(in BooleanInput) (Result, error) {
 func validCount(n int64) bool { return n >= 0 && n <= maxReportCount }
 
 func validElapsed(s float64) bool { return s >= 0 && !math.IsInf(s, 0) }
+
+func validBooleanFailure(f Failure) bool {
+	return slices.Contains([]string{"timeout", "connection", "response_read", "budget_exceeded", "rate_limit", "cancelled", "unknown"}, f.Reason) &&
+		(f.Elapsed == nil || validElapsed(*f.Elapsed))
+}
 
 func validObservation(o Observation) bool {
 	if !validStatus(o.StatusCode) || !validCount(o.BodySize) || !validElapsed(o.Elapsed) || len(o.BodyDigest) != 64 {

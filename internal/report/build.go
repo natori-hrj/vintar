@@ -41,7 +41,7 @@ func MarshalBatch(planned []string, executed []Record, pretty bool) ([]byte, int
 	for i, record := range executed {
 		r := record.Decision
 		if record.CaseID != planned[i] || !validVerdict(record.Expected) ||
-			!validDecision(r) || r.RequestCount > maxJSONCount-used {
+			decision.ValidateResult(r) != nil || !validPublicProjection(r) || r.RequestCount > maxJSONCount-used {
 			return nil, 2, errBatchInput
 		}
 		used += r.RequestCount

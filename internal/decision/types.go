@@ -18,8 +18,8 @@ const (
 	Inconclusive Verdict = "inconclusive"
 )
 
-// Result is the decision-to-report boundary. Only the sections belonging to
-// Check may be populated. Report validates the public projection separately.
+// Result is a mutable decision summary. Consumers must call ValidateResult
+// before using it. Report validates the public projection separately.
 type Result struct {
 	Check        Check
 	Verdict      Verdict
