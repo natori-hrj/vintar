@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -85,6 +86,39 @@ func TestSendGzipLimitAndMalformedRedirect(t *testing.T) {
 		if err != nil || res.Status != 302 || string(res.Body) != "abcd" || !res.Truncated || hits.Load() != int32(i+1) {
 			t.Fatalf("unexpected response or request count: %+v, %v; requests = %d", res, err, hits.Load())
 		}
+	}
+}
+
+func TestSendGzipMetadataWithoutBody(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNoContent, http.StatusNotModified} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Encoding", "gzip")
+				w.Header().Set("ETag", `"v1"`)
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+			res, err := Send(t.Context(), Request{
+				Method: "GET", URL: srv.URL,
+				Headers: map[string]string{"Accept-Encoding": "gzip", "If-None-Match": `"v1"`},
+			}, testTimeout, 4)
+			if err != nil || res.Status != status || len(res.Body) != 0 || res.Truncated {
+				t.Fatalf("want empty successful response: %+v, %v", res, err)
+			}
+		})
+	}
+}
+
+func TestSendDoesNotTreatTruncatedGzipAsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Write([]byte{0x1f})
+	}))
+	defer srv.Close()
+	if _, err := Send(t.Context(), Request{
+		Method: "GET", URL: srv.URL, Headers: map[string]string{"Accept-Encoding": "gzip"},
+	}, testTimeout, 4); err == nil {
+		t.Fatal("accepted truncated gzip stream")
 	}
 }
 

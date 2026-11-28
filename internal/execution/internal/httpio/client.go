@@ -102,6 +102,11 @@ func Send(ctx context.Context, req Request, timeout time.Duration, limit int64) 
 	// decode it when the caller sets Accept-Encoding explicitly.
 	if strings.EqualFold(reply.Header.Get("Content-Encoding"), "gzip") {
 		decoded, err := gzip.NewReader(reader)
+		if err == io.EOF {
+			// A response can carry representation metadata without a body.
+			// gzip returns UnexpectedEOF for a partial header instead.
+			return res, ctx.Err()
+		}
 		if err != nil {
 			return res, safeError(ctx, "HTTP response body read failed")
 		}
