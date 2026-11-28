@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // storedOrigin is a comparison key for a case declaration. It is neither an
@@ -54,7 +55,14 @@ func splitEndpoint(raw string, version Version, originOnly bool) (storedOrigin, 
 	if originOnly && !isOriginPath(path) {
 		return storedOrigin{}, "", false
 	}
-	host, rawPort, ok := storedAuthority(authority, version == Version2 && !originOnly)
+	v2Request := version == Version2 && !originOnly
+	// The v2 case reader validates scheme://authority as an origin
+	// before comparing ports. Trailing whitespace at that boundary
+	// must not disappear when the port is normalized.
+	if v2Request && strings.TrimRightFunc(authority, unicode.IsSpace) != authority {
+		return storedOrigin{}, "", false
+	}
+	host, rawPort, ok := storedAuthority(authority, v2Request)
 	if !ok {
 		return storedOrigin{}, "", false
 	}
