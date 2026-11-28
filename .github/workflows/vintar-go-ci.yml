@@ -1,11 +1,15 @@
 name: Vintar Go CI
 
 on:
-  pull_request:
-  workflow_dispatch:
+  push:
+    branches:
+      - ci/r2-verify-60cec83
 
 permissions:
   contents: read
+
+env:
+  VINTAR_R2_SHA: "60cec83efb18e4fd85dc874180d0175a2bbc8f86"
 
 jobs:
   go-ci:
@@ -13,13 +17,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - name: Check out the exact workflow commit with full history
+      - name: Check out the exact R2 candidate with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.VINTAR_R2_SHA }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Verify Go toolchains and run Go CI
         shell: bash
-        run: bash scripts/run_go_ci.sh
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/ci/r2-verify-60cec83
+          test "$(git rev-parse --verify HEAD)" = "$VINTAR_R2_SHA"
+          printf 'Workflow trigger SHA: %s\nExact R2 candidate SHA: %s\n' \
+            "$GITHUB_SHA" "$VINTAR_R2_SHA"
+          # The driver commit was only used to trigger this workflow. The
+          # unmodified CI script checks GITHUB_SHA against the checkout.
+          GITHUB_SHA="$VINTAR_R2_SHA" bash scripts/run_go_ci.sh
