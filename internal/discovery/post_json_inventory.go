@@ -17,7 +17,6 @@ import (
 )
 
 const (
-	postMaxJSON       = 1 << 20 // Strict input and definition-digest budget.
 	postMaxReport     = 2 << 20 // Released writer limit; review input stays bounded by strictjson.
 	postMaxReferences = 4096
 	postMaxWork       = 8192
@@ -840,68 +839,12 @@ func (b *postDefinition) value(raw any, pointer string, trail []string, shape po
 	return out, nil
 }
 
-// postDigest retains the int/float distinction that encoding/json would
-// otherwise lose (e.g. 1 versus 1.0), then delegates formatting to strictjson.
+// postDigest hashes bounded assembled values without imposing the input
+// limit on their ASCII representation or losing strictjson's number types.
 func postDigest(value any) (string, error) {
-	budget := postMaxJSON
-	normalized, err := postPreserveNumbers(value, &budget, 0)
-	if err != nil {
-		return "", err
-	}
-	var raw bytes.Buffer
-	writer := json.NewEncoder(&raw)
-	writer.SetEscapeHTML(false)
-	if err := writer.Encode(normalized); err != nil {
-		return "", errPostInput
-	}
-	canonical, err := strictjson.Canonicalize(bytes.TrimSuffix(raw.Bytes(), []byte("\n")))
+	canonical, err := strictjson.CanonicalizeValue(value)
 	if err != nil {
 		return "", errPostWork
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(canonical)), nil
-}
-
-func postPreserveNumbers(value any, budget *int, depth int) (any, error) {
-	*budget -= 1
-	if depth > 48 || *budget < 0 {
-		return nil, errPostWork
-	}
-	switch v := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for key, child := range v {
-			*budget -= len(key)
-			var err error
-			out[key], err = postPreserveNumbers(child, budget, depth+1)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return out, nil
-	case []any:
-		out := make([]any, len(v))
-		for i, child := range v {
-			var err error
-			out[i], err = postPreserveNumbers(child, budget, depth+1)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return out, nil
-	case float64:
-		text := strconv.FormatFloat(v, 'g', -1, 64)
-		if !strings.ContainsAny(text, ".eE") {
-			text += ".0"
-		}
-		*budget -= len(text)
-		value = json.Number(text)
-	case json.Number:
-		*budget -= len(v)
-	case string:
-		*budget -= len(v)
-	}
-	if *budget < 0 {
-		return nil, errPostWork
-	}
-	return value, nil
 }

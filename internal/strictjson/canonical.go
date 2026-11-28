@@ -3,8 +3,10 @@ package strictjson
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -18,6 +20,131 @@ func Canonicalize(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	return appendValue(nil, value), nil
+}
+
+// CanonicalizeValue emits canonical JSON for an assembled tree of Parse
+// values. Its depth limit is Parse's; it charges at most 1 MiB for the
+// expanded tree's decoded UTF-8 strings, numbers, and JSON punctuation.
+// Opaque surrogate literals are charged at their stored size. Shared
+// subtrees are charged each time they occur.
+func CanonicalizeValue(value any) ([]byte, error) {
+	budget := canonicalBudget(maxBytes)
+	if err := budget.value(value, 0); err != nil {
+		return nil, err
+	}
+	// A decoded string byte produces at most six ASCII bytes (a control
+	// escape); an astral rune produces twelve bytes from four. Everything
+	// else, including quotes and separators, is charged at its encoded
+	// size. Validate before allocating the output or sorting any keys.
+	return appendValue(make([]byte, 0, 6*(maxBytes-int(budget))), value), nil
+}
+
+type canonicalBudget int
+
+func (b *canonicalBudget) charge(n int) error {
+	if n > int(*b) {
+		return errSize
+	}
+	*b -= canonicalBudget(n)
+	return nil
+}
+
+func (b *canonicalBudget) text(s string, punctuation int) error {
+	if err := b.charge(punctuation); err != nil {
+		return err
+	}
+	if err := b.charge(len(s)); err != nil {
+		return err
+	}
+	if !utf8.ValidString(s) {
+		return errUTF8
+	}
+	return nil
+}
+
+func (b *canonicalBudget) object(ordinary map[string]any, special map[SurrogateString]any, depth int) error {
+	if err := b.charge(2 + max(0, len(ordinary)+len(special)-1)); err != nil {
+		return err
+	}
+	for key, v := range ordinary {
+		if err := b.text(key, 3); err != nil { // quotes and colon
+			return err
+		}
+		if err := b.value(v, depth+1); err != nil {
+			return err
+		}
+	}
+	for key, v := range special {
+		if key.literal == "" {
+			return errSyntax
+		}
+		if err := b.charge(len(key.literal) + 1); err != nil { // colon
+			return err
+		}
+		if err := b.value(v, depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *canonicalBudget) value(value any, depth int) error {
+	if depth > maxDepth {
+		return errDepth
+	}
+	switch v := value.(type) {
+	case nil:
+		return b.charge(len("null"))
+	case bool:
+		return b.charge(len(strconv.FormatBool(v)))
+	case json.Number:
+		if err := b.charge(len(v)); err != nil {
+			return err
+		}
+		// Parse only returns json.Number for normalized decimal integers.
+		digits, negative := strings.CutPrefix(string(v), "-")
+		if len(digits) > maxIntegerDigits {
+			return errInteger
+		}
+		if len(digits) == 0 || (digits[0] == '0' && (negative || len(digits) != 1)) {
+			return errSyntax
+		}
+		for i := 0; i < len(digits); i++ {
+			if !digit(digits[i]) {
+				return errSyntax
+			}
+		}
+		return nil
+	case float64:
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			return errFinite
+		}
+		var scratch [32]byte
+		return b.charge(len(appendFloat(scratch[:0], v)))
+	case string:
+		return b.text(v, 2)
+	case SurrogateString:
+		if v.literal == "" {
+			return errSyntax
+		}
+		return b.charge(len(v.literal))
+	case []any:
+		if err := b.charge(2 + max(0, len(v)-1)); err != nil {
+			return err
+		}
+		for _, child := range v {
+			if err := b.value(child, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case map[string]any:
+		return b.object(v, nil, depth)
+	case SurrogateObject:
+		return b.object(v.UTF8, v.LoneSurrogates, depth)
+	default:
+		return errSyntax
+	}
 }
 
 func appendValue(dst []byte, value any) []byte {
