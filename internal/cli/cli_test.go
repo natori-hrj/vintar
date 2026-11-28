@@ -92,14 +92,14 @@ func TestRun(t *testing.T) {
 }
 
 func TestRunHTTPSendLocal(t *testing.T) {
-	type observed struct{ method, target, body, cookie string }
+	type observed struct{ method, host, target, body, cookie string }
 	received := make(chan observed, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Error("read local fixture request")
 		}
-		received <- observed{r.Method, r.RequestURI, string(body), r.Header.Get("Cookie")}
+		received <- observed{r.Method, r.Host, r.RequestURI, string(body), r.Header.Get("Cookie")}
 		w.Header().Set("Location", "/should-not-follow")
 		w.WriteHeader(http.StatusFound)
 		io.WriteString(w, "ok")
@@ -112,7 +112,8 @@ func TestRunHTTPSendLocal(t *testing.T) {
 	}
 	stdout.Reset()
 	exit = Run(t.Context(), []string{
-		"http", "send", "poſt", server.URL + "/a%2Fb?old=private-token",
+		"http", "send", "poſt", server.URL + "/a%2Fb/path-marker?old=query-marker#fragment-marker",
+		"-H", "Host: fixture.invalid",
 		"-p", "q=a b+", "-p", "q=", "-C", "first=one", "-C", "second=two",
 		"-C", "first=last", "--body", "sample", "-t0_._5",
 	}, &stdout, &stderr)
@@ -122,13 +123,26 @@ func TestRunHTTPSendLocal(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("wanted exactly one request, observed %d", len(received))
 	}
-	if got := <-received; got != (observed{"POST", "/a%2Fb?q=a%20b%2B&q=", "sample", "first=last; second=two"}) {
+	if got := <-received; got != (observed{"POST", "fixture.invalid", "/a%2Fb/path-marker?q=a%20b%2B&q=", "sample", "first=last; second=two"}) {
 		t.Fatalf("unexpected local request: %+v", got)
 	}
-	if !strings.Contains(stdout.String(), "Method: POST\nStatus: 302\n") ||
-		!strings.Contains(stdout.String(), "Content size: 2 bytes\n") ||
-		strings.Contains(stdout.String(), "private-token") {
+	if !strings.HasPrefix(stdout.String(), "Target: "+server.URL+"\nMethod: POST\nStatus: 302\n") ||
+		!strings.Contains(stdout.String(), "Content size: 2 bytes\n") {
 		t.Fatalf("unexpected or unsanitized output: %q", stdout.String())
+	}
+}
+
+func TestRunHTTPSendRejectsUnsupportedDestinations(t *testing.T) {
+	for _, target := range []string{
+		"http://127.0.0.1:0/path-marker", "http://127.0.0.1:-0/path-marker", "http://127.0.0.1:+0/path-marker",
+		"http://[::1%lo]:8080/path-marker", "http://[::1%7]:8080/path-marker", "http://[::1%25lo]:8080/path-marker",
+		"http://fixture-user:credential-marker@127.0.0.1:8080/path-marker",
+	} {
+		var stdout, stderr bytes.Buffer
+		code := Run(t.Context(), []string{"http", "send", "GET", target}, &stdout, &stderr)
+		if code != 1 || stdout.String() != "HTTP request failed.\n" || stderr.Len() != 0 {
+			t.Errorf("target %q: exit = %d, stdout = %q, stderr = %q", target, code, stdout.String(), stderr.String())
+		}
 	}
 }
 

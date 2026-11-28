@@ -79,6 +79,9 @@ func send(ctx context.Context, req Request, timeout time.Duration, limit int64, 
 		return res, errors.New("HTTP URL must be an absolute http or https URL without user information")
 	}
 	if public {
+		if out.URL.Port() == "0" {
+			return res, errors.New("explicit zero HTTP port is unsupported")
+		}
 		authority, rawPath := publicTargetParts(target)
 		if err := normalizePublicHost(out.URL, authority); err != nil {
 			return res, err

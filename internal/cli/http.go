@@ -66,16 +66,12 @@ func runHTTPSend(ctx context.Context, args arguments, stdout, stderr io.Writer) 
 }
 
 func httpTargetLabel(raw string) string {
-	// Display the endpoint without userinfo, the query, or the fragment:
-	// these can contain credentials and tokens.
-	raw, _, _ = strings.Cut(raw, "?")
-	raw, _, _ = strings.Cut(raw, "#")
-	scheme, rest, _ := strings.Cut(raw, "://")
-	authority, path, hasPath := strings.Cut(rest, "/")
-	authority = authority[strings.LastIndexByte(authority, '@')+1:]
-	label := scheme + "://" + authority
-	if hasPath {
-		label += "/" + path
+	// The successfully sent URL is absolute. Only display its scheme and
+	// authority, since the path, query and fragment may contain secrets.
+	scheme, authority, _ := strings.Cut(raw, "://")
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
 	}
-	return label
+	authority = authority[strings.LastIndexByte(authority, '@')+1:]
+	return scheme + "://" + authority
 }

@@ -146,6 +146,18 @@ func TestNormalizePortDoesNotRewriteOtherComponents(t *testing.T) {
 	}
 }
 
+func TestSendPublicRejectsExplicitZeroPort(t *testing.T) {
+	for _, target := range []string{
+		"http://127.0.0.1:0/", "http://127.0.0.1:-0/", "http://127.0.0.1:+0/",
+		"http://127.0.0.1: 0_０ /", "https://[::1]:-٠/",
+	} {
+		_, err := SendPublic(t.Context(), Request{Method: "GET", URL: target}, testTimeout, 10)
+		if err == nil || err.Error() != "explicit zero HTTP port is unsupported" {
+			t.Errorf("target %q: expected pre-transport zero-port rejection, got %v", target, err)
+		}
+	}
+}
+
 func TestSendPublicRejectsScopedIPv6(t *testing.T) {
 	listener, err := net.Listen("tcp6", "[::1]:0")
 	if err != nil {
