@@ -195,7 +195,7 @@ func offlineReviewFailure(ctx context.Context, stderr io.Writer, interrupted, me
 func publishOfflineReview(ctx context.Context, output string, report []byte, inputs []os.FileInfo) error {
 	output = strings.TrimRightFunc(output, func(r rune) bool { return r <= 127 && os.IsPathSeparator(byte(r)) })
 	parent, name := filepath.Split(output)
-	root, err := openOfflineOutputDirectory(ctx, parent)
+	root, err := openOfflineOutputDirectory(ctx, parent, true)
 	if err != nil {
 		return err
 	}
@@ -203,10 +203,9 @@ func publishOfflineReview(ctx context.Context, output string, report []byte, inp
 	return publishDraftsAtRoot(ctx, root, []string{name}, map[string][]byte{name: report}, inputs)
 }
 
-// Anchor each opened parent before walking the next component. Comparing the
-// handle and the non-followed entry prevents a replacement from redirecting
-// publication into a different directory.
-func openOfflineOutputDirectory(ctx context.Context, path string) (*os.Root, error) {
+// Validate the entire raw path before creating anything. When create is false,
+// only validate; otherwise return an anchored root owned by the caller.
+func openOfflineOutputDirectory(ctx context.Context, path string, create bool) (*os.Root, error) {
 	// Do not use filepath.Abs, Join or Clean on the original path before
 	// examining its components: each directory before ".." must be checked.
 	if !filepath.IsAbs(path) {
@@ -225,10 +224,16 @@ func openOfflineOutputDirectory(ctx context.Context, path string) (*os.Root, err
 	if err != nil {
 		return nil, err
 	}
-	roots := []*os.Root{root}
+	type frame struct {
+		name string
+		root *os.Root // nil for a directory that does not yet exist
+	}
+	frames := []frame{{root: root}}
 	defer func() {
-		for _, opened := range roots {
-			opened.Close()
+		for _, f := range frames {
+			if f.root != nil {
+				f.root.Close()
+			}
 		}
 	}()
 	for name := range strings.SplitSeq(filepath.ToSlash(path[len(volume):]), "/") {
@@ -239,37 +244,74 @@ func openOfflineOutputDirectory(ctx context.Context, path string) (*os.Root, err
 		case "", ".":
 			continue
 		case "..":
-			if len(roots) > 1 {
-				roots[len(roots)-1].Close()
-				roots = roots[:len(roots)-1]
+			if last := len(frames) - 1; last > 0 {
+				if root := frames[last].root; root != nil {
+					root.Close()
+				}
+				frames = frames[:last]
 			}
 			continue
 		}
-		root := roots[len(roots)-1]
-		before, err := root.Lstat(name)
-		if errors.Is(err, os.ErrNotExist) {
-			if err := root.Mkdir(name, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+		next := frame{name: name}
+		if parent := frames[len(frames)-1].root; parent != nil {
+			opened, err := openOfflineOutputComponent(parent, name, false)
+			if err != nil {
 				return nil, err
 			}
-			before, err = root.Lstat(name)
+			next.root = opened
 		}
-		if err != nil || !ordinaryOfflineDirectory(before) {
-			return nil, errOfflineOutputDirectory
+		frames = append(frames, next)
+	}
+	if !create {
+		return nil, nil
+	}
+	// Only materialize missing components that survived "..", starting at
+	// the last validated handle, without reopening it by its pathname.
+	for i := 1; i < len(frames); i++ {
+		if frames[i].root != nil {
+			continue
 		}
-		next, err := root.OpenRoot(name)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		next, err := openOfflineOutputComponent(frames[i-1].root, frames[i].name, true)
 		if err != nil {
 			return nil, err
 		}
-		opened, openErr := next.Stat(".")
-		linked, linkErr := root.Lstat(name)
-		if openErr != nil || linkErr != nil || !ordinaryOfflineDirectory(opened) ||
-			!ordinaryOfflineDirectory(linked) || !os.SameFile(before, opened) || !os.SameFile(before, linked) {
-			next.Close()
-			return nil, errOfflineOutputDirectory
-		}
-		roots = append(roots, next)
+		frames[i].root = next
 	}
-	result := roots[len(roots)-1]
-	roots = roots[:len(roots)-1]
+	last := &frames[len(frames)-1]
+	result := last.root
+	last.root = nil
 	return result, nil
+}
+
+// Comparing the opened handle and the non-followed entry prevents a
+// replacement from redirecting publication into a different directory.
+func openOfflineOutputComponent(parent *os.Root, name string, create bool) (*os.Root, error) {
+	before, err := parent.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		if !create {
+			return nil, nil
+		}
+		if err := parent.Mkdir(name, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		before, err = parent.Lstat(name)
+	}
+	if err != nil || !ordinaryOfflineDirectory(before) {
+		return nil, errOfflineOutputDirectory
+	}
+	next, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	opened, openErr := next.Stat(".")
+	linked, linkErr := parent.Lstat(name)
+	if openErr != nil || linkErr != nil || !ordinaryOfflineDirectory(opened) ||
+		!ordinaryOfflineDirectory(linked) || !os.SameFile(before, opened) || !os.SameFile(before, linked) {
+		next.Close()
+		return nil, errOfflineOutputDirectory
+	}
+	return next, nil
 }

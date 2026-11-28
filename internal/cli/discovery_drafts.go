@@ -85,35 +85,18 @@ func draftString(value string) string {
 }
 
 func publishDiscoveryDrafts(ctx context.Context, directory string, names []string, drafts map[string][]byte, inputs []os.FileInfo) error {
-	if len(names) == 0 {
-		return checkEmptyDraftDirectory(directory)
-	}
-	root, err := openOfflineOutputDirectory(ctx, directory)
+	root, err := openOfflineOutputDirectory(ctx, directory, len(names) != 0)
 	if err != nil {
-		if errors.Is(err, errOfflineOutputDirectory) {
-			return err
+		if len(names) == 0 || errors.Is(err, errOfflineOutputDirectory) {
+			return errOfflineOutputDirectory
 		}
 		return errors.New("cannot write review drafts. Choose a writable output path.")
 	}
+	if len(names) == 0 {
+		return nil
+	}
 	defer root.Close()
 	return publishDraftsAtRoot(ctx, root, names, drafts, inputs)
-}
-
-func checkEmptyDraftDirectory(directory string) error {
-	absolute, err := filepath.Abs(directory)
-	if err != nil {
-		return errOfflineOutputDirectory
-	}
-	for dir := absolute; ; dir = filepath.Dir(dir) {
-		info, err := os.Lstat(dir)
-		if err == nil && !info.IsDir() || err != nil && !errors.Is(err, os.ErrNotExist) {
-			return errOfflineOutputDirectory
-		}
-		if dir == filepath.Dir(dir) {
-			break
-		}
-	}
-	return nil
 }
 
 func publishDraftsAtRoot(ctx context.Context, root *os.Root, names []string, drafts map[string][]byte, inputs []os.FileInfo) error {
