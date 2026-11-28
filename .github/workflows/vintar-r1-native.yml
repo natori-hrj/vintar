@@ -1,0 +1,97 @@
+name: Vintar R1 native validation
+
+on:
+  push:
+    branches: [ci/r1-native-e9b2b8f]
+
+permissions:
+  contents: read
+
+env:
+  R1_SOURCE: e9b2b8fac4664323a4eee49a330f2692271df478
+  GOTOOLCHAIN: local
+  GOWORK: off
+  GOENV: off
+  CGO_ENABLED: '0'
+
+jobs:
+  native:
+    name: R1 ${{ matrix.runner }} (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux/amd64
+          - runner: ubuntu-24.04-arm
+            target: linux/arm64
+          - runner: macos-15-intel
+            target: darwin/amd64
+          - runner: macos-15
+            target: darwin/arm64
+          - runner: windows-2025
+            target: windows/amd64
+    steps:
+      - name: Observe runner identity
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.runner }}
+          EXPECTED: ${{ matrix.target }}
+          RUNNER_ARCH_VALUE: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          printf 'R1 runner: %s (%s / %s)\n' "$PLATFORM" "$RUNNER_OS" "$RUNNER_ARCH_VALUE"
+          uname -srm
+          printf 'R1 trigger: %s; tested source: %s; expected: %s\n' "$GITHUB_SHA" "$R1_SOURCE" "$EXPECTED"
+          test "$GITHUB_REF" = refs/heads/ci/r1-native-e9b2b8f
+      - name: Check out the validation driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: driver
+          persist-credentials: false
+      - name: Check out the exact source candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.R1_SOURCE }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up pinned Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Set up Python for the acceptance driver
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Provision missing POSIX shells where packages are available
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for shell in bash zsh fish; do
+            command -v "$shell" >/dev/null || missing+=("$shell")
+          done
+          if ((${#missing[@]})); then
+            if [[ "$RUNNER_OS" == Linux ]]; then
+              if ! sudo apt-get update || ! sudo apt-get install -y "${missing[@]}"; then
+                echo "::warning::POSIX shell provisioning failed; the driver will list missing shells."
+              fi
+            elif ! HOMEBREW_NO_AUTO_UPDATE=1 brew install "${missing[@]}"; then
+              echo "::warning::POSIX shell provisioning failed; the driver will list missing shells."
+            fi
+          fi
+      - name: Run native acceptance against the expected distribution binary
+        shell: bash
+        env:
+          EXPECTED: ${{ matrix.target }}
+          RUNNER_ARCH_VALUE: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          python -B driver/.github/r1/native.py source "$EXPECTED" "$R1_SOURCE" \
+            driver/.github/r1/targets.tsv
