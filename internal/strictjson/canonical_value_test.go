@@ -32,9 +32,9 @@ func TestCanonicalizeValueMatchesCanonicalize(t *testing.T) {
 }
 
 func TestCanonicalizeValueBudget(t *testing.T) {
-	// Charge the quotes and decoded text, not its sixfold ASCII expansion.
+	// Charge a string node and decoded text, not its sixfold ASCII expansion.
 	const quotes = 2
-	v := strings.Repeat("\x01", maxBytes-quotes)
+	v := strings.Repeat("\x01", maxBytes-1)
 	got, err := CanonicalizeValue(v)
 	if err != nil || len(got) != quotes+6*len(v) || cap(got) > 6*maxBytes {
 		t.Fatalf("at byte budget: length=%d, capacity=%d, err=%v", len(got), cap(got), err)
@@ -60,7 +60,7 @@ func TestCanonicalizeValueBudget(t *testing.T) {
 	}{
 		{"over size", v + "x", errSize},
 		{"shared expansion", []any{shared, shared}, errSize},
-		{"key and structure", map[string]any{strings.Repeat("x", maxBytes-8): nil}, errSize},
+		{"key and structure", map[string]any{strings.Repeat("x", maxBytes-4): nil}, errSize},
 		{"depth", []any{depth}, errDepth},
 		{"cycle", cycle, errDepth},
 		{"large integer", json.Number(strings.Repeat("9", maxIntegerDigits+1)), errInteger},

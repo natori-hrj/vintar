@@ -46,3 +46,18 @@ func TestPostJSONDefinitionDigestRejectsOverBudgetExpansion(t *testing.T) {
 		t.Fatalf("over-budget expanded definition: report bytes=%d, err=%v", len(report), err)
 	}
 }
+func TestPostJSONDigestAtPublicSpecCeiling(t *testing.T) {
+	const prefix = `{"openapi": "3.1.2", "paths": {"/items": {"post": {"description": "`
+	const suffix = `", "requestBody": {"content": {"application/json": {"schema": {"type": "string"}}}}}}}}`
+	const limit = 1 << 20
+	const released = "b731f7d5810131506db4de12e10f38ea9f55528d2cd8b59ddd6042dfb87c5a9f"
+	spec := prefix + strings.Repeat("a", limit-len(prefix)-len(suffix)) + suffix
+	report, _, err := BuildPostJSONInventory([]byte(spec), "openapi.json")
+	if err != nil || !bytes.Contains(report, []byte(released)) {
+		t.Fatalf("the exact input boundary no longer yields the released digest: %v", err)
+	}
+	report, _, err = BuildPostJSONInventory([]byte(spec+"\n"), "openapi.json")
+	if err == nil || report != nil {
+		t.Fatal("serialized input above the public limit was accepted")
+	}
+}

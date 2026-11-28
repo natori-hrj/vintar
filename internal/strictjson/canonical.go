@@ -24,18 +24,21 @@ func Canonicalize(data []byte) ([]byte, error) {
 
 // CanonicalizeValue emits canonical JSON for an assembled tree of Parse
 // values. Its depth limit is Parse's; it charges at most 1 MiB for the
-// expanded tree's decoded UTF-8 strings, numbers, and JSON punctuation.
-// Opaque surrogate literals are charged at their stored size. Shared
-// subtrees are charged each time they occur.
+// expanded tree. A container costs one unit; a string costs one plus its
+// decoded UTF-8 bytes, a member name costs its decoded UTF-8 bytes, and
+// scalar tokens otherwise cost their canonical length. Opaque surrogate
+// literals are charged at their stored size. Shared subtrees are charged at
+// each occurrence.
 func CanonicalizeValue(value any) ([]byte, error) {
 	budget := canonicalBudget(maxBytes)
 	if err := budget.value(value, 0); err != nil {
 		return nil, err
 	}
-	// A decoded string byte produces at most six ASCII bytes (a control
-	// escape); an astral rune produces twelve bytes from four. Everything
-	// else, including quotes and separators, is charged at its encoded
-	// size. Validate before allocating the output or sorting any keys.
+	// A decoded byte produces at most six ASCII bytes (a control escape).
+	// Each value has at least one unit to cover its own quotes or brackets
+	// and up to four parent bytes (key quotes, colon and comma). Tokens
+	// charged by length also fit: length + 4 <= 6 * length. Validate before
+	// allocating the output or sorting any keys.
 	return appendValue(make([]byte, 0, 6*(maxBytes-int(budget))), value), nil
 }
 
@@ -49,10 +52,7 @@ func (b *canonicalBudget) charge(n int) error {
 	return nil
 }
 
-func (b *canonicalBudget) text(s string, punctuation int) error {
-	if err := b.charge(punctuation); err != nil {
-		return err
-	}
+func (b *canonicalBudget) text(s string) error {
 	if err := b.charge(len(s)); err != nil {
 		return err
 	}
@@ -63,11 +63,11 @@ func (b *canonicalBudget) text(s string, punctuation int) error {
 }
 
 func (b *canonicalBudget) object(ordinary map[string]any, special map[SurrogateString]any, depth int) error {
-	if err := b.charge(2 + max(0, len(ordinary)+len(special)-1)); err != nil {
+	if err := b.charge(1); err != nil {
 		return err
 	}
 	for key, v := range ordinary {
-		if err := b.text(key, 3); err != nil { // quotes and colon
+		if err := b.text(key); err != nil {
 			return err
 		}
 		if err := b.value(v, depth+1); err != nil {
@@ -78,7 +78,7 @@ func (b *canonicalBudget) object(ordinary map[string]any, special map[SurrogateS
 		if key.literal == "" {
 			return errSyntax
 		}
-		if err := b.charge(len(key.literal) + 1); err != nil { // colon
+		if err := b.charge(len(key.literal)); err != nil {
 			return err
 		}
 		if err := b.value(v, depth+1); err != nil {
@@ -122,14 +122,17 @@ func (b *canonicalBudget) value(value any, depth int) error {
 		var scratch [32]byte
 		return b.charge(len(appendFloat(scratch[:0], v)))
 	case string:
-		return b.text(v, 2)
+		if err := b.charge(1); err != nil {
+			return err
+		}
+		return b.text(v)
 	case SurrogateString:
 		if v.literal == "" {
 			return errSyntax
 		}
 		return b.charge(len(v.literal))
 	case []any:
-		if err := b.charge(2 + max(0, len(v)-1)); err != nil {
+		if err := b.charge(1); err != nil {
 			return err
 		}
 		for _, child := range v {
