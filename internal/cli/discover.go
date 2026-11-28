@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/natori-hrj/vintar/internal/discovery"
 	"github.com/pelletier/go-toml/v2"
@@ -17,6 +18,9 @@ import (
 
 func runDiscover(ctx context.Context, args arguments, stdout, stderr io.Writer) int {
 	spec := args.value("spec")
+	if args.has("drafts-dir") && discoveryDraftSpecOutsideCWD(spec) {
+		return diagnostic(stderr, 2, "Spec is outside the current working directory. Run from a directory that contains the spec.")
+	}
 	data, specInfo, err := readDiscoveryFile(spec)
 	if err != nil {
 		return diagnostic(stderr, 2, "invalid OpenAPI spec. Check the local file format, declarations, references, and limits.")
@@ -78,6 +82,57 @@ func runDiscover(ctx context.Context, args arguments, stdout, stderr io.Writer) 
 	), 0)
 }
 
+// Draft export checks containment before validating the spec or selection.
+// Resolve symlinks in path order (including before "..") and tolerate missing
+// components so an absent spec inside cwd still gets the usual spec diagnostic.
+func discoveryDraftSpecOutsideCWD(spec string) bool {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+	cwd, err = filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return false
+	}
+	pending, resolved := filepath.FromSlash(spec), cwd
+	const sep = string(filepath.Separator)
+	for links := 0; pending != ""; {
+		if filepath.IsAbs(pending) {
+			volume := filepath.VolumeName(pending)
+			resolved, pending = volume+sep, pending[len(volume):]
+		}
+		component, rest, _ := strings.Cut(pending, sep)
+		pending = rest
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		next := filepath.Join(resolved, component)
+		info, err := os.Lstat(next)
+		if errors.Is(err, os.ErrNotExist) || err == nil && info.Mode()&os.ModeSymlink == 0 {
+			resolved = next
+			continue
+		}
+		if err != nil || links >= 255 {
+			return false // Leave unreadable paths and loops to the spec diagnostic.
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return false
+		}
+		links++
+		pending = filepath.FromSlash(target)
+		if rest != "" {
+			pending += sep + rest
+		}
+	}
+	rel, err := filepath.Rel(cwd, resolved)
+	return err != nil || !filepath.IsLocal(rel)
+}
+
 func readDiscoveryFile(path string) ([]byte, os.FileInfo, error) {
 	before, err := os.Lstat(path)
 	if err != nil || !before.Mode().IsRegular() || before.Size() > 1<<20 {
@@ -101,7 +156,12 @@ func readDiscoveryFile(path string) ([]byte, os.FileInfo, error) {
 
 func parseDiscoverySelection(value []byte) ([]string, error) {
 	var selection map[string]any
-	if err := toml.Unmarshal(value, &selection); err != nil || len(selection) != 2 {
+	if !utf8.Valid(value) || toml.Unmarshal(value, &selection) != nil {
+		return nil, errors.New("Invalid selection TOML. Use version = 1 and an approved list of inventory input IDs.")
+	}
+	_, hasVersion := selection["version"]
+	_, hasApproved := selection["approved"]
+	if len(selection) != 2 || !hasVersion || !hasApproved {
 		return nil, errors.New("Invalid selection keys. Use only version and approved.")
 	}
 	version, _ := selection["version"].(int64)
