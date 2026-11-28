@@ -114,8 +114,8 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 		switch {
 		case dep == "os" && (path == "internal/decision" || path == "internal/report"):
 			t.Errorf("offline decision and report packages must not access files or the environment: %s imports %s", path, dep)
-		case dep == "syscall" && (path == policyReaderPackage || path == "internal/cli"):
-			// File readers use no-follow flags and Windows checks the open handle.
+		case dep == "syscall" && (path == policyReaderPackage || path == "internal/cli" || path == "internal/casefile"):
+			// Local file readers use platform open flags and handle metadata.
 		case dep == "C", dep == "unsafe", dep == "syscall", dep == "os/exec", dep == "plugin":
 			t.Errorf("unsafe direct import: %s imports %s", path, dep)
 		case dep == "net" || dep == "net/http" || dep == "crypto/tls":
