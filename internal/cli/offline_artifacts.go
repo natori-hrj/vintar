@@ -238,6 +238,7 @@ func openOfflineOutputDirectory(ctx context.Context, path string, create bool) (
 		root *os.Root // nil for a directory that does not yet exist
 	}
 	frames := []frame{{root: root}}
+	lastExisting := 0
 	defer func() {
 		for _, f := range frames {
 			if f.root != nil {
@@ -256,6 +257,17 @@ func openOfflineOutputDirectory(ctx context.Context, path string, create bool) (
 			if last := len(frames) - 1; last > 0 {
 				if root := frames[last].root; root != nil {
 					root.Close()
+					lastExisting--
+				} else if create {
+					// A missing parent makes the real lookup return ENOENT
+					// before it reaches this name. Check whether the target
+					// filesystem can represent the component before hiding
+					// it with "..". Only name-length errors matter here:
+					// an entry at the probe location is not this component.
+					_, err := frames[lastExisting].root.Lstat(frames[last].name)
+					if offlineNameTooLong(err) {
+						return nil, err
+					}
 				}
 				frames = frames[:last]
 			}
@@ -268,6 +280,9 @@ func openOfflineOutputDirectory(ctx context.Context, path string, create bool) (
 				return nil, err
 			}
 			next.root = opened
+			if opened != nil {
+				lastExisting = len(frames)
+			}
 		}
 		frames = append(frames, next)
 	}

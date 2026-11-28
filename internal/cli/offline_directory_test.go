@@ -8,8 +8,32 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 )
+
+func TestOfflineOutputDirectoryDiscardedNameLength(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{strings.Repeat("a", 256), strings.Repeat("é", 128)} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !offlineNameTooLong(err) {
+			t.Logf("filesystem permits this name length: %v", err)
+			continue
+		}
+		path := dir + "/missing/" + name + "/child/../../drafts"
+		if root, err := openOfflineOutputDirectory(t.Context(), path, false); root != nil || err != nil {
+			t.Fatalf("empty selection: %v, %v", root, err)
+		}
+		if root, err := openOfflineOutputDirectory(t.Context(), path, true); root != nil || !offlineNameTooLong(err) {
+			if root != nil {
+				root.Close()
+			}
+			t.Fatalf("nonempty selection: %v, %v", root, err)
+		}
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("a rejected path was materialized: %v, %v", entries, err)
+	}
+}
 
 func TestDiscoverDraftOutputDirectory(t *testing.T) {
 	const inputID = "input-24a9c3cf0c3d01709121ac0d09079903"
