@@ -97,11 +97,12 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 		"cmd/vintar":          {"internal/cli"},
 		"internal/cli":        {"internal/casefile", "internal/discovery", "internal/execution", "internal/report", "internal/strictjson"},
 		"internal/casefile":   {"internal/strictjson"},
+		"internal/decision":   nil,
 		"internal/discovery":  {"internal/strictjson"},
 		"internal/execution":  {httpTransportPackage, policyReaderPackage, "internal/strictjson"},
 		httpTransportPackage:  nil,
 		policyReaderPackage:   nil,
-		"internal/report":     {"internal/strictjson"},
+		"internal/report":     {"internal/decision", "internal/strictjson"},
 		"internal/strictjson": nil,
 		"internal/acceptance": nil, // Test-only; no product package may import it.
 	}
@@ -111,6 +112,8 @@ func checkProductImports(t *testing.T, path string, imports []string) {
 	}
 	for _, dep := range imports {
 		switch {
+		case dep == "os" && (path == "internal/decision" || path == "internal/report"):
+			t.Errorf("offline decision and report packages must not access files or the environment: %s imports %s", path, dep)
 		case dep == "syscall" && (path == policyReaderPackage || path == "internal/cli"):
 			// File readers use no-follow flags and Windows checks the open handle.
 		case dep == "C", dep == "unsafe", dep == "syscall", dep == "os/exec", dep == "plugin":
