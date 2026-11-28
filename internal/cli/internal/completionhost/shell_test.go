@@ -16,6 +16,9 @@ func TestAncestorShell(t *testing.T) {
 			t.Errorf("closest shell to %q = %q, want %q", tc.name, got, tc.want)
 		}
 	}
+	if got := ancestorShell(t.Context(), 1, func(int) process { return process{name: "bash"} }); got != "bash" {
+		t.Fatalf("PID 1 shell detection = %q, want bash", got)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if got := ancestorShell(ctx, 5, func(int) process {

@@ -24,7 +24,7 @@ type process struct {
 }
 
 func ancestorShell(ctx context.Context, pid int, lookup func(int) process) string {
-	for depth := 0; pid > 1 && depth < 10 && ctx.Err() == nil; depth++ {
+	for depth := 0; pid > 0 && depth < 10 && ctx.Err() == nil; depth++ {
 		proc := lookup(pid)
 		if shell := shellName(proc.name); shell != "" {
 			return shell
