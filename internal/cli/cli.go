@@ -5,10 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
+	"regexp"
 )
 
 const version = "Vintar v0.7.0"
+
+// Exact spellings whose Python 3.13 str.upper() result is GET or POST.
+// The POST suffix includes long s and both ligatures that uppercase to ST.
+var httpSendMethod = regexp.MustCompile(`\A(?:[Gg][Ee][Tt]|[Pp][Oo](?:[Ss\x{017F}][Tt]|[\x{FB05}\x{FB06}]))\z`)
 
 // Run invokes the CLI. Diagnostics never include raw arguments or lower-level
 // errors, since both may contain sensitive values.
@@ -71,9 +75,7 @@ func runCommand(path string, args arguments, stdout, stderr io.Writer) int {
 			return diagnostic(stderr, 2, "Draft export requires --selection. Supply a reviewed selection file.")
 		}
 	case "vintar http send":
-		switch strings.ToUpper(args.positionals[0]) {
-		case "GET", "POST":
-		default:
+		if !httpSendMethod.MatchString(args.positionals[0]) {
 			return writeText(stdout, stderr, "Only GET and POST are supported.\n", 1)
 		}
 		if _, err := parseHTTPFields(args); err != nil {

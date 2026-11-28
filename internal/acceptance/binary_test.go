@@ -154,6 +154,10 @@ func TestProductBinary(t *testing.T) {
 		}
 	})
 
+	t.Run("http-method-uppercase", func(t *testing.T) {
+		testHTTPMethodUppercase(t, root, binary)
+	})
+
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -230,5 +234,40 @@ func TestProductBinary(t *testing.T) {
 				t.Errorf("unavailable command wrote files: %v", entries)
 			}
 		})
+	}
+}
+
+func testHTTPMethodUppercase(t *testing.T, root, binary string) {
+	t.Helper()
+	// The accepted set is exhaustive: enumerate all single-code-point
+	// str.upper() results in Unicode 15.1, then compose the ones that
+	// produce GET or POST. Both sets were checked against the v0.6.0 CLI.
+	var fixture struct {
+		Accepted []string `json:"accepted"`
+		Rejected []string `json:"rejected"`
+	}
+	data := readFixture(t, root, "internal/acceptance/testdata/http-methods-v0.6.0.json")
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Accepted) != 40 || len(fixture.Rejected) == 0 {
+		t.Fatal("incomplete uppercase oracle")
+	}
+	cwd := t.TempDir()
+	for _, group := range []struct {
+		methods []string
+		stdout  string
+	}{
+		{fixture.Accepted, "Header name cannot be empty.\n"},
+		{fixture.Rejected, "Only GET and POST are supported.\n"},
+	} {
+		for _, method := range group.methods {
+			// The invalid header guarantees rejection before any send. Both
+			// diagnostics exit 1 on stdout, so assert their text too.
+			want := invocation{code: 1, stdout: group.stdout}
+			if got := runProduct(t, binary, cwd, "http", "send", method, "unused", "-H", ":"); got != want {
+				t.Errorf("method %q: got %+v; want %+v", method, got, want)
+			}
+		}
 	}
 }

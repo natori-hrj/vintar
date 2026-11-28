@@ -1,0 +1,17 @@
+{
+  "accepted": [
+    "GET", "GEt", "GeT", "Get",
+    "gET", "gEt", "geT", "get",
+    "POST", "POSt", "POsT", "POst", "POſT", "POſt", "POﬅ", "POﬆ",
+    "PoST", "PoSt", "PosT", "Post", "PoſT", "Poſt", "Poﬅ", "Poﬆ",
+    "pOST", "pOSt", "pOsT", "pOst", "pOſT", "pOſt", "pOﬅ", "pOﬆ",
+    "poST", "poSt", "posT", "post", "poſT", "poſt", "poﬅ", "poﬆ"
+  ],
+  "rejected": [
+    "", "get ", " GET", "GET\n", "POST\t",
+    "ＧＥＴ", "ＰＯＳＴ", "ℙOST", "ℊet",
+    "POﬀ", "POﬃ", "POẞ", "POß", "ﬅ", "ﬆ",
+    "PΟST", "POŚT", "PO\u0301ST", "PO\u200bST",
+    "POﬆx", "GET\u00a0", "ſGET", "PoSt\n", "DELETE"
+  ]
+}
