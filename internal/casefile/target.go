@@ -51,10 +51,22 @@ func splitEndpoint(raw string, version Version, originOnly bool) (origin, string
 	if hasPath {
 		path = "/" + tail
 	}
-	if originOnly && path != "" && path != "/" {
+	if originOnly && !isOriginPath(path) {
 		return origin{}, "", false
 	}
-	parsed, err := url.Parse(scheme + "://" + authority)
+	hostStart := strings.LastIndexByte(authority, '@') + 1
+	rawHost := authority[hostStart:]
+	parseAuthority := authority
+	bracketed := strings.HasPrefix(rawHost, "[")
+	if !bracketed {
+		rawHost, _, _ = strings.Cut(rawHost, ":")
+		if asciiHostname(rawHost) && strings.Contains(rawHost, "%") {
+			// Let net/url validate the authority without interpreting the
+			// original hostname's literal percent spelling as an escape.
+			parseAuthority = authority[:hostStart] + strings.ReplaceAll(rawHost, "%", "%25") + authority[hostStart+len(rawHost):]
+		}
+	}
+	parsed, err := url.Parse(scheme + "://" + parseAuthority)
 	if err != nil || parsed.Hostname() == "" {
 		return origin{}, "", false
 	}
@@ -64,9 +76,8 @@ func splitEndpoint(raw string, version Version, originOnly bool) (origin, string
 			return origin{}, "", false
 		}
 	}
-	rawHost := authority[strings.LastIndexByte(authority, '@')+1:]
 	var host string
-	if strings.HasPrefix(rawHost, "[") {
+	if bracketed {
 		literal, _, ok := strings.Cut(rawHost[1:], "]")
 		addr, err := netip.ParseAddr(literal)
 		if !ok || err != nil || !addr.Is6() || !asciiHostname(literal) || strings.Count(literal, "%") > 1 {
@@ -74,9 +85,6 @@ func splitEndpoint(raw string, version Version, originOnly bool) (origin, string
 		}
 		host = strings.ToLower(literal)
 	} else {
-		// net/url unescapes non-ASCII octets in hosts. HTTPX leaves
-		// percent-escaped ASCII host spellings as literal wire names.
-		rawHost, _, _ = strings.Cut(rawHost, ":")
 		var ok bool
 		host, ok = canonicalHostname(rawHost)
 		if !ok {
@@ -97,6 +105,29 @@ func splitEndpoint(raw string, version Version, originOnly bool) (origin, string
 		}
 	}
 	return origin{scheme, host, port}, path, true
+}
+
+// HTTPX removes literal dot segments before checking the declared origin's
+// path. Keep empty segments and leave escapes alone. Request paths still use
+// the original bytes for their separate validation.
+func isOriginPath(path string) bool {
+	if path == "" || path == "/" {
+		return true
+	}
+	segments := strings.Split(path[1:], "/")
+	remaining := segments[:0]
+	for _, segment := range segments {
+		switch segment {
+		case ".":
+		case "..":
+			if len(remaining) > 0 {
+				remaining = remaining[:len(remaining)-1]
+			}
+		default:
+			remaining = append(remaining, segment)
+		}
+	}
+	return len(remaining) == 0 || len(remaining) == 1 && remaining[0] == ""
 }
 
 func bytePreservedPath(path string) bool {

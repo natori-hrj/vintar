@@ -322,5 +322,65 @@
     "target": "https://api.xn--78d4z.invalid",
     "allowed": "https://api.xn--78d4z.invalid",
     "accepted": true
+  },
+  {
+    "name": "ASCII host escapes preserve their literal spelling",
+    "target": "https://%61.invalid",
+    "allowed": "https://%61.invalid",
+    "accepted": true
+  },
+  {
+    "name": "ASCII host escapes do not authorize decoded host",
+    "target": "https://%61.invalid",
+    "allowed": "https://a.invalid",
+    "accepted": false
+  },
+  {
+    "name": "decoded ASCII host does not authorize escaped host",
+    "target": "https://a.invalid",
+    "allowed": "https://%61.invalid",
+    "accepted": false
+  },
+  {
+    "name": "escaped authority delimiters stay in the hostname",
+    "target": "https://%40%3A%2F.invalid:443",
+    "allowed": "https://%40%3a%2f.invalid",
+    "accepted": true
+  },
+  {
+    "name": "literal percent in a legacy ASCII hostname",
+    "target": "https://%.invalid",
+    "allowed": "https://%.invalid",
+    "accepted": true
+  },
+  {
+    "name": "declared origin with a current directory segment",
+    "target": "https://İ.invalid",
+    "allowed": "https://xn--i-9bb.invalid/./",
+    "accepted": true
+  },
+  {
+    "name": "declared origin with a parent directory segment",
+    "target": "https://example.invalid",
+    "allowed": "https://example.invalid/a/..",
+    "accepted": true
+  },
+  {
+    "name": "declared origin with repeated empty segments",
+    "target": "https://example.invalid",
+    "allowed": "https://example.invalid//./",
+    "accepted": false
+  },
+  {
+    "name": "escaped dot segments do not normalize the declared origin",
+    "target": "https://example.invalid",
+    "allowed": "https://example.invalid/%2e/",
+    "accepted": false
+  },
+  {
+    "name": "declared origin with a surviving path segment",
+    "target": "https://example.invalid",
+    "allowed": "https://example.invalid/a/../b",
+    "accepted": false
   }
 ]

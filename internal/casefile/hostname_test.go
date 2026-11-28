@@ -46,3 +46,22 @@ func TestParseReleasedHostnameBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestParseV2OriginDotSegmentsDoNotRelaxRequestPath(t *testing.T) {
+	for _, tc := range []struct{ name, source, host string }{
+		{"GET", v2Get, "case.invalid"},
+		{"POST", v2Post, "golden.invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := strings.Replace(tc.source, `allowed_origin = "https://`+tc.host+`"`, `allowed_origin = "https://`+tc.host+`/./"`, 1)
+			source = strings.Replace(source, "https://"+tc.host+"/items", "https://"+tc.host+"/./items", 1)
+			if _, err := Parse([]byte(source)); err == nil {
+				t.Fatal("accepted a request path with an unreviewed dot segment")
+			}
+			source = strings.Replace(source, `path = "/items"`, `path = "/./items"`, 1)
+			if _, err := Parse([]byte(source)); err == nil {
+				t.Fatal("accepted a reviewed path whose bytes would be changed by the reference URL parser")
+			}
+		})
+	}
+}
