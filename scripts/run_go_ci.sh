@@ -80,6 +80,9 @@ finish() {
     if [[ ${GITHUB_ACTIONS:-} == true && -n ${GITHUB_STEP_SUMMARY:-} ]]; then
         cat -- "$results/summary.md" >>"$GITHUB_STEP_SUMMARY"
     fi
+    # Go deliberately makes downloaded module directories read-only.
+    # Only this run's private scratch tree is made writable for cleanup.
+    chmod -R u+w -- "$scratch"
     rm -rf -- "$scratch"
     printf 'Local Go CI evidence: %s\n' "$results"
     exit "$status"

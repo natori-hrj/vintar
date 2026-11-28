@@ -99,9 +99,12 @@ build_target() {
     grep -Fxq $'\tbuild\tGOOS='"$os" <<<"$metadata"
     grep -Fxq $'\tbuild\tGOARCH='"$arch" <<<"$metadata"
     if [[ -n $commit ]]; then
-        grep -Fxq $'\tbuild\tvcs=git' <<<"$metadata"
-        grep -Fxq $'\tbuild\tvcs.revision='"$commit" <<<"$metadata"
-        grep -Fxq $'\tbuild\tvcs.modified=false' <<<"$metadata"
+        if ! grep -Fxq $'\tbuild\tvcs=git' <<<"$metadata" ||
+            ! grep -Fxq $'\tbuild\tvcs.revision='"$commit" <<<"$metadata" ||
+            ! grep -Fxq $'\tbuild\tvcs.modified=false' <<<"$metadata"; then
+            printf 'Artifact VCS metadata does not match clean commit %s; use a full checkout\n' "$commit" >&2
+            return 1
+        fi
     fi
     if grep -Fq 'github.com/santhosh-tekuri/jsonschema/v6' <<<"$metadata"; then
         printf 'Test-only JSON Schema module is linked into %s/%s\n' "$os" "$arch" >&2
