@@ -90,19 +90,30 @@ func TestLoadBatchRejectsInvalidEntriesAndSize(t *testing.T) {
 }
 
 func TestLoadBatchRejectsSourceAndEntrySymlinks(t *testing.T) {
-	dir := t.TempDir()
-	file := writeBatchInput(t, dir, "real.toml", v1)
-	link := filepath.Join(dir, "link.toml")
-	if err := os.Symlink(file, link); err != nil {
+	entryDir := t.TempDir()
+	writeBatchInput(t, entryDir, "target.data", v1)
+	link := filepath.Join(entryDir, "link.toml")
+	if err := os.Symlink("target.data", link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	for _, path := range []string{dir, link} {
+	// The link is the only .toml entry. Following it would yield a valid
+	// case rather than failing for a duplicate ID or a second bad entry.
+	for _, path := range []string{entryDir, link} {
 		if cases, err := LoadBatch(path, 12); cases != nil || err == nil {
 			t.Fatal("link admitted as a case")
 		}
 	}
-	dirLink := filepath.Join(t.TempDir(), "directory-link")
-	if err := os.Symlink(dir, dirLink); err != nil {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "cases")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeBatchInput(t, dir, "real.toml", v1)
+	if cases, err := LoadBatch(dir, 6); err != nil || len(cases) != 1 {
+		t.Fatalf("unlinked directory must load: got %d cases; %v", len(cases), err)
+	}
+	dirLink := filepath.Join(parent, "directory-link")
+	if err := os.Symlink("cases", dirLink); err != nil {
 		t.Fatal(err)
 	}
 	for _, suffix := range []string{"", string(os.PathSeparator), string(os.PathSeparator) + "."} {
